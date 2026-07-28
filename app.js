@@ -15,7 +15,7 @@ import './config-tipos.js';
 import './config-tarifas.js';
 import './reservas.js';
 import './recepcion.js';
-// import './huespedes.js';
+import './huespedes.js';
 // import './housekeeping.js';
 // import './caja.js';
 
