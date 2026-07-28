@@ -16,8 +16,13 @@ import './config-tarifas.js';
 import './reservas.js';
 import './recepcion.js';
 import './huespedes.js';
-// import './housekeeping.js';
-// import './caja.js';
+
+// Pestañas "próximamente" para el resto del alcance (demo al cliente).
+// A medida que cada módulo se construya de verdad, se quita su entrada de
+// placeholders.js y se agrega aquí su propio archivo dedicado, ej.:
+//   import './housekeeping.js';
+//   import './caja.js';
+import './placeholders.js';
 
 const pantallaLogin = document.getElementById('pantalla-login');
 const pantallaApp = document.getElementById('pantalla-app');
