@@ -22,6 +22,12 @@
 // - Si ya existe una reserva para esa fecha, esa reserva manda (se ve el
 //   nombre del huésped) — el estado de la habitación solo se usa
 //   cuando no hay ninguna reserva cubriendo la celda.
+//
+// Nota sobre el monto total: se calcula automático como noches × precio de
+// temporada baja de la tarifa elegida, cada vez que cambian las fechas o la
+// tarifa en el formulario. Si el usuario edita el campo "Monto total" a
+// mano, el cálculo automático se detiene para esa apertura del modal (para
+// no pisar un valor que alguien ajustó a propósito, ej. un descuento).
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -183,6 +189,15 @@ function escaparHTML(texto) {
   return div.innerHTML;
 }
 
+// Número de noches entre dos fechas 'YYYY-MM-DD'. Ambas se interpretan en
+// UTC (comportamiento estándar al pasarle a `new Date()` un string sin hora),
+// así que la resta en milisegundos no se ve afectada por horario de verano.
+function calcularNoches(checkinISO, checkoutISO) {
+  if (!checkinISO || !checkoutISO) return 0;
+  const ms = new Date(checkoutISO) - new Date(checkinISO);
+  return Math.round(ms / (1000 * 60 * 60 * 24));
+}
+
 async function abrirModalReserva(container, reserva, prellenado) {
   const editando = Boolean(reserva);
   const [{ data: habitaciones }, { data: tarifas }] = await Promise.all([
@@ -252,6 +267,7 @@ async function abrirModalReserva(container, reserva, prellenado) {
             <input type="number" name="monto_total" step="1000" value="${editando ? reserva.monto_total ?? '' : ''}" />
           </label>
         </div>
+        <p id="monto-auto-hint" class="mensaje-vacio" style="font-size:0.78rem; margin-top:0.3rem;">El monto total se calcula solo (noches × tarifa) al elegir tarifa y fechas. Si lo editas a mano, dejamos de tocarlo.</p>
         <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
           Comentarios
           <textarea name="comentarios" rows="2" style="padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit;">${editando ? escaparHTML(reserva.comentarios || '') : ''}</textarea>
@@ -268,6 +284,35 @@ async function abrirModalReserva(container, reserva, prellenado) {
     </div>
   `;
   document.body.appendChild(overlay);
+
+  // --- Cálculo automático del monto total (noches × tarifa) ---
+  const selectTarifa = overlay.querySelector('select[name="tarifa_id"]');
+  const inputCheckin = overlay.querySelector('input[name="fecha_checkin"]');
+  const inputCheckout = overlay.querySelector('input[name="fecha_checkout"]');
+  const inputMonto = overlay.querySelector('input[name="monto_total"]');
+
+  let montoEditadoManualmente = false;
+  inputMonto.addEventListener('input', () => {
+    montoEditadoManualmente = true;
+  });
+
+  function recalcularMontoAutomatico() {
+    if (montoEditadoManualmente) return;
+    const tarifa = (tarifas || []).find((t) => t.id === Number(selectTarifa.value));
+    const noches = calcularNoches(inputCheckin.value, inputCheckout.value);
+    if (!tarifa || noches <= 0) return;
+    inputMonto.value = noches * Number(tarifa.precio_temporada_baja);
+  }
+
+  selectTarifa.addEventListener('change', recalcularMontoAutomatico);
+  inputCheckin.addEventListener('change', recalcularMontoAutomatico);
+  inputCheckout.addEventListener('change', recalcularMontoAutomatico);
+
+  // Si al abrir el modal ya hay tarifa Y fechas (ej. reabriendo una reserva
+  // existente sin monto guardado), calculamos una vez de entrada.
+  if (!editando || !reserva.monto_total) {
+    recalcularMontoAutomatico();
+  }
 
   overlay.querySelector('#btn-cancelar-reserva').addEventListener('click', () => overlay.remove());
   overlay.addEventListener('click', (e) => {
