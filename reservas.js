@@ -282,6 +282,27 @@ async function abrirModalReserva(container, reserva, prellenado) {
       mostrarToast(`Error guardando: ${error.message}`, 'error');
       return;
     }
+
+    // --- Ficha de huésped (histórico) ---
+    // Si la reserva trae número de documento, también alimenta `huespedes`
+    // (contacto, no preferencias/alergias/observaciones) para que el
+    // módulo Huéspedes muestre a quienes tienen reserva, no solo a quienes
+    // ya hicieron check-in. Ver el mismo patrón en recepcion.js.
+    if (payload.huesped_documento) {
+      const { error: errHuesped } = await supabase.from('huespedes').upsert(
+        {
+          numero_documento: payload.huesped_documento,
+          nombre: payload.huesped_nombre,
+          telefono: payload.huesped_telefono,
+          actualizado_en: new Date().toISOString(),
+        },
+        { onConflict: 'numero_documento' }
+      );
+      if (errHuesped) {
+        mostrarToast(`Reserva guardada, pero no se pudo actualizar la ficha del huésped: ${errHuesped.message}`, 'error');
+      }
+    }
+
     mostrarToast(editando ? 'Reserva actualizada.' : 'Reserva creada.', 'exito');
     overlay.remove();
     await cargarCalendario(container);
