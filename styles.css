@@ -607,5 +607,24 @@ h3 {
 .celda-estado-cancelada { background: rgba(211, 47, 47, 0.1); color: var(--color-rojo-oscuro); text-decoration: line-through; }
 .celda-estado-no_show { background: rgba(211, 47, 47, 0.2); color: var(--color-rojo-oscuro); font-weight: 700; }
 
+/* Habitación bloqueada / mantenimiento / fuera de servicio: no clickeable,
+   se muestra igual en todas las fechas visibles porque es un estado que
+   dura hasta que alguien lo revierta manualmente, no una fecha puntual. */
+.celda-habitacion-bloqueada {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 70px;
+  border-radius: 4px;
+  padding: 0.3rem 0.3rem;
+  font-size: 0.66rem;
+  font-weight: 600;
+  cursor: not-allowed;
+  white-space: nowrap;
+}
+.celda-habitacion-bloqueada.mantenimiento { background: rgba(107, 107, 107, 0.14); color: var(--color-texto-suave); }
+.celda-habitacion-bloqueada.bloqueada { background: rgba(26, 26, 26, 0.12); color: var(--color-negro); }
+.celda-habitacion-bloqueada.fuera_servicio { background: rgba(211, 47, 47, 0.22); color: var(--color-rojo-oscuro); }
+
 .tabla-pagos-reserva { font-size: 0.85rem; }
 .tabla-pagos-reserva th, .tabla-pagos-reserva td { padding: 0.4rem 0.5rem; }
