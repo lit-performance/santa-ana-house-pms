@@ -1,66 +1,41 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Santa Ana House 21</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
-    rel="stylesheet"
-  />
-  <link rel="stylesheet" href="assets/css/styles.css" />
-</head>
-<body>
+// router.js
+//
+// Router central. Solo itera lo que hay en modules-registry — nunca importa
+// ni referencia un módulo por nombre. Agregar un módulo nuevo no requiere
+// tocar este archivo.
 
-  <!-- ============ PANTALLA DE LOGIN ============ -->
-  <div id="pantalla-login" class="pantalla">
-    <div class="login-card">
-      <img src="assets/img/logo.png" alt="Santa Ana House 21" class="logo-login" onerror="this.style.display='none'" />
-      <h1 class="login-titulo">Santa Ana House 21</h1>
-      <p>Ingresa con tu correo y contraseña asignados por el hotel.</p>
-      <form id="form-login" class="form-login">
-        <label>
-          Correo
-          <input type="email" id="login-email" required autocomplete="username" />
-        </label>
-        <label>
-          Contraseña
-          <input type="password" id="login-password" required autocomplete="current-password" />
-        </label>
-        <p id="error-login" class="error-login oculto"></p>
-        <button type="submit" id="btn-login" class="btn btn-primario">Ingresar</button>
-      </form>
-    </div>
-  </div>
+import { getModulesForRole, getModuleById } from './modules-registry.js';
 
-  <!-- ============ PANTALLA PRINCIPAL DE LA APP ============ -->
-  <div id="pantalla-app" class="pantalla oculto">
+let contenedor = null;
+let moduloActivoId = null;
 
-    <header class="app-header">
-      <div class="app-header-top">
-        <div class="usuario-info">
-          <span id="nombre-usuario-activo"></span>
-          <button id="btn-cerrar-sesion" class="btn-cerrar-sesion">Cerrar sesión</button>
-        </div>
-        <img src="assets/img/logo.png" alt="Santa Ana House 21" class="logo-header" onerror="this.style.display='none'" />
-      </div>
+export function initRouter(selectorContenedor) {
+  contenedor = document.querySelector(selectorContenedor);
+  if (!contenedor) {
+    throw new Error(`No se encontró el contenedor "${selectorContenedor}" en el DOM.`);
+  }
+}
 
-      <!-- Pestañas de primer nivel (secciones) + una segunda fila que
-           muestra solo las subpestañas de la sección activa. -->
-      <nav id="tabs-nav" class="tabs-nav"></nav>
-      <nav id="tabs-nav-sub" class="tabs-nav tabs-nav-sub oculto"></nav>
-    </header>
+export function renderModulo(id, rol) {
+  const modulo = getModuleById(id);
+  if (!modulo || !modulo.roles.includes(rol)) {
+    contenedor.innerHTML = '<p class="mensaje-vacio">No tienes acceso a este módulo.</p>';
+    return;
+  }
+  moduloActivoId = id;
+  contenedor.innerHTML = '';
+  modulo.render(contenedor);
+}
 
-    <main id="main-content" class="main-content"></main>
+export function renderPrimerModuloDisponible(rol) {
+  const disponibles = getModulesForRole(rol);
+  if (disponibles.length === 0) {
+    contenedor.innerHTML = '<p class="mensaje-vacio">No tienes módulos asignados. Contacta a un administrador.</p>';
+    return;
+  }
+  renderModulo(disponibles[0].id, rol);
+}
 
-  </div>
-
-  <div id="toast-container" class="toast-container"></div>
-
-  <!-- Único punto de entrada de JS. Toda la lógica vive en core/ y modules/. -->
-  <script type="module" src="core/app.js"></script>
-
-</body>
-</html>
+export function getModuloActivoId() {
+  return moduloActivoId;
+}
