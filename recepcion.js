@@ -17,11 +17,24 @@
 // numero_documento). Esto es lo que hace que el calendario de Reservas,
 // las tarjetas de Inicio y el módulo Huéspedes reflejen la ocupación e
 // historial real sin importar por dónde entró el huésped.
+//
+// Nota sobre liquidación al check-out: el botón "Check-out" ya NO libera
+// la habitación directo — abre un modal que muestra el saldo pendiente
+// (monto total de la reserva − abonos ya registrados en reservas_pagos,
+// calculado con el helper compartido cuentas.js) y permite registrar el
+// pago final antes de liberar la habitación. Si queda saldo pendiente
+// después del pago, se pide confirmación explícita antes de continuar —
+// el checkout no se bloquea, pero no se puede hacer "sin darse cuenta"
+// de que quedó plata por cobrar. Ese pago final se registra en
+// reservas_pagos igual que un abono normal, así que aparece automático
+// en Caja.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
-import { mostrarToast } from './ui.js';
+import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatFechaHora, toISODate, addDays } from './dates.js';
+import { formatCOP } from './currency.js';
+import { calcularHabitacionesEnUso } from './cuentas.js';
 
 const TIPOS_DOCUMENTO = ['Cédula de ciudadanía', 'Cédula de extranjería', 'Pasaporte', 'Tarjeta de identidad', 'PEP', 'Otro'];
 const METODOS_PAGO = ['Efectivo', 'Transferencia', 'Tarjeta', 'Otro'];
@@ -48,18 +61,16 @@ async function vistaLista(container) {
 
 async function cargarCheckinsActivos(container) {
   const wrap = container.querySelector('#checkins-wrap');
-  const { data: checkins, error } = await supabase
-    .from('recepcion_checkins')
-    .select('*, habitaciones(numero, nombre)')
-    .is('check_out_en', null)
-    .order('hora_ingreso', { ascending: false });
 
-  if (error) {
+  let items = [];
+  try {
+    items = await calcularHabitacionesEnUso();
+  } catch (error) {
     wrap.innerHTML = `<p class="mensaje-vacio">Error cargando huéspedes: ${error.message}</p>`;
     return;
   }
 
-  if (!checkins || checkins.length === 0) {
+  if (items.length === 0) {
     wrap.innerHTML = '<p class="mensaje-vacio">No hay huéspedes hospedados actualmente.</p>';
     return;
   }
@@ -73,20 +84,22 @@ async function cargarCheckinsActivos(container) {
           <th>Documento</th>
           <th>Hora ingreso</th>
           <th>Noches</th>
+          <th>Saldo pendiente</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
-        ${checkins
+        ${items
           .map(
-            (c) => `
-          <tr data-id="${c.id}">
-            <td>${c.habitaciones ? `${c.habitaciones.numero} — ${c.habitaciones.nombre}` : '—'}</td>
-            <td>${escaparHTML(c.nombre)}</td>
-            <td>${c.tipo_documento || '—'} ${c.numero_documento || ''}</td>
-            <td>${formatFechaHora(c.hora_ingreso)}</td>
-            <td>${c.cantidad_noches ?? '—'}</td>
-            <td><button type="button" class="btn-editar btn-checkout" data-id="${c.id}" data-habitacion="${c.habitacion_id}" data-reserva="${c.reserva_id ?? ''}">Check-out</button></td>
+            (i) => `
+          <tr data-checkin-id="${i.checkinId}">
+            <td>${i.habitacionLabel}</td>
+            <td>${escaparHTML(i.huespedNombre)}</td>
+            <td>${i.tipoDocumento || '—'} ${i.numeroDocumento || ''}</td>
+            <td>${formatFechaHora(i.horaIngreso)}</td>
+            <td>${i.cantidadNoches ?? '—'}</td>
+            <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(i.saldoPendiente)}</td>
+            <td><button type="button" class="btn-editar btn-checkout" data-checkin-id="${i.checkinId}">Check-out</button></td>
           </tr>
         `
           )
@@ -96,19 +109,103 @@ async function cargarCheckinsActivos(container) {
   `;
 
   wrap.querySelectorAll('.btn-checkout').forEach((btn) => {
-    btn.addEventListener('click', () => hacerCheckout(container, btn.dataset));
+    btn.addEventListener('click', () => {
+      const item = items.find((i) => i.checkinId === Number(btn.dataset.checkinId));
+      if (item) abrirModalLiquidacion(container, item);
+    });
   });
 }
 
-async function hacerCheckout(container, dataset) {
-  const id = Number(dataset.id);
-  const habitacionId = Number(dataset.habitacion);
-  const reservaId = dataset.reserva ? Number(dataset.reserva) : null;
+async function abrirModalLiquidacion(container, item) {
+  const saldoMostrado = Math.max(0, item.saldoPendiente);
 
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja">
+      <h3>Liquidar y hacer check-out</h3>
+      <form id="form-liquidacion">
+        <div class="modal-contenido">
+          <p class="mensaje-vacio">${escaparHTML(item.huespedNombre)} — ${item.habitacionLabel}</p>
+          <table class="tabla-simple" style="margin-top:0.5rem;">
+            <tbody>
+              <tr><td>Monto total de la estadía</td><td class="monto">${formatCOP(item.montoTotal)}</td></tr>
+              <tr><td>Abonado hasta ahora</td><td class="monto">${formatCOP(item.totalAbonado)}</td></tr>
+              <tr><td><strong>Saldo pendiente</strong></td><td class="monto" style="color:${saldoMostrado > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(saldoMostrado)}</td></tr>
+            </tbody>
+          </table>
+          <div class="form-grid" style="margin-top:1rem;">
+            <label>Pago que recibes ahora
+              <input type="number" name="pago_final" step="1000" min="0" value="${saldoMostrado}" />
+            </label>
+            <label>Método de pago
+              <select name="metodo_pago">
+                <option value="Efectivo">Efectivo</option>
+                <option value="Transferencia">Transferencia</option>
+                <option value="Tarjeta">Tarjeta</option>
+                <option value="Otro">Otro</option>
+              </select>
+            </label>
+          </div>
+          <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">Si el pago es menor al saldo pendiente, te pedimos confirmar antes de liberar la habitación — el checkout no se bloquea, pero el saldo queda registrado como pendiente de cobro.</p>
+        </div>
+        <div class="modal-acciones">
+          <button type="button" class="btn btn-secundario" id="btn-cancelar-liquidacion">Cancelar</button>
+          <button type="submit" class="btn btn-primario">Confirmar y hacer check-out</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#btn-cancelar-liquidacion').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  overlay.querySelector('#form-liquidacion').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const pagoFinal = form.get('pago_final') ? Number(form.get('pago_final')) : 0;
+    const metodoPago = form.get('metodo_pago');
+    const saldoRestante = item.saldoPendiente - pagoFinal;
+
+    if (saldoRestante > 0) {
+      const ok = await mostrarConfirmacion({
+        titulo: 'Saldo pendiente al hacer check-out',
+        contenidoHTML: `Después de este pago queda un saldo pendiente de <strong>${formatCOP(saldoRestante)}</strong> para <strong>${escaparHTML(item.huespedNombre)}</strong>. ¿Confirmas el check-out de todas formas? El saldo queda registrado como pendiente de cobro.`,
+        textoConfirmar: 'Sí, hacer check-out con saldo pendiente',
+      });
+      if (!ok) return;
+    }
+
+    if (pagoFinal > 0) {
+      if (!item.reservaId) {
+        mostrarToast('No hay una reserva vinculada a este check-in; no se pudo registrar el pago. Se hará el check-out sin registrarlo.', 'error');
+      } else {
+        const { error: errPago } = await supabase.from('reservas_pagos').insert({
+          reserva_id: item.reservaId,
+          monto: pagoFinal,
+          metodo_pago: metodoPago,
+          comentarios: 'Pago de liquidación al check-out.',
+        });
+        if (errPago) {
+          mostrarToast(`Error registrando el pago: ${errPago.message}`, 'error');
+          return;
+        }
+      }
+    }
+
+    await ejecutarCheckout(container, item);
+    overlay.remove();
+  });
+}
+
+async function ejecutarCheckout(container, item) {
   const { error: errCheckin } = await supabase
     .from('recepcion_checkins')
     .update({ check_out_en: new Date().toISOString() })
-    .eq('id', id);
+    .eq('id', item.checkinId);
 
   if (errCheckin) {
     mostrarToast(`Error en check-out: ${errCheckin.message}`, 'error');
@@ -116,15 +213,15 @@ async function hacerCheckout(container, dataset) {
   }
 
   const { error: errEstado } = await supabase.rpc('cambiar_estado_habitacion', {
-    p_habitacion_id: habitacionId,
+    p_habitacion_id: item.habitacionId,
     p_estado: 'limpieza',
   });
   if (errEstado) {
     mostrarToast(`Check-out guardado, pero no se pudo actualizar el estado de la habitación: ${errEstado.message}`, 'error');
   }
 
-  if (reservaId) {
-    await supabase.from('reservas').update({ estado: 'check_out' }).eq('id', reservaId);
+  if (item.reservaId) {
+    await supabase.from('reservas').update({ estado: 'check_out' }).eq('id', item.reservaId);
   }
 
   mostrarToast('Check-out registrado. La habitación quedó en limpieza.', 'exito');
