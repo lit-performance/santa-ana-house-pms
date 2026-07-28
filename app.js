@@ -1,24 +1,82 @@
-// core/helpers/badges.js
+// app.js
 //
-// Traduce el estado interno (snake_case en BD) a la etiqueta visible en
-// español y a la clase CSS del badge correspondiente. Ningún módulo debe
-// reimplementar este mapeo — todos importan de aquí.
+// Único punto de entrada de JS y única "lista central" de módulos: cada
+// módulo nuevo se agrega aquí con una línea de import (ver ARCHITECTURE.md).
 
-const ESTADOS_HABITACION = {
-  disponible: { label: 'Disponible', clase: 'badge-disponible' },
-  ocupada: { label: 'Ocupada', clase: 'badge-ocupada' },
-  limpieza: { label: 'En limpieza', clase: 'badge-limpieza' },
-  inspeccion: { label: 'Inspección', clase: 'badge-inspeccion' },
-  mantenimiento: { label: 'Mantenimiento', clase: 'badge-mantenimiento' },
-  bloqueada: { label: 'Bloqueada', clase: 'badge-bloqueada' },
-  fuera_servicio: { label: 'Fuera de servicio', clase: 'badge-fuera-servicio' },
-};
+import { iniciarSesion, cerrarSesion, restaurarSesion } from './auth.js';
+import { initRouter, renderPrimerModuloDisponible } from './router.js';
+import { initTabs } from './ui.js';
 
-export function badgeEstadoHabitacion(estado) {
-  const info = ESTADOS_HABITACION[estado] || { label: estado, clase: 'badge-inactivo' };
-  return `<span class="badge ${info.clase}">${info.label}</span>`;
+// --- Módulos registrados (agregar una línea por módulo nuevo) ---
+import './config-habitaciones.js';
+import './config-tipos.js';
+import './config-tarifas.js';
+// import './dashboard.js';
+// import './reservas.js';
+// import './recepcion.js';
+// import './huespedes.js';
+// import './housekeeping.js';
+// import './caja.js';
+
+const pantallaLogin = document.getElementById('pantalla-login');
+const pantallaApp = document.getElementById('pantalla-app');
+const formLogin = document.getElementById('form-login');
+const errorLogin = document.getElementById('error-login');
+const btnLogin = document.getElementById('btn-login');
+
+initRouter('#main-content');
+
+async function mostrarApp(usuario) {
+  pantallaLogin.classList.add('oculto');
+  pantallaApp.classList.remove('oculto');
+  initTabs({
+    rol: usuario.rol,
+    nombreUsuario: usuario.nombre,
+    onLogout: async () => {
+      await cerrarSesion();
+      location.reload();
+    },
+  });
+  renderPrimerModuloDisponible(usuario.rol);
 }
 
-export function opcionesEstadoHabitacion() {
-  return Object.entries(ESTADOS_HABITACION).map(([valor, info]) => ({ valor, label: info.label }));
+function mostrarLogin(mensajeError) {
+  pantallaApp.classList.add('oculto');
+  pantallaLogin.classList.remove('oculto');
+  if (mensajeError) {
+    errorLogin.textContent = mensajeError;
+    errorLogin.classList.remove('oculto');
+  } else {
+    errorLogin.classList.add('oculto');
+  }
 }
+
+formLogin.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  errorLogin.classList.add('oculto');
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  btnLogin.disabled = true;
+  btnLogin.textContent = 'Ingresando…';
+  try {
+    const usuario = await iniciarSesion(email, password);
+    await mostrarApp(usuario);
+  } catch (err) {
+    mostrarLogin(err.message || 'Correo o contraseña incorrectos.');
+  } finally {
+    btnLogin.disabled = false;
+    btnLogin.textContent = 'Ingresar';
+  }
+});
+
+// Al cargar la página, si ya hay una sesión activa (recargó la pestaña), la
+// restauramos sin pedir login de nuevo.
+(async function bootstrap() {
+  try {
+    const usuario = await restaurarSesion();
+    if (usuario) await mostrarApp(usuario);
+    else mostrarLogin();
+  } catch {
+    mostrarLogin();
+  }
+})();
