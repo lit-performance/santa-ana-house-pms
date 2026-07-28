@@ -20,6 +20,8 @@ import './housekeeping.js';
 import './caja.js';
 import './indicadores.js';
 import './minibar.js';
+import './inventario.js';
+import './proveedores.js';
 
 // Pestañas "próximamente" para el resto del alcance (demo al cliente).
 // A medida que cada módulo se construya de verdad, se quita su entrada de
