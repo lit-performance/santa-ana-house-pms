@@ -8,6 +8,13 @@
 // módulos que ya están listos (Dashboard, Configuración, Reservas,
 // Recepción, Huéspedes).
 //
+// A partir de hoy, los módulos pendientes que no se usan a diario están
+// agrupados en 4 pestañas contenedoras (Inventario, Finanzas, Análisis,
+// Administración) usando el mismo mecanismo parentId que ya usa
+// Configuración con sus subpestañas — así el menú principal no crece sin
+// control. Housekeeping y Caja quedan sueltas arriba porque el staff las
+// usa todos los días.
+//
 // No tocan la base de datos — son solo vista, sin tablas ni RLS propias.
 
 import { registerModule } from './modules-registry.js';
@@ -28,19 +35,113 @@ function vistaProximamente({ titulo, descripcion, features }) {
   };
 }
 
+function vistaGrupo({ titulo, descripcion, hijos }) {
+  return async function render(container) {
+    container.innerHTML = `
+      <h2>${titulo}</h2>
+      <p style="color:var(--color-texto-suave); margin-bottom:1.25rem;">${descripcion}</p>
+      <div class="grid-dos-columnas">
+        ${hijos
+          .map(
+            (h) => `
+          <div class="tarjeta">
+            <h3>${h.icono} ${h.label}</h3>
+            <p class="mensaje-vacio">${h.resumen}</p>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+      <p class="mensaje-vacio" style="margin-top:1rem;">Usa las subpestañas de arriba para ver el detalle de cada una.</p>
+    `;
+  };
+}
+
+// --- Pestañas contenedoras (agrupan las subpestañas de abajo) ---
+const GRUPOS = [
+  {
+    id: 'grupo-inventario',
+    label: 'Inventario',
+    icono: '📦',
+    roles: ['propietario', 'administrador', 'recepcionista', 'bodega', 'contador'],
+    titulo: 'Inventario',
+    descripcion: 'Minibar, existencias, compras a proveedores y el directorio de proveedores del hotel.',
+    hijos: [
+      { icono: '🥤', label: 'Minibar', resumen: 'Control de consumo y cargo a la cuenta del huésped.' },
+      { icono: '📦', label: 'Inventario', resumen: 'Insumos y suministros del hotel, existencias mínimas.' },
+      { icono: '🛒', label: 'Compras', resumen: 'Órdenes de compra y seguimiento de pedidos.' },
+      { icono: '🚚', label: 'Proveedores', resumen: 'Directorio y condiciones comerciales.' },
+    ],
+  },
+  {
+    id: 'grupo-finanzas',
+    label: 'Finanzas',
+    icono: '🏦',
+    roles: ['propietario', 'administrador', 'contador'],
+    titulo: 'Finanzas',
+    descripcion: 'Facturación, contabilidad y gastos operativos. Caja queda aparte porque Recepción la usa todos los días.',
+    hijos: [
+      { icono: '🧾', label: 'Facturación', resumen: 'Facturas o documentos equivalentes por cada estadía.' },
+      { icono: '📊', label: 'Contabilidad', resumen: 'Consolidado de ingresos y gastos para el contador.' },
+      { icono: '💸', label: 'Gastos', resumen: 'Registro y categorización de gastos operativos.' },
+    ],
+  },
+  {
+    id: 'grupo-analisis',
+    label: 'Análisis',
+    icono: '📈',
+    roles: ['propietario', 'administrador', 'auditor'],
+    titulo: 'Análisis',
+    descripcion: 'Reportes, indicadores, estadísticas históricas y auditoría del sistema.',
+    hijos: [
+      { icono: '📈', label: 'Reportes', resumen: 'Reportes operativos exportables a Excel/PDF.' },
+      { icono: '📌', label: 'Indicadores', resumen: 'Ocupación, ADR, RevPAR y comparativos.' },
+      { icono: '📉', label: 'Estadísticas', resumen: 'Tendencias históricas de ocupación e ingresos.' },
+      { icono: '🔍', label: 'Auditoría', resumen: 'Bitácora de quién hizo qué y cuándo.' },
+    ],
+  },
+  {
+    id: 'grupo-administracion',
+    label: 'Administración',
+    icono: '⚙️',
+    roles: ['propietario', 'administrador', 'housekeeping'],
+    titulo: 'Administración',
+    descripcion: 'Usuarios, documentos legales, mantenimiento, CRM e inteligencia artificial.',
+    hijos: [
+      { icono: '👤', label: 'Usuarios', resumen: 'Cuentas del staff y sus roles.' },
+      { icono: '📁', label: 'Documentos', resumen: 'RNT, pólizas, contratos, permisos.' },
+      { icono: '🔧', label: 'Mantenimiento', resumen: 'Órdenes de mantenimiento preventivo y correctivo.' },
+      { icono: '🤝', label: 'CRM', resumen: 'Seguimiento comercial de huéspedes frecuentes y agencias.' },
+      { icono: '🤖', label: 'IA', resumen: 'Recomendaciones y automatización de tareas repetitivas.' },
+    ],
+  },
+];
+
+GRUPOS.forEach((grupo) => {
+  registerModule({
+    id: grupo.id,
+    label: grupo.label,
+    icono: grupo.icono,
+    roles: grupo.roles,
+    render: vistaGrupo(grupo),
+  });
+});
+
+// --- Módulos "próximamente" (Caja suelta arriba; el resto dentro de un grupo) ---
 const MODULOS_PENDIENTES = [
   {
-    id: 'housekeeping',
-    label: 'Housekeeping',
-    icono: '🧹',
-    roles: ['propietario', 'administrador', 'housekeeping'],
-    titulo: 'Housekeeping',
-    descripcion: 'Control del estado de limpieza de cada habitación, coordinado con Recepción y el estado de habitaciones ya existente.',
+    id: 'caja',
+    label: 'Caja',
+    icono: '💰',
+    roles: ['propietario', 'administrador', 'recepcionista'],
+    parentId: null,
+    titulo: 'Caja',
+    descripcion: 'Apertura, movimientos y cierre de caja del turno, con arqueo automático.',
     features: [
-      'Cambio de estado por habitación: disponible, en limpieza, inspección, mantenimiento, bloqueada, fuera de servicio',
-      'Hora de inicio/fin de limpieza y empleado asignado',
-      'Observaciones y fotografía de la habitación',
-      'Reutiliza la misma función cambiar_estado_habitacion() ya construida',
+      'Apertura de caja con base inicial',
+      'Movimientos: ingresos, egresos, pagos y abonos de reservas',
+      'Cierre con arqueo y diferencias',
+      'Cierres diario, semanal, mensual y anual',
     ],
   },
   {
@@ -48,13 +149,14 @@ const MODULOS_PENDIENTES = [
     label: 'Minibar',
     icono: '🥤',
     roles: ['propietario', 'administrador', 'recepcionista', 'bodega'],
+    parentId: 'grupo-inventario',
     titulo: 'Minibar',
     descripcion: 'Control de consumo del minibar por habitación y su cargo a la cuenta del huésped.',
     features: [
-      'Inventario de minibar por habitación',
+      'Catálogo de productos con precio (ya tenemos la lista de precios real de Santa Ana)',
+      'Inventario estándar por habitación (ya tenemos el checklist real por repisa/nevera)',
       'Registro de consumo en cada check-out',
       'Cargo automático al total de la estadía',
-      'Alertas de reposición',
     ],
   },
   {
@@ -62,6 +164,7 @@ const MODULOS_PENDIENTES = [
     label: 'Inventario',
     icono: '📦',
     roles: ['propietario', 'administrador', 'bodega'],
+    parentId: 'grupo-inventario',
     titulo: 'Inventario',
     descripcion: 'Control de insumos y suministros del hotel (lencería, aseo, papelería, amenities).',
     features: [
@@ -75,6 +178,7 @@ const MODULOS_PENDIENTES = [
     label: 'Compras',
     icono: '🛒',
     roles: ['propietario', 'administrador', 'bodega'],
+    parentId: 'grupo-inventario',
     titulo: 'Compras',
     descripcion: 'Órdenes de compra a proveedores y seguimiento de la mercancía pedida.',
     features: [
@@ -88,6 +192,7 @@ const MODULOS_PENDIENTES = [
     label: 'Proveedores',
     icono: '🚚',
     roles: ['propietario', 'administrador', 'bodega', 'contador'],
+    parentId: 'grupo-inventario',
     titulo: 'Proveedores',
     descripcion: 'Directorio de proveedores del hotel con su historial comercial.',
     features: [
@@ -97,37 +202,11 @@ const MODULOS_PENDIENTES = [
     ],
   },
   {
-    id: 'gastos',
-    label: 'Gastos',
-    icono: '💸',
-    roles: ['propietario', 'administrador', 'contador'],
-    titulo: 'Gastos',
-    descripcion: 'Registro de los gastos operativos del hotel, categorizados para reportes y contabilidad.',
-    features: [
-      'Registro de gastos por categoría',
-      'Adjuntar soporte/factura',
-      'Vínculo con Caja y Contabilidad',
-    ],
-  },
-  {
-    id: 'caja',
-    label: 'Caja',
-    icono: '💰',
-    roles: ['propietario', 'administrador', 'recepcionista'],
-    titulo: 'Caja',
-    descripcion: 'Apertura, movimientos y cierre de caja del turno, con arqueo automático.',
-    features: [
-      'Apertura de caja con base inicial',
-      'Movimientos: ingresos, egresos, pagos y abonos de reservas',
-      'Cierre con arqueo y diferencias',
-      'Cierres diario, semanal, mensual y anual',
-    ],
-  },
-  {
     id: 'facturacion',
     label: 'Facturación',
     icono: '🧾',
     roles: ['propietario', 'administrador', 'contador'],
+    parentId: 'grupo-finanzas',
     titulo: 'Facturación',
     descripcion: 'Generación de facturas o documentos equivalentes por cada estadía.',
     features: [
@@ -141,6 +220,7 @@ const MODULOS_PENDIENTES = [
     label: 'Contabilidad',
     icono: '📊',
     roles: ['propietario', 'administrador', 'contador'],
+    parentId: 'grupo-finanzas',
     titulo: 'Contabilidad',
     descripcion: 'Consolidación de ingresos y gastos del hotel para el contador.',
     features: [
@@ -150,10 +230,25 @@ const MODULOS_PENDIENTES = [
     ],
   },
   {
+    id: 'gastos',
+    label: 'Gastos',
+    icono: '💸',
+    roles: ['propietario', 'administrador', 'contador'],
+    parentId: 'grupo-finanzas',
+    titulo: 'Gastos',
+    descripcion: 'Registro de los gastos operativos del hotel, categorizados para reportes y contabilidad.',
+    features: [
+      'Registro de gastos por categoría',
+      'Adjuntar soporte/factura',
+      'Vínculo con Caja y Contabilidad',
+    ],
+  },
+  {
     id: 'reportes',
     label: 'Reportes',
     icono: '📈',
     roles: ['propietario', 'administrador', 'auditor'],
+    parentId: 'grupo-analisis',
     titulo: 'Reportes',
     descripcion: 'Reportes operativos exportables (ocupación, ingresos, gastos, huéspedes).',
     features: [
@@ -166,6 +261,7 @@ const MODULOS_PENDIENTES = [
     label: 'Indicadores',
     icono: '📌',
     roles: ['propietario', 'administrador'],
+    parentId: 'grupo-analisis',
     titulo: 'Indicadores',
     descripcion: 'KPIs clave del negocio hotelero.',
     features: [
@@ -174,10 +270,24 @@ const MODULOS_PENDIENTES = [
     ],
   },
   {
+    id: 'estadisticas',
+    label: 'Estadísticas',
+    icono: '📉',
+    roles: ['propietario', 'administrador'],
+    parentId: 'grupo-analisis',
+    titulo: 'Estadísticas',
+    descripcion: 'Tendencias históricas de ocupación, ingresos y comportamiento de huéspedes.',
+    features: [
+      'Gráficas de ocupación e ingresos en el tiempo',
+      'Estacionalidad y comparativos año a año',
+    ],
+  },
+  {
     id: 'auditoria',
     label: 'Auditoría',
     icono: '🔍',
     roles: ['propietario', 'administrador', 'auditor'],
+    parentId: 'grupo-analisis',
     titulo: 'Auditoría',
     descripcion: 'Registro de quién hizo qué y cuándo sobre las acciones sensibles del sistema (cambios de estado, ediciones, eliminaciones).',
     features: [
@@ -190,6 +300,7 @@ const MODULOS_PENDIENTES = [
     label: 'Usuarios',
     icono: '👤',
     roles: ['propietario', 'administrador'],
+    parentId: 'grupo-administracion',
     titulo: 'Usuarios',
     descripcion: 'Gestión de las cuentas del staff y sus roles dentro del sistema.',
     features: [
@@ -202,6 +313,7 @@ const MODULOS_PENDIENTES = [
     label: 'CRM',
     icono: '🤝',
     roles: ['propietario', 'administrador'],
+    parentId: 'grupo-administracion',
     titulo: 'CRM',
     descripcion: 'Seguimiento comercial de huéspedes corporativos, agencias y clientes frecuentes.',
     features: [
@@ -214,6 +326,7 @@ const MODULOS_PENDIENTES = [
     label: 'Mantenimiento',
     icono: '🔧',
     roles: ['propietario', 'administrador', 'housekeeping'],
+    parentId: 'grupo-administracion',
     titulo: 'Mantenimiento',
     descripcion: 'Órdenes de mantenimiento preventivo y correctivo por habitación o área común.',
     features: [
@@ -226,6 +339,7 @@ const MODULOS_PENDIENTES = [
     label: 'Documentos',
     icono: '📁',
     roles: ['propietario', 'administrador'],
+    parentId: 'grupo-administracion',
     titulo: 'Documentos',
     descripcion: 'Almacenamiento de documentos legales y operativos del hotel.',
     features: [
@@ -234,22 +348,11 @@ const MODULOS_PENDIENTES = [
     ],
   },
   {
-    id: 'estadisticas',
-    label: 'Estadísticas',
-    icono: '📉',
-    roles: ['propietario', 'administrador'],
-    titulo: 'Estadísticas',
-    descripcion: 'Tendencias históricas de ocupación, ingresos y comportamiento de huéspedes.',
-    features: [
-      'Gráficas de ocupación e ingresos en el tiempo',
-      'Estacionalidad y comparativos año a año',
-    ],
-  },
-  {
     id: 'ia',
     label: 'IA',
     icono: '🤖',
     roles: ['propietario', 'administrador'],
+    parentId: 'grupo-administracion',
     titulo: 'Inteligencia Artificial',
     descripcion: 'Asistente para recomendaciones y automatización de tareas repetitivas dentro del sistema.',
     features: [
@@ -265,6 +368,7 @@ MODULOS_PENDIENTES.forEach((modulo) => {
     label: modulo.label,
     icono: modulo.icono,
     roles: modulo.roles,
+    parentId: modulo.parentId,
     render: vistaProximamente(modulo),
   });
 });
