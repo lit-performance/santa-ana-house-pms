@@ -319,4 +319,82 @@ async function vistaFormulario(container) {
 
     container.querySelector('input[name="nombre"]').value = reserva.huesped_nombre || '';
     container.querySelector('input[name="numero_documento"]').value = reserva.huesped_documento || '';
-    container.querySelector('input
+    container.querySelector('input[name="celular"]').value = reserva.huesped_telefono || '';
+    container.querySelector('#select-habitacion').value = reserva.habitacion_id;
+    if (reserva.tarifa_id) container.querySelector('#select-tarifa').value = reserva.tarifa_id;
+
+    const noches = Math.round((new Date(reserva.fecha_checkout) - new Date(reserva.fecha_checkin)) / 86400000);
+    container.querySelector('#input-noches').value = noches > 0 ? noches : '';
+  });
+
+  container.querySelector('#btn-cancelar-checkin').addEventListener('click', () => vistaLista(container));
+
+  container.querySelector('#form-checkin').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    if (!container.querySelector('#check-habeas').checked) {
+      mostrarToast('Debes marcar el consentimiento de Habeas Data para continuar.', 'error');
+      return;
+    }
+
+    const form = new FormData(e.target);
+    const reservaId = container.querySelector('#select-reserva').value || null;
+    const hayFirma = ctx.getImageData(0, 0, canvas.width, canvas.height).data.some((v, i) => i % 4 === 3 && v !== 0);
+
+    const payload = {
+      reserva_id: reservaId ? Number(reservaId) : null,
+      habitacion_id: Number(form.get('habitacion_id')),
+      nombre: form.get('nombre').trim(),
+      tipo_documento: form.get('tipo_documento'),
+      numero_documento: form.get('numero_documento').trim(),
+      nacionalidad: form.get('nacionalidad').trim() || null,
+      fecha_nacimiento: form.get('fecha_nacimiento') || null,
+      direccion: form.get('direccion').trim() || null,
+      ciudad: form.get('ciudad').trim() || null,
+      departamento: form.get('departamento').trim() || null,
+      pais: form.get('pais').trim() || null,
+      correo: form.get('correo').trim() || null,
+      celular: form.get('celular').trim() || null,
+      empresa: form.get('empresa').trim() || null,
+      placa_vehiculo: form.get('placa_vehiculo').trim() || null,
+      acompanantes: form.get('acompanantes').trim() || null,
+      foto_documento_url: form.get('foto_documento_url').trim() || null,
+      firma_digital: hayFirma ? canvas.toDataURL('image/png') : null,
+      consentimiento_habeas_data: true,
+      observaciones: form.get('observaciones').trim() || null,
+      tarifa_id: form.get('tarifa_id') ? Number(form.get('tarifa_id')) : null,
+      cantidad_noches: form.get('cantidad_noches') ? Number(form.get('cantidad_noches')) : null,
+      metodo_pago: form.get('metodo_pago'),
+      deposito: form.get('deposito') ? Number(form.get('deposito')) : null,
+    };
+
+    const { error: errInsert } = await supabase.from('recepcion_checkins').insert(payload);
+    if (errInsert) {
+      mostrarToast(`Error registrando check-in: ${errInsert.message}`, 'error');
+      return;
+    }
+
+    const { error: errEstado } = await supabase.rpc('cambiar_estado_habitacion', {
+      p_habitacion_id: payload.habitacion_id,
+      p_estado: 'ocupada',
+    });
+    if (errEstado) {
+      mostrarToast(`Check-in guardado, pero no se pudo marcar la habitación como ocupada: ${errEstado.message}`, 'error');
+    }
+
+    if (reservaId) {
+      await supabase.from('reservas').update({ estado: 'hospedado' }).eq('id', Number(reservaId));
+    }
+
+    mostrarToast('Check-in registrado.', 'exito');
+    await vistaLista(container);
+  });
+}
+
+registerModule({
+  id: 'recepcion',
+  label: 'Recepción',
+  icono: '🛎',
+  roles: ['propietario', 'administrador', 'recepcionista'],
+  render,
+});
