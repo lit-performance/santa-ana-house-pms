@@ -1,136 +1,64 @@
-// core/ui.js
-//
-// Navegación de DOS niveles (idéntico patrón al CRM de Servicentro B&B):
-// - Fila principal (#tabs-nav): solo las secciones de primer nivel.
-// - Fila de subpestañas (#tabs-nav-sub): cambia según la sección activa —
-//   solo muestra las subpestañas de ESE módulo, nunca las de otro. Si una
-//   sección no tiene subpestañas propias, esta fila se oculta.
-//
-// El propio módulo principal aparece como el primer botón de su fila de
-// subpestañas (representa su vista "por defecto").
+-- 003_tipos_habitacion_tarifas.sql
 
-import { getModulesForRole, getSubModulesForRole } from './modules-registry.js';
-import { renderModulo } from './router.js';
+create table if not exists tipos_habitacion (
+  id serial primary key,
+  nombre text not null unique,
+  descripcion text
+);
 
-let rolActual = null;
-let navPrincipal = null;
-let navSub = null;
+alter table tipos_habitacion enable row level security;
 
-export function initTabs({ rol, nombreUsuario, onLogout }) {
-  rolActual = rol;
-  navPrincipal = document.getElementById('tabs-nav');
-  navSub = document.getElementById('tabs-nav-sub');
+create policy "tipos_habitacion_select_staff"
+  on tipos_habitacion for select
+  using (tiene_rol(array['propietario','administrador','recepcionista','auditor','housekeeping','bodega','contador']::rol_usuario[]));
 
-  const nombreEl = document.getElementById('nombre-usuario-activo');
-  const btnSalir = document.getElementById('btn-cerrar-sesion');
-  if (nombreEl) nombreEl.textContent = nombreUsuario || '';
-  if (btnSalir) btnSalir.addEventListener('click', onLogout);
+create policy "tipos_habitacion_insert_admin"
+  on tipos_habitacion for insert
+  with check (es_admin());
 
-  const principales = getModulesForRole(rol);
-  navPrincipal.innerHTML = '';
+create policy "tipos_habitacion_update_admin"
+  on tipos_habitacion for update
+  using (es_admin());
 
-  principales.forEach((modulo) => {
-    const tab = crearBotonPestana(modulo, () => seleccionarSeccion(modulo));
-    navPrincipal.appendChild(tab);
-  });
+create policy "tipos_habitacion_delete_admin"
+  on tipos_habitacion for delete
+  using (es_admin());
 
-  if (principales.length > 0) seleccionarSeccion(principales[0]);
+-- Tipos base. "Permite agregar nuevos tipos sin modificar el sistema" (Módulo 2)
+-- — se agregan filas nuevas desde Configuración → Tipos de habitación, nunca
+-- hace falta tocar código.
+insert into tipos_habitacion (nombre) values
+  ('Sencilla'), ('Doble'), ('Triple'), ('Suite')
+on conflict (nombre) do nothing;
 
-  return { marcarActivo: (id) => marcarActivoEnFila(navPrincipal, id) };
-}
+create table if not exists tarifas (
+  id serial primary key,
+  codigo text not null unique,
+  nombre text,
+  precio_temporada_baja numeric(12,2) not null,
+  precio_temporada_alta numeric(12,2) not null,
+  precio_fin_semana numeric(12,2) not null,
+  -- ⚠ 19% es un valor por defecto. El IVA de alojamiento en Colombia tiene
+  -- reglas particulares (posibles exenciones para turistas extranjeros,
+  -- etc.) — confirmar el % correcto con el contador antes de facturar.
+  iva_porcentaje numeric(5,2) not null default 19,
+  activo boolean not null default true
+);
 
-function seleccionarSeccion(modulo) {
-  renderModulo(modulo.id, rolActual);
-  marcarActivoEnFila(navPrincipal, modulo.id);
-  pintarSubNav(modulo);
-}
+alter table tarifas enable row level security;
 
-function pintarSubNav(moduloActivo) {
-  const subs = getSubModulesForRole(moduloActivo.id, rolActual);
+create policy "tarifas_select_staff"
+  on tarifas for select
+  using (tiene_rol(array['propietario','administrador','recepcionista','auditor','housekeeping','bodega','contador']::rol_usuario[]));
 
-  if (subs.length === 0) {
-    navSub.innerHTML = '';
-    navSub.classList.add('oculto');
-    return;
-  }
+create policy "tarifas_insert_admin"
+  on tarifas for insert
+  with check (es_admin());
 
-  navSub.classList.remove('oculto');
-  navSub.innerHTML = '';
+create policy "tarifas_update_admin"
+  on tarifas for update
+  using (es_admin());
 
-  const propia = crearBotonPestana(moduloActivo, () => {
-    renderModulo(moduloActivo.id, rolActual);
-    marcarActivoEnFila(navSub, moduloActivo.id);
-  });
-  propia.classList.add('activo');
-  navSub.appendChild(propia);
-
-  subs.forEach((sub) => {
-    const tab = crearBotonPestana(sub, () => {
-      renderModulo(sub.id, rolActual);
-      marcarActivoEnFila(navSub, sub.id);
-    });
-    navSub.appendChild(tab);
-  });
-}
-
-function crearBotonPestana(modulo, alHacerClic) {
-  const tab = document.createElement('button');
-  tab.type = 'button';
-  tab.className = 'tab-item';
-  tab.dataset.moduleId = modulo.id;
-  tab.innerHTML = `<span class="tab-icono">${modulo.icono}</span><span>${modulo.label}</span>`;
-  tab.addEventListener('click', alHacerClic);
-  return tab;
-}
-
-function marcarActivoEnFila(fila, id) {
-  fila.querySelectorAll('.tab-item').forEach((el) => {
-    el.classList.toggle('activo', el.dataset.moduleId === id);
-  });
-}
-
-export function mostrarToast(mensaje, tipo = 'info') {
-  const contenedor = document.getElementById('toast-container');
-  if (!contenedor) {
-    console.warn('No existe #toast-container en el DOM; mensaje:', mensaje);
-    return;
-  }
-  const toast = document.createElement('div');
-  toast.className = `toast toast-${tipo}`;
-  toast.textContent = mensaje;
-  contenedor.appendChild(toast);
-  setTimeout(() => toast.remove(), 4000);
-}
-
-/**
- * Modal de confirmación genérico y reutilizable. Devuelve una Promise<boolean>
- * que resuelve true si el usuario confirma, false si cancela.
- */
-export function mostrarConfirmacion({ titulo, contenidoHTML, textoConfirmar = 'Confirmar', textoCancelar = 'Cancelar' }) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `
-      <div class="modal-caja">
-        <h3>${titulo}</h3>
-        <div class="modal-contenido">${contenidoHTML}</div>
-        <div class="modal-acciones">
-          <button type="button" class="btn btn-secundario" id="modal-cancelar">${textoCancelar}</button>
-          <button type="button" class="btn btn-primario" id="modal-confirmar">${textoConfirmar}</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-
-    function cerrar(resultado) {
-      overlay.remove();
-      resolve(resultado);
-    }
-
-    overlay.querySelector('#modal-cancelar').addEventListener('click', () => cerrar(false));
-    overlay.querySelector('#modal-confirmar').addEventListener('click', () => cerrar(true));
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) cerrar(false);
-    });
-  });
-}
+create policy "tarifas_delete_admin"
+  on tarifas for delete
+  using (es_admin());

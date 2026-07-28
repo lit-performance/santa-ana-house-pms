@@ -1,72 +1,68 @@
-// modules/configuracion/tipos.js
-//
-// Subpestaña de Configuración: tipos de habitación (Sencilla, Doble, Triple,
-// Suite...). Permite agregar nuevos sin tocar el resto del sistema.
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Santa Ana House 21</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
 
-import { registerModule } from '../../core/modules-registry.js';
-import { supabase } from '../../core/supabase-client.js';
-import { mostrarToast } from '../../core/ui.js';
-
-async function render(container) {
-  container.innerHTML = `
-    <h2>Tipos de habitación</h2>
-    <div class="tarjeta">
-      <form id="form-nuevo-tipo" class="form-grid">
-        <label>Nombre
-          <input type="text" name="nombre" required placeholder="Ej. Suite Junior" />
+  <!-- ============ PANTALLA DE LOGIN ============ -->
+  <div id="pantalla-login" class="pantalla">
+    <div class="login-card">
+      <img src="logo.png" alt="Santa Ana House 21" class="logo-login" onerror="this.style.display='none'" />
+      <h1 class="login-titulo">Santa Ana House 21</h1>
+      <p>Ingresa con tu correo y contraseña asignados por el hotel.</p>
+      <form id="form-login" class="form-login">
+        <label>
+          Correo
+          <input type="email" id="login-email" required autocomplete="username" />
         </label>
-        <label>Descripción
-          <input type="text" name="descripcion" placeholder="Opcional" />
+        <label>
+          Contraseña
+          <input type="password" id="login-password" required autocomplete="current-password" />
         </label>
-        <button type="submit" class="btn btn-primario">+ Agregar tipo</button>
+        <p id="error-login" class="error-login oculto"></p>
+        <button type="submit" id="btn-login" class="btn btn-primario">Ingresar</button>
       </form>
     </div>
-    <div id="tabla-tipos-wrap" class="tabla-scroll">
-      <p class="mensaje-vacio">Cargando…</p>
-    </div>
-  `;
+  </div>
 
-  container.querySelector('#form-nuevo-tipo').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const form = new FormData(e.target);
-    const { error } = await supabase.from('tipos_habitacion').insert({
-      nombre: form.get('nombre').trim(),
-      descripcion: form.get('descripcion').trim() || null,
-    });
-    if (error) {
-      mostrarToast(`Error: ${error.message}`, 'error');
-      return;
-    }
-    mostrarToast('Tipo agregado.', 'exito');
-    e.target.reset();
-    await cargarTabla(container);
-  });
+  <!-- ============ PANTALLA PRINCIPAL DE LA APP ============ -->
+  <div id="pantalla-app" class="pantalla oculto">
 
-  await cargarTabla(container);
-}
+    <header class="app-header">
+      <div class="app-header-top">
+        <div class="usuario-info">
+          <span id="nombre-usuario-activo"></span>
+          <button id="btn-cerrar-sesion" class="btn-cerrar-sesion">Cerrar sesión</button>
+        </div>
+        <img src="logo.png" alt="Santa Ana House 21" class="logo-header" onerror="this.style.display='none'" />
+      </div>
 
-async function cargarTabla(container) {
-  const wrap = container.querySelector('#tabla-tipos-wrap');
-  const { data, error } = await supabase.from('tipos_habitacion').select('*').order('nombre');
-  if (error) {
-    wrap.innerHTML = `<p class="mensaje-vacio">Error: ${error.message}</p>`;
-    return;
-  }
-  wrap.innerHTML = `
-    <table class="tabla-simple">
-      <thead><tr><th>Nombre</th><th>Descripción</th></tr></thead>
-      <tbody>
-        ${data.map((t) => `<tr><td>${t.nombre}</td><td>${t.descripcion || '—'}</td></tr>`).join('')}
-      </tbody>
-    </table>
-  `;
-}
+      <!-- Pestañas de primer nivel (secciones) + una segunda fila que
+           muestra solo las subpestañas de la sección activa. -->
+      <nav id="tabs-nav" class="tabs-nav"></nav>
+      <nav id="tabs-nav-sub" class="tabs-nav tabs-nav-sub oculto"></nav>
+    </header>
 
-registerModule({
-  id: 'config-tipos',
-  label: 'Tipos de habitación',
-  icono: '🏷',
-  roles: ['propietario', 'administrador'],
-  parentId: 'configuracion',
-  render,
-});
+    <main id="main-content" class="main-content"></main>
+
+  </div>
+
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Único punto de entrada de JS. Todos los módulos son archivos sueltos
+       en la raíz del repo (ver ARCHITECTURE.md: sin subcarpetas, a propósito,
+       para que la subida manual por la interfaz web de GitHub nunca rompa rutas). -->
+  <script type="module" src="app.js"></script>
+
+</body>
+</html>

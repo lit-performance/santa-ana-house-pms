@@ -1,195 +1,65 @@
-// modules/configuracion/habitaciones.js
-//
-// Vista principal de Configuración: listado de habitaciones del hotel, con
-// alta/edición desde un modal. Las subpestañas "Tipos de habitación" y
-// "Tarifas" viven en tipos.js y tarifas.js, en esta misma carpeta.
+# Santa Ana House 21 — PMS
 
-import { registerModule } from '../../core/modules-registry.js';
-import { supabase } from '../../core/supabase-client.js';
-import { mostrarToast } from '../../core/ui.js';
-import { formatCOP } from '../../core/helpers/currency.js';
-import { badgeEstadoHabitacion, opcionesEstadoHabitacion } from '../../core/helpers/badges.js';
+Sistema de gestión hotelera (PMS) interno para Santa Ana House 21.
 
-async function render(container) {
-  container.innerHTML = `
-    <h2>Habitaciones</h2>
-    <div class="acciones-tarjeta" style="justify-content:flex-start; margin-bottom:1rem;">
-      <button id="btn-nueva-habitacion" class="btn btn-primario">+ Nueva habitación</button>
-    </div>
-    <div id="tabla-habitaciones-wrap" class="tabla-scroll">
-      <p class="mensaje-vacio">Cargando…</p>
-    </div>
-  `;
+- **Stack:** HTML/CSS/JS vanilla con ES Modules nativos (sin build, sin frameworks).
+- **Base de datos y auth:** Supabase (Postgres + RLS + email/contraseña).
+- **Estructura:** TODOS los archivos van sueltos en la raíz del repositorio,
+  sin subcarpetas (ver [ARCHITECTURE.md](ARCHITECTURE.md) — es una decisión
+  a propósito: al subir archivos manualmente por la interfaz web de GitHub,
+  arrastrar una carpeta puede aplanar las rutas y romper la app. Con todo en
+  la raíz, ese problema no puede volver a pasar).
 
-  container.querySelector('#btn-nueva-habitacion').addEventListener('click', () => abrirModalHabitacion(null));
+## Cómo correr localmente
 
-  await cargarTabla(container);
-}
+Como usa ES Modules nativos, no puedes abrir `index.html` directo con
+`file://` (los navegadores bloquean `import` en ese contexto). Sirve la
+carpeta con cualquier servidor estático simple, por ejemplo:
 
-async function cargarTabla(container) {
-  const wrap = container.querySelector('#tabla-habitaciones-wrap');
+```
+npx serve .
+# o
+python3 -m http.server 8080
+```
 
-  const [{ data: habitaciones, error }, { data: tipos }, { data: tarifas }] = await Promise.all([
-    supabase.from('habitaciones').select('*').order('numero'),
-    supabase.from('tipos_habitacion').select('*'),
-    supabase.from('tarifas').select('*'),
-  ]);
+## Cómo subir archivos nuevos a GitHub (interfaz web)
 
-  if (error) {
-    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando habitaciones: ${error.message}</p>`;
-    return;
-  }
+1. En el repo, "Add file" → "Upload files".
+2. Arrastra los archivos **sueltos** (no una carpeta) al recuadro, o usa
+   "choose your files" y selecciónalos todos a la vez.
+3. Como todo vive en la raíz, no importa el método que uses — nunca se
+   generan subcarpetas por accidente.
 
-  if (!habitaciones || habitaciones.length === 0) {
-    wrap.innerHTML = `<p class="mensaje-vacio">No hay habitaciones registradas todavía.</p>`;
-    return;
-  }
+## Configuración pendiente antes de usar
 
-  const tipoPorId = Object.fromEntries((tipos || []).map((t) => [t.id, t.nombre]));
-  const tarifaPorId = Object.fromEntries((tarifas || []).map((t) => [t.id, t]));
+1. Ejecutar los archivos `00X_*.sql` en orden (001 → 005) en el SQL Editor
+   de Supabase (Project → SQL Editor → New query, pegar y correr uno por uno).
+2. Crear cada usuario del staff:
+   - Authentication → Users → "Add user" (correo + contraseña temporal).
+   - Copiar su `id` (uuid) de esa pantalla.
+   - En SQL Editor:
+     ```sql
+     insert into usuarios (id, nombre, rol) values ('<uuid-aqui>', 'Nombre', 'rol')
+     on conflict (id) do update set nombre = excluded.nombre, rol = excluded.rol;
+     ```
+     Roles válidos: `propietario`, `administrador`, `recepcionista`, `auditor`,
+     `housekeeping`, `bodega`, `contador`.
+3. Confirmar con el contador el % de IVA real para alojamiento —
+   `tarifas.iva_porcentaje` quedó en 19% por defecto.
+4. Confirmar los precios reales de temporada alta — quedaron iguales a
+   temporada baja como valor inicial, ajustables desde Configuración → Tarifas.
+5. Subir `logo.png` (archivo suelto en la raíz) con el logo real del hotel.
+6. Activar GitHub Pages: Settings → Pages → Source: Deploy from a branch →
+   main → / (root). El repo debe ser público (el plan gratuito no permite
+   Pages en repos privados) — no hay datos sensibles en el código, los datos
+   de huéspedes viven en Supabase protegidos por RLS.
 
-  wrap.innerHTML = `
-    <table class="tabla-simple">
-      <thead>
-        <tr>
-          <th>Número</th>
-          <th>Nombre</th>
-          <th>Tipo</th>
-          <th>Piso</th>
-          <th>Capacidad</th>
-          <th>Tarifa</th>
-          <th>Precio base</th>
-          <th>Estado</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        ${habitaciones
-          .map((h) => {
-            const tarifa = tarifaPorId[h.tarifa_id];
-            return `
-              <tr data-id="${h.id}">
-                <td>${h.numero}</td>
-                <td>${h.nombre}</td>
-                <td>${tipoPorId[h.tipo_id] || '—'}</td>
-                <td>${h.piso ?? '—'}</td>
-                <td>${h.capacidad}</td>
-                <td>${tarifa ? tarifa.codigo : '—'}</td>
-                <td>${tarifa ? formatCOP(tarifa.precio_temporada_baja) : '—'}</td>
-                <td>${badgeEstadoHabitacion(h.estado)}</td>
-                <td><button type="button" class="btn-editar btn-editar-habitacion">Editar</button></td>
-              </tr>
-            `;
-          })
-          .join('')}
-      </tbody>
-    </table>
-  `;
+## Estado del proyecto
 
-  wrap.querySelectorAll('.btn-editar-habitacion').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      const id = Number(e.target.closest('tr').dataset.id);
-      const habitacion = habitaciones.find((h) => h.id === id);
-      abrirModalHabitacion(habitacion);
-    });
-  });
-}
+**Ya construido:** esqueleto base (login, navegación, sistema de diseño,
+capa de datos) + módulo de Configuración (Habitaciones, Tipos de
+habitación, Tarifas), con las 16 habitaciones reales del hotel ya
+cargadas por seed SQL.
 
-async function abrirModalHabitacion(habitacion) {
-  const editando = Boolean(habitacion);
-  const { data: tipos } = await supabase.from('tipos_habitacion').select('*').order('nombre');
-  const { data: tarifas } = await supabase.from('tarifas').select('*').order('codigo');
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal-caja modal-caja-ancha">
-      <h3>${editando ? `Editar habitación ${habitacion.numero}` : 'Nueva habitación'}</h3>
-      <form id="form-habitacion" class="modal-contenido">
-        <div class="form-grid">
-          <label>Número
-            <input type="text" name="numero" required value="${editando ? habitacion.numero : ''}" ${editando ? 'readonly' : ''} />
-          </label>
-          <label>Nombre
-            <input type="text" name="nombre" required value="${editando ? habitacion.nombre : ''}" />
-          </label>
-          <label>Piso
-            <input type="number" name="piso" value="${editando ? habitacion.piso ?? '' : ''}" />
-          </label>
-          <label>Capacidad
-            <input type="number" name="capacidad" min="1" required value="${editando ? habitacion.capacidad : 2}" />
-          </label>
-          <label>Tipo
-            <select name="tipo_id">
-              <option value="">—</option>
-              ${(tipos || [])
-                .map((t) => `<option value="${t.id}" ${editando && habitacion.tipo_id === t.id ? 'selected' : ''}>${t.nombre}</option>`)
-                .join('')}
-            </select>
-          </label>
-          <label>Tarifa
-            <select name="tarifa_id">
-              <option value="">—</option>
-              ${(tarifas || [])
-                .map((t) => `<option value="${t.id}" ${editando && habitacion.tarifa_id === t.id ? 'selected' : ''}>${t.codigo} — ${formatCOP(t.precio_temporada_baja)}</option>`)
-                .join('')}
-            </select>
-          </label>
-          <label>Estado
-            <select name="estado">
-              ${opcionesEstadoHabitacion()
-                .map((o) => `<option value="${o.valor}" ${editando && habitacion.estado === o.valor ? 'selected' : ''}>${o.label}</option>`)
-                .join('')}
-            </select>
-          </label>
-        </div>
-        <div class="modal-acciones" style="margin-top:1.25rem;">
-          <button type="button" class="btn btn-secundario" id="btn-cancelar-habitacion">Cancelar</button>
-          <button type="submit" class="btn btn-primario">${editando ? 'Guardar cambios' : 'Crear habitación'}</button>
-        </div>
-      </form>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-
-  overlay.querySelector('#btn-cancelar-habitacion').addEventListener('click', () => overlay.remove());
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-
-  overlay.querySelector('#form-habitacion').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const form = new FormData(e.target);
-    const payload = {
-      numero: form.get('numero').trim(),
-      nombre: form.get('nombre').trim(),
-      piso: form.get('piso') ? Number(form.get('piso')) : null,
-      capacidad: Number(form.get('capacidad')),
-      tipo_id: form.get('tipo_id') ? Number(form.get('tipo_id')) : null,
-      tarifa_id: form.get('tarifa_id') ? Number(form.get('tarifa_id')) : null,
-      estado: form.get('estado'),
-    };
-
-    const query = editando
-      ? supabase.from('habitaciones').update(payload).eq('id', habitacion.id)
-      : supabase.from('habitaciones').insert(payload);
-
-    const { error } = await query;
-    if (error) {
-      mostrarToast(`Error guardando: ${error.message}`, 'error');
-      return;
-    }
-    mostrarToast(editando ? 'Habitación actualizada.' : 'Habitación creada.', 'exito');
-    overlay.remove();
-    const container = document.getElementById('main-content');
-    await cargarTabla(container);
-  });
-}
-
-registerModule({
-  id: 'configuracion',
-  label: 'Configuración',
-  icono: '⚙',
-  roles: ['propietario', 'administrador'],
-  render,
-});
+**Pendiente:** Dashboard, Reservas, Recepción, Huéspedes, Housekeeping,
+Caja, y el resto del alcance de 24 módulos.

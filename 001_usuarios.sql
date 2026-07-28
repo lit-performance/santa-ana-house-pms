@@ -1,53 +1,75 @@
-// core/auth.js
-//
-// Autenticación con email + contraseña (Supabase Auth). Único lugar que
-// conoce la sesión activa y el perfil (rol) del usuario — otros módulos
-// importan getUsuarioActual() en vez de consultar auth.users directamente.
+-- 001_usuarios.sql
+-- Perfiles de usuario del staff. id = mismo id que auth.users (Supabase
+-- Auth, email + contraseña). Se cargan manualmente después de crear cada
+-- cuenta en Authentication → Users (ver README.md).
 
-import { supabase } from './supabase-client.js';
+create type rol_usuario as enum (
+  'propietario',
+  'administrador',
+  'recepcionista',
+  'auditor',
+  'housekeeping',
+  'bodega',
+  'contador'
+);
 
-let usuarioActual = null; // { id, nombre, rol, activo }
+create table if not exists usuarios (
+  id uuid primary key references auth.users(id) on delete cascade,
+  nombre text not null,
+  rol rol_usuario not null,
+  activo boolean not null default true,
+  creado_en timestamptz not null default now()
+);
 
-export async function iniciarSesion(email, password) {
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) throw error;
-  return cargarPerfil(data.user.id);
-}
+alter table usuarios enable row level security;
 
-export async function cerrarSesion() {
-  await supabase.auth.signOut();
-  usuarioActual = null;
-}
+-- Helpers reutilizables en las políticas de esta y otras tablas. security
+-- definer para evitar recursión al consultar la propia tabla usuarios desde
+-- sus políticas.
+create or replace function es_admin()
+returns boolean
+language sql
+security definer
+stable
+as $$
+  select exists (
+    select 1 from usuarios
+    where id = auth.uid() and rol in ('propietario', 'administrador') and activo
+  );
+$$;
 
-export async function restaurarSesion() {
-  const { data } = await supabase.auth.getSession();
-  if (!data.session) return null;
-  return cargarPerfil(data.session.user.id);
-}
+create or replace function tiene_rol(roles rol_usuario[])
+returns boolean
+language sql
+security definer
+stable
+as $$
+  select exists (
+    select 1 from usuarios
+    where id = auth.uid() and rol = any(roles) and activo
+  );
+$$;
 
-async function cargarPerfil(userId) {
-  const { data, error } = await supabase
-    .from('usuarios')
-    .select('id, nombre, rol, activo')
-    .eq('id', userId)
-    .single();
+-- Cada usuario puede leer su propia fila (para saber su rol al iniciar sesión).
+create policy "usuarios_select_propio"
+  on usuarios for select
+  using (id = auth.uid());
 
-  if (error || !data) {
-    await supabase.auth.signOut();
-    throw new Error(
-      'Tu cuenta no tiene un perfil asignado en el sistema. Pide a un administrador que te registre.'
-    );
-  }
+-- Propietario y administrador pueden ver y gestionar todos los usuarios.
+create policy "usuarios_select_admin"
+  on usuarios for select
+  using (es_admin());
 
-  if (!data.activo) {
-    await supabase.auth.signOut();
-    throw new Error('Tu cuenta está desactivada. Contacta a un administrador.');
-  }
+create policy "usuarios_insert_admin"
+  on usuarios for insert
+  with check (es_admin());
 
-  usuarioActual = data;
-  return usuarioActual;
-}
+create policy "usuarios_update_admin"
+  on usuarios for update
+  using (es_admin());
 
-export function getUsuarioActual() {
-  return usuarioActual;
-}
+-- NOTA: para crear el primer usuario (propietario):
+-- 1. Authentication → Users → Add user (correo + contraseña temporal).
+-- 2. Copiar su id (uuid) de esa pantalla.
+-- 3. Ejecutar aquí en el SQL Editor:
+--    insert into usuarios (id, nombre, rol) values ('<uuid-aqui>', 'Tu Nombre', 'propietario');

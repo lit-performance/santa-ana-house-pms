@@ -1,82 +1,33 @@
-// core/app.js
-//
-// Único punto de entrada de JS y única "lista central" de módulos: cada
-// módulo nuevo se agrega aquí con una línea de import (ver ARCHITECTURE.md).
+-- 002_hotel_config.sql
+-- Fila única con los datos generales del hotel (Módulo 2: Configuración).
 
-import { iniciarSesion, cerrarSesion, restaurarSesion } from './auth.js';
-import { initRouter, renderPrimerModuloDisponible } from './router.js';
-import { initTabs } from './ui.js';
+create table if not exists hotel_config (
+  id int primary key default 1,
+  nombre text not null,
+  nit text,
+  rnt_numero text,
+  rnt_vencimiento date,
+  direccion text,
+  ciudad text,
+  telefono text,
+  moneda text not null default 'COP',
+  constraint hotel_config_singleton check (id = 1)
+);
 
-// --- Módulos registrados (agregar una línea por módulo nuevo) ---
-import '../modules/configuracion/habitaciones.js';
-import '../modules/configuracion/tipos.js';
-import '../modules/configuracion/tarifas.js';
-// import '../modules/dashboard/dashboard.js';
-// import '../modules/reservas/reservas.js';
-// import '../modules/recepcion/recepcion.js';
-// import '../modules/huespedes/huespedes.js';
-// import '../modules/housekeeping/housekeeping.js';
-// import '../modules/caja/caja.js';
+alter table hotel_config enable row level security;
 
-const pantallaLogin = document.getElementById('pantalla-login');
-const pantallaApp = document.getElementById('pantalla-app');
-const formLogin = document.getElementById('form-login');
-const errorLogin = document.getElementById('error-login');
-const btnLogin = document.getElementById('btn-login');
+create policy "hotel_config_select_staff"
+  on hotel_config for select
+  using (tiene_rol(array['propietario','administrador','recepcionista','auditor','housekeeping','bodega','contador']::rol_usuario[]));
 
-initRouter('#main-content');
+create policy "hotel_config_insert_admin"
+  on hotel_config for insert
+  with check (es_admin());
 
-async function mostrarApp(usuario) {
-  pantallaLogin.classList.add('oculto');
-  pantallaApp.classList.remove('oculto');
-  initTabs({
-    rol: usuario.rol,
-    nombreUsuario: usuario.nombre,
-    onLogout: async () => {
-      await cerrarSesion();
-      location.reload();
-    },
-  });
-  renderPrimerModuloDisponible(usuario.rol);
-}
+create policy "hotel_config_update_admin"
+  on hotel_config for update
+  using (es_admin());
 
-function mostrarLogin(mensajeError) {
-  pantallaApp.classList.add('oculto');
-  pantallaLogin.classList.remove('oculto');
-  if (mensajeError) {
-    errorLogin.textContent = mensajeError;
-    errorLogin.classList.remove('oculto');
-  } else {
-    errorLogin.classList.add('oculto');
-  }
-}
-
-formLogin.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  errorLogin.classList.add('oculto');
-  const email = document.getElementById('login-email').value.trim();
-  const password = document.getElementById('login-password').value;
-  btnLogin.disabled = true;
-  btnLogin.textContent = 'Ingresando…';
-  try {
-    const usuario = await iniciarSesion(email, password);
-    await mostrarApp(usuario);
-  } catch (err) {
-    mostrarLogin(err.message || 'Correo o contraseña incorrectos.');
-  } finally {
-    btnLogin.disabled = false;
-    btnLogin.textContent = 'Ingresar';
-  }
-});
-
-// Al cargar la página, si ya hay una sesión activa (recargó la pestaña), la
-// restauramos sin pedir login de nuevo.
-(async function bootstrap() {
-  try {
-    const usuario = await restaurarSesion();
-    if (usuario) await mostrarApp(usuario);
-    else mostrarLogin();
-  } catch {
-    mostrarLogin();
-  }
-})();
+insert into hotel_config (id, nombre, moneda)
+values (1, 'Santa Ana House 21', 'COP')
+on conflict (id) do nothing;
