@@ -6,14 +6,14 @@
 // construya de verdad, se quita su registerModule() de aquí y se crea su
 // propio archivo dedicado (housekeeping.js, caja.js, etc.), igual que los
 // módulos que ya están listos (Dashboard, Configuración, Reservas,
-// Recepción, Huéspedes).
+// Recepción, Huéspedes, Housekeeping, Caja).
 //
-// A partir de hoy, los módulos pendientes que no se usan a diario están
-// agrupados en 4 pestañas contenedoras (Inventario, Finanzas, Análisis,
-// Administración) usando el mismo mecanismo parentId que ya usa
-// Configuración con sus subpestañas — así el menú principal no crece sin
-// control. Housekeeping y Caja quedan sueltas arriba porque el staff las
-// usa todos los días.
+// Los módulos pendientes que no se usan a diario están agrupados en 4
+// pestañas contenedoras (Inventario, Finanzas, Análisis, Administración)
+// usando el mismo mecanismo parentId que ya usa Configuración con sus
+// subpestañas — así el menú principal no crece sin control. Housekeeping y
+// Caja ya tienen su propio archivo y quedan sueltas arriba porque el staff
+// las usa todos los días.
 //
 // No tocan la base de datos — son solo vista, sin tablas ni RLS propias.
 
@@ -127,23 +127,8 @@ GRUPOS.forEach((grupo) => {
   });
 });
 
-// --- Módulos "próximamente" (Caja suelta arriba; el resto dentro de un grupo) ---
+// --- Módulos "próximamente" (Caja ya se construyó — ver caja.js) ---
 const MODULOS_PENDIENTES = [
-  {
-    id: 'caja',
-    label: 'Caja',
-    icono: '💰',
-    roles: ['propietario', 'administrador', 'recepcionista'],
-    parentId: null,
-    titulo: 'Caja',
-    descripcion: 'Apertura, movimientos y cierre de caja del turno, con arqueo automático.',
-    features: [
-      'Apertura de caja con base inicial',
-      'Movimientos: ingresos, egresos, pagos y abonos de reservas',
-      'Cierre con arqueo y diferencias',
-      'Cierres diario, semanal, mensual y anual',
-    ],
-  },
   {
     id: 'minibar',
     label: 'Minibar',
