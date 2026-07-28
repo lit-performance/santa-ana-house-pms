@@ -9,12 +9,21 @@
 // arrastrar-y-soltar (drag & drop) — cumple la misma función ("cambio de
 // habitación", "modificar fechas") sin la complejidad de un motor de drag
 // and drop hecho a mano. Puede añadirse más adelante si hace falta.
+//
+// Nota importante: si una habitación está en 'mantenimiento', 'bloqueada'
+// o 'fuera_servicio' (estado actual en la tabla habitaciones, cambiado
+// desde Housekeeping o Configuración), sus celdas se muestran marcadas y
+// no clickeables en TODO el rango visible — es un estado que dura hasta
+// que alguien lo revierta, no una fecha puntual. 'limpieza'/'inspeccion'
+// NO se marcan aquí porque son de horas, no de días: bloquear el
+// calendario por eso impediría vender fechas futuras sin motivo. Esos dos
+// estados ya se ven en Housekeeping y en las Alertas de Inicio.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
-import { badgeEstadoReserva, opcionesEstadoReserva } from './badges.js';
+import { badgeEstadoReserva, opcionesEstadoReserva, badgeEstadoHabitacion } from './badges.js';
 import { toISODate, addDays, formatFechaHora } from './dates.js';
 
 const DIAS_VISIBLES = 14;
@@ -29,6 +38,14 @@ const CLASE_CELDA = {
   check_out: 'celda-estado-check_out',
   cancelada: 'celda-estado-cancelada',
   no_show: 'celda-estado-no_show',
+};
+
+const ESTADOS_BLOQUEO_HABITACION = ['mantenimiento', 'bloqueada', 'fuera_servicio'];
+
+const ETIQUETA_BLOQUEO = {
+  mantenimiento: '🔧 Mantenim.',
+  bloqueada: '🚫 Bloqueada',
+  fuera_servicio: '⛔ Fuera serv.',
 };
 
 async function render(container) {
@@ -73,7 +90,7 @@ async function cargarCalendario(container) {
   const rangoInicioISO = toISODate(rangoInicio);
 
   const [{ data: habitaciones, error: errHab }, { data: reservas, error: errRes }] = await Promise.all([
-    supabase.from('habitaciones').select('id, numero, nombre').order('numero'),
+    supabase.from('habitaciones').select('id, numero, nombre, estado').order('numero'),
     supabase
       .from('reservas')
       .select('*')
@@ -97,6 +114,7 @@ async function cargarCalendario(container) {
 
   const filas = (habitaciones || [])
     .map((h) => {
+      const habitacionBloqueada = ESTADOS_BLOQUEO_HABITACION.includes(h.estado);
       const celdas = fechas
         .map((f) => {
           const iso = toISODate(f);
@@ -108,10 +126,13 @@ async function cargarCalendario(container) {
             const clase = CLASE_CELDA[reserva.estado] || '';
             return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-reserva-ocupada ${clase}" data-reserva-id="${reserva.id}">${escaparHTML(reserva.huesped_nombre)}</div></td>`;
           }
+          if (habitacionBloqueada) {
+            return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-habitacion-bloqueada ${h.estado}" title="Habitación en estado: ${h.estado}">${ETIQUETA_BLOQUEO[h.estado]}</div></td>`;
+          }
           return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-reserva-vacia" data-habitacion-id="${h.id}" data-fecha="${iso}">+</div></td>`;
         })
         .join('');
-      return `<tr><td class="celda-habitacion">${h.numero} — ${h.nombre}</td>${celdas}</tr>`;
+      return `<tr><td class="celda-habitacion">${h.numero} — ${h.nombre}${habitacionBloqueada ? ` ${badgeEstadoHabitacion(h.estado)}` : ''}</td>${celdas}</tr>`;
     })
     .join('');
 
@@ -153,7 +174,7 @@ function escaparHTML(texto) {
 async function abrirModalReserva(container, reserva, prellenado) {
   const editando = Boolean(reserva);
   const [{ data: habitaciones }, { data: tarifas }] = await Promise.all([
-    supabase.from('habitaciones').select('id, numero, nombre').order('numero'),
+    supabase.from('habitaciones').select('id, numero, nombre, estado').order('numero'),
     supabase.from('tarifas').select('*').order('codigo'),
   ]);
 
@@ -172,7 +193,15 @@ async function abrirModalReserva(container, reserva, prellenado) {
             <select name="habitacion_id" required>
               <option value="">—</option>
               ${(habitaciones || [])
-                .map((h) => `<option value="${h.id}" ${Number(habitacionDefault) === h.id ? 'selected' : ''}>${h.numero} — ${h.nombre}</option>`)
+                .map((h) => {
+                  const bloqueada = ESTADOS_BLOQUEO_HABITACION.includes(h.estado);
+                  // Si se está editando una reserva ya existente sobre una
+                  // habitación que después quedó bloqueada, se deja
+                  // seleccionable para no impedir arreglarla — solo se
+                  // deshabilita al CREAR una reserva nueva.
+                  const deshabilitar = bloqueada && !editando;
+                  return `<option value="${h.id}" ${Number(habitacionDefault) === h.id ? 'selected' : ''} ${deshabilitar ? 'disabled' : ''}>${h.numero} — ${h.nombre}${bloqueada ? ` (${ETIQUETA_BLOQUEO[h.estado]})` : ''}</option>`;
+                })
                 .join('')}
             </select>
           </label>
