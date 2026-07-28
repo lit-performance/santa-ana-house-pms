@@ -4,10 +4,17 @@
 // de movimientos manuales (ingresos/egresos) del turno abierto.
 //
 // Los abonos de reservas (reservas_pagos, ya registrados desde Reservas y
-// Recepción) NO se duplican aquí — este módulo los LEE directamente de esa
-// tabla y los muestra como "ingresos automáticos" del turno abierto.
-// caja_movimientos solo guarda lo que no nace de una reserva (gastos
-// operativos, propinas, ingresos varios, etc).
+// Recepción, incluyendo los pagos de liquidación al check-out) NO se
+// duplican aquí — este módulo los LEE directamente de esa tabla y los
+// muestra como "ingresos automáticos" del turno abierto. caja_movimientos
+// solo guarda lo que no nace de una reserva (gastos operativos, propinas,
+// ingresos varios, etc).
+//
+// Además, sin importar si hay turno abierto o no, se muestra siempre una
+// tabla de "Habitaciones en uso" con el saldo pendiente de cada una (mismo
+// cálculo que usa Recepción al liquidar en el check-out — ver
+// cuentas.js), para que el staff pueda ver de un vistazo quién debe qué
+// antes de hacer el checkout.
 //
 // Regla de negocio: solo puede haber UN turno de caja abierto a la vez
 // (impuesto por un índice único parcial en la base de datos — ver
@@ -19,6 +26,7 @@ import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
 import { formatFechaHora } from './dates.js';
 import { getUsuarioActual } from './auth.js';
+import { calcularHabitacionesEnUso } from './cuentas.js';
 
 const ROLES_OPERAN_CAJA = ['propietario', 'administrador', 'recepcionista'];
 
@@ -27,14 +35,76 @@ function puedeOperar() {
   return Boolean(usuario) && ROLES_OPERAN_CAJA.includes(usuario.rol);
 }
 
+function escaparHTML(texto) {
+  const div = document.createElement('div');
+  div.textContent = texto || '';
+  return div.innerHTML;
+}
+
 async function render(container) {
   container.innerHTML = `
     <h2>Caja</h2>
+    <div id="habitaciones-uso-wrap" style="margin-bottom:1.5rem;">
+      <p class="mensaje-vacio">Cargando…</p>
+    </div>
     <div id="caja-wrap">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
   `;
-  await cargarEstado(container);
+  await Promise.all([cargarHabitacionesEnUso(container.querySelector('#habitaciones-uso-wrap')), cargarEstado(container)]);
+}
+
+async function cargarHabitacionesEnUso(elemento) {
+  if (!elemento) return;
+  elemento.innerHTML = `<p class="mensaje-vacio">Cargando habitaciones en uso…</p>`;
+
+  let items = [];
+  try {
+    items = await calcularHabitacionesEnUso();
+  } catch (error) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando habitaciones en uso: ${error.message}</p>`;
+    return;
+  }
+
+  const conSaldo = items.filter((i) => i.saldoPendiente > 0).length;
+
+  elemento.innerHTML = `
+    <div class="tarjeta">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.75rem;">
+        <h3 style="margin:0;">🛎 Habitaciones en uso ${items.length ? `(${items.length})` : ''}</h3>
+        <button type="button" id="btn-refrescar-habitaciones-uso" class="btn btn-secundario btn-chico">🔄 Actualizar</button>
+      </div>
+      ${
+        conSaldo > 0
+          ? `<p class="mensaje-vacio" style="color:var(--color-rojo-oscuro); font-weight:600;">${conSaldo} habitación(es) con saldo pendiente por liquidar.</p>`
+          : ''
+      }
+      <div class="tabla-scroll">
+        <table class="tabla-simple">
+          <thead><tr><th>Habitación</th><th>Huésped</th><th>Ingreso</th><th>Monto total</th><th>Abonado</th><th>Saldo pendiente</th></tr></thead>
+          <tbody>
+            ${
+              items
+                .map(
+                  (i) => `<tr>
+                    <td>${escaparHTML(i.habitacionLabel)}</td>
+                    <td>${escaparHTML(i.huespedNombre)}</td>
+                    <td>${formatFechaHora(i.horaIngreso)}</td>
+                    <td>${formatCOP(i.montoTotal)}</td>
+                    <td>${formatCOP(i.totalAbonado)}</td>
+                    <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(i.saldoPendiente)}</td>
+                  </tr>`
+                )
+                .join('') || '<tr><td colspan="6" class="mensaje-vacio">No hay habitaciones ocupadas ahora mismo.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="mensaje-vacio" style="margin-top:0.75rem;">El saldo se liquida desde Recepción al hacer check-out.</p>
+    </div>
+  `;
+
+  elemento.querySelector('#btn-refrescar-habitaciones-uso').addEventListener('click', () => cargarHabitacionesEnUso(elemento));
 }
 
 async function cargarEstado(container) {
