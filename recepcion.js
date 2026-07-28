@@ -12,11 +12,11 @@
 // ronda futura.
 //
 // Nota importante: TODO check-in (venga de una reserva o sea walk-in)
-// queda vinculado a una fila en `reservas` con estado 'hospedado'. Si el
-// check-in es walk-in (sin reserva previa), se crea la reserva automática-
-// mente aquí mismo. Esto es lo que hace que el calendario de Reservas y
-// las tarjetas de Inicio reflejen la ocupación real sin importar por dónde
-// entró el huésped.
+// queda vinculado a una fila en `reservas` con estado 'hospedado', y
+// además guarda/actualiza la ficha del huésped en `huespedes` (por
+// numero_documento). Esto es lo que hace que el calendario de Reservas,
+// las tarjetas de Inicio y el módulo Huéspedes reflejen la ocupación e
+// historial real sin importar por dónde entró el huésped.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -390,6 +390,26 @@ async function vistaFormulario(container) {
       } else {
         reservaIdFinal = nuevaReserva.id;
       }
+    }
+
+    // --- Ficha de huésped (histórico) ---
+    // Guarda o actualiza los datos de contacto en `huespedes` (por
+    // numero_documento) sin pisar preferencias/alergias/observaciones si
+    // ya existían — eso se edita solo desde el módulo Huéspedes.
+    const { error: errHuesped } = await supabase.from('huespedes').upsert(
+      {
+        numero_documento: documento,
+        tipo_documento: form.get('tipo_documento'),
+        nombre,
+        telefono: celular,
+        correo: form.get('correo').trim() || null,
+        empresa: form.get('empresa').trim() || null,
+        actualizado_en: new Date().toISOString(),
+      },
+      { onConflict: 'numero_documento' }
+    );
+    if (errHuesped) {
+      mostrarToast(`Check-in guardado, pero no se pudo actualizar la ficha del huésped: ${errHuesped.message}`, 'error');
     }
 
     const payload = {
