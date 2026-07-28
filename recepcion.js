@@ -10,11 +10,18 @@
 // (para pegar un link si ya la subieron a otro lado) — la carga de
 // archivos requiere configurar Supabase Storage, pendiente para una
 // ronda futura.
+//
+// Nota importante: TODO check-in (venga de una reserva o sea walk-in)
+// queda vinculado a una fila en `reservas` con estado 'hospedado'. Si el
+// check-in es walk-in (sin reserva previa), se crea la reserva automática-
+// mente aquí mismo. Esto es lo que hace que el calendario de Reservas y
+// las tarjetas de Inicio reflejen la ocupación real sin importar por dónde
+// entró el huésped.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast } from './ui.js';
-import { formatFechaHora } from './dates.js';
+import { formatFechaHora, toISODate, addDays } from './dates.js';
 
 const TIPOS_DOCUMENTO = ['Cédula de ciudadanía', 'Cédula de extranjería', 'Pasaporte', 'Tarjeta de identidad', 'PEP', 'Otro'];
 const METODOS_PAGO = ['Efectivo', 'Transferencia', 'Tarjeta', 'Otro'];
@@ -232,7 +239,7 @@ async function vistaFormulario(container) {
             </select>
           </label>
           <label>Cantidad de noches
-            <input type="number" name="cantidad_noches" id="input-noches" min="1" />
+            <input type="number" name="cantidad_noches" id="input-noches" min="1" value="1" />
           </label>
           <label>Método de pago
             <select name="metodo_pago">
@@ -338,15 +345,59 @@ async function vistaFormulario(container) {
     }
 
     const form = new FormData(e.target);
-    const reservaId = container.querySelector('#select-reserva').value || null;
+    const reservaIdSeleccionada = container.querySelector('#select-reserva').value || null;
     const hayFirma = ctx.getImageData(0, 0, canvas.width, canvas.height).data.some((v, i) => i % 4 === 3 && v !== 0);
 
+    const habitacionId = Number(form.get('habitacion_id'));
+    const tarifaId = form.get('tarifa_id') ? Number(form.get('tarifa_id')) : null;
+    const cantidadNoches = form.get('cantidad_noches') ? Number(form.get('cantidad_noches')) : 1;
+    const nombre = form.get('nombre').trim();
+    const documento = form.get('numero_documento').trim();
+    const celular = form.get('celular').trim() || null;
+
+    // --- Vincular o crear la reserva asociada ---
+    let reservaIdFinal = null;
+
+    if (reservaIdSeleccionada) {
+      reservaIdFinal = Number(reservaIdSeleccionada);
+      const { error: errReservaUpd } = await supabase
+        .from('reservas')
+        .update({ estado: 'hospedado' })
+        .eq('id', reservaIdFinal);
+      if (errReservaUpd) {
+        mostrarToast(`No se pudo actualizar la reserva vinculada: ${errReservaUpd.message}`, 'error');
+      }
+    } else {
+      const hoyISO = toISODate(new Date());
+      const { data: nuevaReserva, error: errReservaNueva } = await supabase
+        .from('reservas')
+        .insert({
+          habitacion_id: habitacionId,
+          huesped_nombre: nombre,
+          huesped_telefono: celular,
+          huesped_documento: documento,
+          fecha_checkin: hoyISO,
+          fecha_checkout: toISODate(addDays(hoyISO, cantidadNoches > 0 ? cantidadNoches : 1)),
+          estado: 'hospedado',
+          tarifa_id: tarifaId,
+          comentarios: 'Creada automáticamente desde Recepción (walk-in).',
+        })
+        .select('id')
+        .single();
+
+      if (errReservaNueva) {
+        mostrarToast(`Check-in continuará, pero no se pudo crear la reserva asociada: ${errReservaNueva.message}`, 'error');
+      } else {
+        reservaIdFinal = nuevaReserva.id;
+      }
+    }
+
     const payload = {
-      reserva_id: reservaId ? Number(reservaId) : null,
-      habitacion_id: Number(form.get('habitacion_id')),
-      nombre: form.get('nombre').trim(),
+      reserva_id: reservaIdFinal,
+      habitacion_id: habitacionId,
+      nombre,
       tipo_documento: form.get('tipo_documento'),
-      numero_documento: form.get('numero_documento').trim(),
+      numero_documento: documento,
       nacionalidad: form.get('nacionalidad').trim() || null,
       fecha_nacimiento: form.get('fecha_nacimiento') || null,
       direccion: form.get('direccion').trim() || null,
@@ -354,7 +405,7 @@ async function vistaFormulario(container) {
       departamento: form.get('departamento').trim() || null,
       pais: form.get('pais').trim() || null,
       correo: form.get('correo').trim() || null,
-      celular: form.get('celular').trim() || null,
+      celular,
       empresa: form.get('empresa').trim() || null,
       placa_vehiculo: form.get('placa_vehiculo').trim() || null,
       acompanantes: form.get('acompanantes').trim() || null,
@@ -362,8 +413,8 @@ async function vistaFormulario(container) {
       firma_digital: hayFirma ? canvas.toDataURL('image/png') : null,
       consentimiento_habeas_data: true,
       observaciones: form.get('observaciones').trim() || null,
-      tarifa_id: form.get('tarifa_id') ? Number(form.get('tarifa_id')) : null,
-      cantidad_noches: form.get('cantidad_noches') ? Number(form.get('cantidad_noches')) : null,
+      tarifa_id: tarifaId,
+      cantidad_noches: cantidadNoches,
       metodo_pago: form.get('metodo_pago'),
       deposito: form.get('deposito') ? Number(form.get('deposito')) : null,
     };
@@ -375,15 +426,11 @@ async function vistaFormulario(container) {
     }
 
     const { error: errEstado } = await supabase.rpc('cambiar_estado_habitacion', {
-      p_habitacion_id: payload.habitacion_id,
+      p_habitacion_id: habitacionId,
       p_estado: 'ocupada',
     });
     if (errEstado) {
       mostrarToast(`Check-in guardado, pero no se pudo marcar la habitación como ocupada: ${errEstado.message}`, 'error');
-    }
-
-    if (reservaId) {
-      await supabase.from('reservas').update({ estado: 'hospedado' }).eq('id', Number(reservaId));
     }
 
     mostrarToast('Check-in registrado.', 'exito');
