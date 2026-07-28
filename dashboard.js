@@ -1,15 +1,16 @@
 // dashboard.js
 //
 // Módulo 1: Inicio. A diferencia de los demás módulos, este SÍ tiene
-// permiso de leer datos de otras tablas (habitaciones, y en el futuro
-// reservas, caja, minibar, huéspedes, documentos) — es su función, igual
-// que Contabilidad en el CRM de Servicentro B&B. Cada vez que se construya
-// un módulo nuevo (Reservas, Caja, Minibar...), este archivo se actualiza
-// para reemplazar los placeholders "—" por datos reales.
+// permiso de leer datos de otras tablas (habitaciones, reservas, y en el
+// futuro caja, minibar, huéspedes, documentos) — es su función, igual que
+// Contabilidad en el CRM de Servicentro B&B. Cada vez que se construya un
+// módulo nuevo (Caja, Minibar...), este archivo se actualiza para
+// reemplazar los placeholders "—" por datos reales.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { badgeEstadoHabitacion } from './badges.js';
+import { toISODate, addDays, formatFechaCorta } from './dates.js';
 
 async function render(container) {
   container.innerHTML = `
@@ -26,7 +27,7 @@ async function render(container) {
       </div>
       <div class="tarjeta">
         <h3>Próximos check-in / check-out</h3>
-        <p class="mensaje-vacio">— Se activa cuando esté listo el módulo Reservas.</p>
+        <div id="proximos-wrap"><p class="mensaje-vacio">Cargando…</p></div>
       </div>
     </div>
 
@@ -37,6 +38,7 @@ async function render(container) {
   `;
 
   await cargarKpis(container);
+  await cargarProximos(container);
   await cargarAlertas(container);
 }
 
@@ -68,6 +70,62 @@ async function cargarKpis(container) {
   `
     )
     .join('');
+}
+
+async function cargarProximos(container) {
+  const wrap = container.querySelector('#proximos-wrap');
+  const hoyISO = toISODate(new Date());
+  const limiteISO = toISODate(addDays(new Date(), 7));
+
+  const [{ data: entrantes, error: errEntrantes }, { data: salientes, error: errSalientes }] = await Promise.all([
+    supabase
+      .from('reservas')
+      .select('id, huesped_nombre, fecha_checkin, habitaciones(numero)')
+      .in('estado', ['reservada', 'confirmada'])
+      .gte('fecha_checkin', hoyISO)
+      .lte('fecha_checkin', limiteISO)
+      .order('fecha_checkin')
+      .limit(5),
+    supabase
+      .from('reservas')
+      .select('id, huesped_nombre, fecha_checkout, habitaciones(numero)')
+      .eq('estado', 'hospedado')
+      .lte('fecha_checkout', limiteISO)
+      .order('fecha_checkout')
+      .limit(5),
+  ]);
+
+  if (errEntrantes || errSalientes) {
+    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando próximos: ${(errEntrantes || errSalientes).message}</p>`;
+    return;
+  }
+
+  const listaEntrantes =
+    entrantes && entrantes.length > 0
+      ? `<ul style="margin:0.4rem 0 0; padding-left:1.1rem; font-size:0.9rem;">${entrantes
+          .map((r) => `<li>${formatFechaCorta(r.fecha_checkin)} — ${escaparHTML(r.huesped_nombre)}${r.habitaciones ? ` (Hab. ${r.habitaciones.numero})` : ''}</li>`)
+          .join('')}</ul>`
+      : '<p class="mensaje-vacio">Sin check-in próximos.</p>';
+
+  const listaSalientes =
+    salientes && salientes.length > 0
+      ? `<ul style="margin:0.4rem 0 0; padding-left:1.1rem; font-size:0.9rem;">${salientes
+          .map((r) => `<li>${formatFechaCorta(r.fecha_checkout)} — ${escaparHTML(r.huesped_nombre)}${r.habitaciones ? ` (Hab. ${r.habitaciones.numero})` : ''}</li>`)
+          .join('')}</ul>`
+      : '<p class="mensaje-vacio">Sin check-out próximos.</p>';
+
+  wrap.innerHTML = `
+    <p><strong>Check-in (próximos 7 días):</strong></p>
+    ${listaEntrantes}
+    <p style="margin-top:0.75rem;"><strong>Check-out (próximos 7 días):</strong></p>
+    ${listaSalientes}
+  `;
+}
+
+function escaparHTML(texto) {
+  const div = document.createElement('div');
+  div.textContent = texto || '';
+  return div.innerHTML;
 }
 
 async function cargarAlertas(container) {
