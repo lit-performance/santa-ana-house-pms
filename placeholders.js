@@ -5,19 +5,20 @@
 // uno. Cada entrada de este archivo es temporal: cuando un módulo se
 // construya de verdad, se quita su registerModule() de aquí y se crea su
 // propio archivo dedicado (housekeeping.js, caja.js, indicadores.js,
-// minibar.js, etc.), igual que los módulos que ya están listos (Dashboard,
-// Configuración, Reservas, Recepción, Huéspedes, Housekeeping, Caja,
-// Indicadores, Minibar).
+// minibar.js, inventario.js, proveedores.js, etc.), igual que los módulos
+// que ya están listos (Dashboard, Configuración, Reservas, Recepción,
+// Huéspedes, Housekeeping, Caja, Indicadores, Minibar, Inventario,
+// Proveedores).
 //
 // Los módulos pendientes que no se usan a diario están agrupados en 4
 // pestañas contenedoras (Inventario, Finanzas, Análisis, Administración)
 // usando el mismo mecanismo parentId que ya usa Configuración con sus
 // subpestañas — así el menú principal no crece sin control. Housekeeping y
 // Caja ya tienen su propio archivo y quedan sueltas arriba porque el staff
-// las usa todos los días. Indicadores y Minibar también tienen su propio
-// archivo, pero siguen viviendo como subpestañas de "Análisis" e
-// "Inventario" respectivamente (mismo lugar que ya tenían como
-// placeholder).
+// las usa todos los días. Indicadores, Minibar, Inventario y Proveedores
+// también tienen su propio archivo, pero siguen viviendo como subpestañas
+// de "Análisis" e "Inventario" respectivamente (mismo lugar que ya tenían
+// como placeholder).
 //
 // No tocan la base de datos — son solo vista, sin tablas ni RLS propias.
 
@@ -69,12 +70,12 @@ const GRUPOS = [
     icono: '📦',
     roles: ['propietario', 'administrador', 'recepcionista', 'bodega', 'contador'],
     titulo: 'Inventario',
-    descripcion: 'Minibar, existencias, compras a proveedores y el directorio de proveedores del hotel.',
+    descripcion: 'Minibar, existencias en bodega y por habitación, compras a proveedores y el directorio de proveedores del hotel.',
     hijos: [
       { icono: '🥤', label: 'Minibar', resumen: 'Catálogo real de Santa Ana, consumo por habitación y cargo automático al check-out.' },
-      { icono: '📦', label: 'Inventario', resumen: 'Insumos y suministros del hotel, existencias mínimas.' },
+      { icono: '📦', label: 'Inventario', resumen: 'Existencias en bodega (precio de costo, mínimos y recompra) e inventario físico de cada minibar de habitación.' },
       { icono: '🛒', label: 'Compras', resumen: 'Órdenes de compra y seguimiento de pedidos.' },
-      { icono: '🚚', label: 'Proveedores', resumen: 'Directorio y condiciones comerciales.' },
+      { icono: '🚚', label: 'Proveedores', resumen: 'Directorio con datos de contacto y condiciones comerciales.' },
     ],
   },
   {
@@ -99,7 +100,7 @@ const GRUPOS = [
     descripcion: 'Reportes, indicadores, estadísticas históricas y auditoría del sistema.',
     hijos: [
       { icono: '📈', label: 'Reportes', resumen: 'Reportes operativos exportables a Excel/PDF.' },
-      { icono: '📌', label: 'Indicadores', resumen: 'Ocupación, ingresos efectivo/digital y comparativos por día, semana o mes.' },
+      { icono: '📌', label: 'Indicadores', resumen: 'Ocupación, ingresos efectivo/digital y comparativos por período.' },
       { icono: '📉', label: 'Estadísticas', resumen: 'Tendencias históricas de ocupación e ingresos.' },
       { icono: '🔍', label: 'Auditoría', resumen: 'Bitácora de quién hizo qué y cuándo.' },
     ],
@@ -131,23 +132,10 @@ GRUPOS.forEach((grupo) => {
   });
 });
 
-// --- Módulos "próximamente" (Caja, Indicadores y Minibar ya se
-// construyeron — ver caja.js, indicadores.js y minibar.js) ---
+// --- Módulos "próximamente" (Caja, Indicadores, Minibar, Inventario y
+// Proveedores ya se construyeron — ver caja.js, indicadores.js, minibar.js,
+// inventario.js y proveedores.js) ---
 const MODULOS_PENDIENTES = [
-  {
-    id: 'inventario',
-    label: 'Inventario',
-    icono: '📦',
-    roles: ['propietario', 'administrador', 'bodega'],
-    parentId: 'grupo-inventario',
-    titulo: 'Inventario',
-    descripcion: 'Control de insumos y suministros del hotel (lencería, aseo, papelería, amenities).',
-    features: [
-      'Existencias actuales por insumo',
-      'Existencias mínimas y alertas de reposición',
-      'Movimientos de entrada y salida',
-    ],
-  },
   {
     id: 'compras',
     label: 'Compras',
@@ -155,25 +143,11 @@ const MODULOS_PENDIENTES = [
     roles: ['propietario', 'administrador', 'bodega'],
     parentId: 'grupo-inventario',
     titulo: 'Compras',
-    descripcion: 'Órdenes de compra a proveedores y seguimiento de la mercancía pedida.',
+    descripcion: 'Órdenes de compra formales a proveedores y seguimiento de la mercancía pedida. Hoy las entradas de bodega se registran de forma rápida desde Inventario; este módulo agregará el flujo completo de orden de compra.',
     features: [
       'Órdenes de compra por proveedor',
       'Estado del pedido: solicitado, en camino, recibido',
       'Vínculo con Inventario al recibir mercancía',
-    ],
-  },
-  {
-    id: 'proveedores',
-    label: 'Proveedores',
-    icono: '🚚',
-    roles: ['propietario', 'administrador', 'bodega', 'contador'],
-    parentId: 'grupo-inventario',
-    titulo: 'Proveedores',
-    descripcion: 'Directorio de proveedores del hotel con su historial comercial.',
-    features: [
-      'Datos de contacto y condiciones comerciales',
-      'Historial de compras por proveedor',
-      'Vínculo con el módulo de Compras',
     ],
   },
   {
