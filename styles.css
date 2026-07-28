@@ -607,9 +607,11 @@ h3 {
 .celda-estado-cancelada { background: rgba(211, 47, 47, 0.1); color: var(--color-rojo-oscuro); text-decoration: line-through; }
 .celda-estado-no_show { background: rgba(211, 47, 47, 0.2); color: var(--color-rojo-oscuro); font-weight: 700; }
 
-/* Habitación bloqueada / mantenimiento / fuera de servicio: no clickeable,
-   se muestra igual en todas las fechas visibles porque es un estado que
-   dura hasta que alguien lo revierta manualmente, no una fecha puntual. */
+/* Estado de la habitación (Housekeeping/Configuración) reflejado en una
+   celda del calendario cuando no hay reserva para esa fecha. Indefinidos
+   (mantenimiento/bloqueada/fuera_servicio) se ven en todas las fechas
+   visibles; los de "hoy" (ocupada/limpieza/inspeccion) solo en la columna
+   de hoy — ver reservas.js para la lógica exacta. */
 .celda-habitacion-bloqueada {
   display: flex;
   align-items: center;
@@ -622,6 +624,9 @@ h3 {
   cursor: not-allowed;
   white-space: nowrap;
 }
+.celda-habitacion-bloqueada.ocupada { background: rgba(211, 47, 47, 0.14); color: var(--color-rojo-oscuro); }
+.celda-habitacion-bloqueada.limpieza { background: rgba(199, 124, 17, 0.14); color: #8a5a0d; }
+.celda-habitacion-bloqueada.inspeccion { background: rgba(30, 78, 140, 0.14); color: var(--color-azul-oscuro); }
 .celda-habitacion-bloqueada.mantenimiento { background: rgba(107, 107, 107, 0.14); color: var(--color-texto-suave); }
 .celda-habitacion-bloqueada.bloqueada { background: rgba(26, 26, 26, 0.12); color: var(--color-negro); }
 .celda-habitacion-bloqueada.fuera_servicio { background: rgba(211, 47, 47, 0.22); color: var(--color-rojo-oscuro); }
