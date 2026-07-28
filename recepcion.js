@@ -20,14 +20,14 @@
 //
 // Nota sobre liquidación al check-out: el botón "Check-out" ya NO libera
 // la habitación directo — abre un modal que muestra el saldo pendiente
-// (monto total de la reserva − abonos ya registrados en reservas_pagos,
-// calculado con el helper compartido cuentas.js) y permite registrar el
-// pago final antes de liberar la habitación. Si queda saldo pendiente
-// después del pago, se pide confirmación explícita antes de continuar —
-// el checkout no se bloquea, pero no se puede hacer "sin darse cuenta"
-// de que quedó plata por cobrar. Ese pago final se registra en
-// reservas_pagos igual que un abono normal, así que aparece automático
-// en Caja.
+// (monto de la habitación + consumo de minibar − abonos ya registrados en
+// reservas_pagos, calculado con el helper compartido cuentas.js) y permite
+// registrar el pago final antes de liberar la habitación. Si queda saldo
+// pendiente después del pago, se pide confirmación explícita antes de
+// continuar — el checkout no se bloquea, pero no se puede hacer "sin
+// darse cuenta" de que quedó plata por cobrar. Ese pago final se registra
+// en reservas_pagos igual que un abono normal, así que aparece automático
+// en Caja e Indicadores.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -129,7 +129,9 @@ async function abrirModalLiquidacion(container, item) {
           <p class="mensaje-vacio">${escaparHTML(item.huespedNombre)} — ${item.habitacionLabel}</p>
           <table class="tabla-simple" style="margin-top:0.5rem;">
             <tbody>
-              <tr><td>Monto total de la estadía</td><td class="monto">${formatCOP(item.montoTotal)}</td></tr>
+              <tr><td>Habitación (${item.cantidadNoches ?? '—'} noches)</td><td class="monto">${formatCOP(item.montoHabitacion)}</td></tr>
+              ${item.montoMinibar > 0 ? `<tr><td>Minibar</td><td class="monto">${formatCOP(item.montoMinibar)}</td></tr>` : ''}
+              <tr><td><strong>Monto total</strong></td><td class="monto" style="font-weight:700;">${formatCOP(item.montoTotal)}</td></tr>
               <tr><td>Abonado hasta ahora</td><td class="monto">${formatCOP(item.totalAbonado)}</td></tr>
               <tr><td><strong>Saldo pendiente</strong></td><td class="monto" style="color:${saldoMostrado > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(saldoMostrado)}</td></tr>
             </tbody>
