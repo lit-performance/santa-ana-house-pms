@@ -1,57 +1,58 @@
-# Santa Ana House 21 — PMS
+// modules-registry.js
+//
+// Registro central de módulos ("patrón plugin"). Cada módulo se auto-registra
+// llamando a registerModule() al ser importado por core/app.js.
+//
+// Este archivo NUNCA debe modificarse para agregar un módulo nuevo — solo lee
+// lo que los módulos le entregan. Ver ARCHITECTURE.md para el paso a paso.
 
-Sistema de gestión hotelera (PMS) interno para Santa Ana House 21.
+const registro = [];
 
-- **Stack:** HTML/CSS/JS vanilla con ES Modules nativos (sin build, sin frameworks).
-- **Base de datos y auth:** Supabase (Postgres + RLS + email/contraseña).
-- **Arquitectura:** un archivo por módulo de negocio, patrón de registro tipo
-  "plugin" — igual al usado en el CRM de Servicentro B&B. Ver
-  [ARCHITECTURE.md](ARCHITECTURE.md) antes de tocar código.
+/**
+ * @param {Object} mod
+ * @param {string} mod.id - identificador único, ej. 'configuracion'
+ * @param {string} mod.label - texto visible en la pestaña
+ * @param {string} [mod.icono] - emoji o clase de ícono
+ * @param {string[]} [mod.roles] - roles que pueden ver este módulo: 'propietario',
+ *   'administrador', 'recepcionista', 'auditor', 'housekeeping', 'bodega', 'contador'
+ *   (default: todos)
+ * @param {string|null} [mod.parentId] - si es una subpestaña de otro módulo (ej. Tarifas dentro de Configuración)
+ * @param {(container: HTMLElement) => void} mod.render - pinta el módulo dentro del contenedor
+ */
+export function registerModule(mod) {
+  if (!mod.id || typeof mod.render !== 'function') {
+    throw new Error('Un módulo debe tener al menos "id" (string) y "render" (function).');
+  }
+  if (registro.some((m) => m.id === mod.id)) {
+    console.warn(`Módulo duplicado ignorado: ${mod.id}`);
+    return;
+  }
+  registro.push({
+    roles: ['propietario', 'administrador', 'recepcionista', 'auditor', 'housekeeping', 'bodega', 'contador'],
+    parentId: null,
+    icono: '•',
+    ...mod,
+  });
+}
 
-## Cómo correr localmente
+/** Módulos de primer nivel (sin parentId) visibles para un rol dado. */
+export function getModulesForRole(rol) {
+  return registro.filter((m) => m.parentId === null && m.roles.includes(rol));
+}
 
-Como usa ES Modules nativos, no puedes abrir `index.html` directo con
-`file://` (los navegadores bloquean `import` en ese contexto). Sirve la
-carpeta con cualquier servidor estático simple, por ejemplo:
+/** Subpestañas de un módulo, visibles para un rol dado. */
+export function getSubModulesForRole(parentId, rol) {
+  return registro.filter((m) => m.parentId === parentId && m.roles.includes(rol));
+}
 
-```
-npx serve .
-# o
-python3 -m http.server 8080
-```
+/**
+ * Todos los módulos (de primer nivel Y subpestañas) visibles para un rol,
+ * en una sola lista en orden de registro.
+ */
+export function getFlatModulesForRole(rol) {
+  return registro.filter((m) => m.roles.includes(rol));
+}
 
-## Configuración pendiente antes de usar
-
-1. Ejecutar los archivos de `sql/` en orden (001 → 005) en el SQL Editor de
-   Supabase (Project → SQL Editor → New query, pegar y correr uno por uno).
-2. Crear el primer usuario (propietario):
-   - Ve a Authentication → Users en el dashboard de Supabase → "Add user" →
-     crea el usuario con su correo y una contraseña temporal.
-   - Copia su `id` (uuid) de esa misma pantalla.
-   - En SQL Editor, ejecuta:
-     ```sql
-     insert into usuarios (id, nombre, rol) values ('<uuid-aqui>', 'Tu Nombre', 'propietario');
-     ```
-3. Repite el paso 2 para cada persona del staff, usando el `rol` que le
-   corresponda: `propietario`, `administrador`, `recepcionista`, `auditor`,
-   `housekeeping`, `bodega`, `contador`.
-4. Confirmar con el contador el % de IVA real para alojamiento antes de
-   facturar — `tarifas.iva_porcentaje` quedó en 19% por defecto (ver nota en
-   `sql/003_tipos_habitacion_tarifas.sql`).
-5. Confirmar los precios reales de temporada alta — quedaron iguales a
-   temporada baja como valor inicial (ver
-   `sql/005_seed_santa_ana_house.sql`), ajustables desde Configuración →
-   Tarifas una vez esté cargado el sistema.
-6. Reemplazar `assets/img/logo.png` con el logo real del hotel (por ahora no
-   existe el archivo; el `<img>` se oculta solo si no lo encuentra).
-
-## Estado del proyecto
-
-**Ya construido:** esqueleto base (login, navegación, sistema de diseño,
-capa de datos) + módulo de Configuración (Habitaciones, Tipos de
-habitación, Tarifas), con las 16 habitaciones reales del hotel ya
-cargadas por seed SQL.
-
-**Pendiente:** Dashboard, Reservas, Recepción, Huéspedes, Housekeeping,
-Caja, y el resto del alcance de 24 módulos — se construyen en rondas
-siguientes sobre esta misma base, sin tocar `core/`.
+export function getModuleById(id) {
+  return registro.find((m) => m.id === id);
+}
