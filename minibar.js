@@ -11,6 +11,11 @@
 // Recepción al hacer check-out. Una vez liquidado (ver recepcion.js), ese
 // pago cae en reservas_pagos igual que cualquier abono, así que también
 // aparece automático en Caja e Indicadores.
+//
+// Cada consumo también descuenta el stock físico del minibar de esa
+// habitación en inventario_habitacion (ver inventario.js). Si se elimina un
+// consumo por error, el descuento se revierte. Esto es un registro
+// complementario para saber qué reponer — si falla no bloquea el cobro.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -19,6 +24,7 @@ import { formatCOP } from './currency.js';
 import { formatFechaHora } from './dates.js';
 import { getUsuarioActual } from './auth.js';
 import { calcularHabitacionesEnUso } from './cuentas.js';
+import { ajustarInventarioHabitacion } from './inventario.js';
 
 const ROLES_REGISTRAN_CONSUMO = ['propietario', 'administrador', 'recepcionista'];
 const ROLES_EDITAN_CATALOGO = ['propietario', 'administrador'];
@@ -204,6 +210,12 @@ async function cargarSeccionConsumo(elemento, container) {
         return;
       }
 
+      try {
+        await ajustarInventarioHabitacion(hab.habitacionId, productoId, -cantidad, usuario.id, 'consumo');
+      } catch (errInv) {
+        mostrarToast('Consumo cobrado, pero no se pudo actualizar el inventario de la habitación.', 'error');
+      }
+
       mostrarToast('Consumo registrado.', 'exito');
       await cargarSeccionConsumo(elemento, container);
     });
@@ -216,11 +228,31 @@ async function cargarSeccionConsumo(elemento, container) {
           textoConfirmar: 'Eliminar',
         });
         if (!ok) return;
-        const { error } = await supabase.from('minibar_consumos').delete().eq('id', Number(btn.dataset.id));
+
+        const consumoId = Number(btn.dataset.id);
+        const consumoOriginal = (consumos || []).find((c) => c.id === consumoId);
+
+        const { error } = await supabase.from('minibar_consumos').delete().eq('id', consumoId);
         if (error) {
           mostrarToast(`Error eliminando: ${error.message}`, 'error');
           return;
         }
+
+        if (consumoOriginal) {
+          try {
+            const usuario = getUsuarioActual();
+            await ajustarInventarioHabitacion(
+              consumoOriginal.habitacion_id,
+              consumoOriginal.producto_id,
+              consumoOriginal.cantidad,
+              usuario?.id || null,
+              'ajuste_habitacion'
+            );
+          } catch (errInv) {
+            mostrarToast('Consumo eliminado, pero no se pudo revertir el inventario de la habitación.', 'error');
+          }
+        }
+
         mostrarToast('Consumo eliminado.', 'exito');
         await cargarSeccionConsumo(elemento, container);
       });
