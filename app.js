@@ -7,11 +7,12 @@ import { iniciarSesion, cerrarSesion, restaurarSesion } from './auth.js';
 import { initRouter, renderPrimerModuloDisponible } from './router.js';
 import { initTabs } from './ui.js';
 
-// --- Módulos registrados (agregar una línea por módulo nuevo) ---
+// --- Módulos registrados (agregar una línea por módulo nuevo, en el
+// orden en que deben aparecer las pestañas) ---
+import './dashboard.js';
 import './config-habitaciones.js';
 import './config-tipos.js';
 import './config-tarifas.js';
-// import './dashboard.js';
 // import './reservas.js';
 // import './recepcion.js';
 // import './huespedes.js';
