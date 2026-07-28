@@ -10,14 +10,18 @@
 // habitación", "modificar fechas") sin la complejidad de un motor de drag
 // and drop hecho a mano. Puede añadirse más adelante si hace falta.
 //
-// Nota importante: si una habitación está en 'mantenimiento', 'bloqueada'
-// o 'fuera_servicio' (estado actual en la tabla habitaciones, cambiado
-// desde Housekeeping o Configuración), sus celdas se muestran marcadas y
-// no clickeables en TODO el rango visible — es un estado que dura hasta
-// que alguien lo revierta, no una fecha puntual. 'limpieza'/'inspeccion'
-// NO se marcan aquí porque son de horas, no de días: bloquear el
-// calendario por eso impediría vender fechas futuras sin motivo. Esos dos
-// estados ya se ven en Housekeeping y en las Alertas de Inicio.
+// Nota importante sobre el estado de la habitación (Housekeeping /
+// Configuración) frente al calendario:
+// - 'mantenimiento', 'bloqueada', 'fuera_servicio' son estados indefinidos
+//   (duran hasta que alguien los revierta): bloquean TODAS las fechas
+//   visibles, no solo hoy.
+// - 'ocupada', 'limpieza', 'inspeccion' son estados de hoy (deberían
+//   resolverse el mismo día): solo bloquean la columna de HOY. Las fechas
+//   futuras siguen disponibles para reservar, porque para entonces la
+//   habitación ya debería estar libre.
+// - Si ya existe una reserva para esa fecha, esa reserva manda (se ve el
+//   nombre del huésped) — el estado de la habitación solo se usa
+//   cuando no hay ninguna reserva cubriendo la celda.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -40,9 +44,16 @@ const CLASE_CELDA = {
   no_show: 'celda-estado-no_show',
 };
 
-const ESTADOS_BLOQUEO_HABITACION = ['mantenimiento', 'bloqueada', 'fuera_servicio'];
+// Bloquean todas las fechas visibles del calendario, no solo hoy.
+const ESTADOS_BLOQUEO_INDEFINIDO = ['mantenimiento', 'bloqueada', 'fuera_servicio'];
 
-const ETIQUETA_BLOQUEO = {
+// Solo bloquean la columna de hoy (se espera que se resuelvan el mismo día).
+const ESTADOS_BLOQUEO_HOY = ['ocupada', 'limpieza', 'inspeccion'];
+
+const ETIQUETA_ESTADO_HABITACION = {
+  ocupada: '🔴 Ocupada',
+  limpieza: '🧹 Limpieza',
+  inspeccion: '🔍 Inspección',
   mantenimiento: '🔧 Mantenim.',
   bloqueada: '🚫 Bloqueada',
   fuera_servicio: '⛔ Fuera serv.',
@@ -114,7 +125,8 @@ async function cargarCalendario(container) {
 
   const filas = (habitaciones || [])
     .map((h) => {
-      const habitacionBloqueada = ESTADOS_BLOQUEO_HABITACION.includes(h.estado);
+      const bloqueoIndefinido = ESTADOS_BLOQUEO_INDEFINIDO.includes(h.estado);
+      const bloqueoHoy = ESTADOS_BLOQUEO_HOY.includes(h.estado);
       const celdas = fechas
         .map((f) => {
           const iso = toISODate(f);
@@ -126,13 +138,13 @@ async function cargarCalendario(container) {
             const clase = CLASE_CELDA[reserva.estado] || '';
             return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-reserva-ocupada ${clase}" data-reserva-id="${reserva.id}">${escaparHTML(reserva.huesped_nombre)}</div></td>`;
           }
-          if (habitacionBloqueada) {
-            return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-habitacion-bloqueada ${h.estado}" title="Habitación en estado: ${h.estado}">${ETIQUETA_BLOQUEO[h.estado]}</div></td>`;
+          if (bloqueoIndefinido || (esHoy && bloqueoHoy)) {
+            return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-habitacion-bloqueada ${h.estado}" title="Habitación en estado: ${h.estado}">${ETIQUETA_ESTADO_HABITACION[h.estado]}</div></td>`;
           }
           return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-reserva-vacia" data-habitacion-id="${h.id}" data-fecha="${iso}">+</div></td>`;
         })
         .join('');
-      return `<tr><td class="celda-habitacion">${h.numero} — ${h.nombre}${habitacionBloqueada ? ` ${badgeEstadoHabitacion(h.estado)}` : ''}</td>${celdas}</tr>`;
+      return `<tr><td class="celda-habitacion">${h.numero} — ${h.nombre}${h.estado !== 'disponible' ? ` ${badgeEstadoHabitacion(h.estado)}` : ''}</td>${celdas}</tr>`;
     })
     .join('');
 
@@ -194,13 +206,14 @@ async function abrirModalReserva(container, reserva, prellenado) {
               <option value="">—</option>
               ${(habitaciones || [])
                 .map((h) => {
-                  const bloqueada = ESTADOS_BLOQUEO_HABITACION.includes(h.estado);
-                  // Si se está editando una reserva ya existente sobre una
-                  // habitación que después quedó bloqueada, se deja
-                  // seleccionable para no impedir arreglarla — solo se
-                  // deshabilita al CREAR una reserva nueva.
+                  const bloqueada = ESTADOS_BLOQUEO_INDEFINIDO.includes(h.estado);
+                  // El desplegable solo deshabilita habitaciones con
+                  // bloqueo INDEFINIDO (mantenimiento/bloqueada/fuera de
+                  // servicio). 'ocupada'/'limpieza'/'inspeccion' no
+                  // deshabilitan aquí porque esta reserva puede ser para
+                  // una fecha futura, cuando la habitación ya esté libre.
                   const deshabilitar = bloqueada && !editando;
-                  return `<option value="${h.id}" ${Number(habitacionDefault) === h.id ? 'selected' : ''} ${deshabilitar ? 'disabled' : ''}>${h.numero} — ${h.nombre}${bloqueada ? ` (${ETIQUETA_BLOQUEO[h.estado]})` : ''}</option>`;
+                  return `<option value="${h.id}" ${Number(habitacionDefault) === h.id ? 'selected' : ''} ${deshabilitar ? 'disabled' : ''}>${h.numero} — ${h.nombre}${bloqueada ? ` (${ETIQUETA_ESTADO_HABITACION[h.estado]})` : ''}</option>`;
                 })
                 .join('')}
             </select>
