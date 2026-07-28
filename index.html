@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap"
     rel="stylesheet"
   />
   <link rel="stylesheet" href="styles.css" />
@@ -19,7 +19,7 @@
     <div class="login-card">
       <img src="logo.png" alt="Santa Ana House 21" class="logo-login" onerror="this.style.display='none'" />
       <h1 class="login-titulo">Santa Ana House 21</h1>
-      <p style="margin:-0.5rem 0 1rem; font-size:0.8rem; letter-spacing:0.06em; text-transform:uppercase; color:var(--color-texto-suave);">Sistema Integral de Gestión Hotelera</p>
+      <p class="subtitulo-sistema" style="margin:-0.25rem 0 1rem;">Sistema Integral de Gestión Hotelera</p>
       <p>Ingresa con tu correo y contraseña asignados por el hotel.</p>
       <form id="form-login" class="form-login">
         <label>
@@ -41,13 +41,13 @@
 
     <header class="app-header">
       <div class="app-header-top">
+        <img src="logo.png" alt="Santa Ana House 21" class="logo-header" onerror="this.style.display='none'" />
         <div class="usuario-info">
           <span id="nombre-usuario-activo"></span>
           <button id="btn-cerrar-sesion" class="btn-cerrar-sesion">Cerrar sesión</button>
         </div>
-        <img src="logo.png" alt="Santa Ana House 21" class="logo-header" onerror="this.style.display='none'" />
       </div>
-      <p style="margin:0.15rem 0 0.5rem; font-size:0.7rem; letter-spacing:0.08em; text-transform:uppercase; text-align:center; color:var(--color-texto-suave);">Sistema Integral de Gestión Hotelera</p>
+      <p class="subtitulo-sistema" style="margin:0.1rem 0 0.6rem;">Sistema Integral de Gestión Hotelera</p>
 
       <!-- Pestañas de primer nivel (secciones) + una segunda fila que
            muestra solo las subpestañas de la sección activa. -->
