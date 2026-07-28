@@ -4,16 +4,18 @@
 // del software (los 24 módulos acordados) mientras se construyen uno por
 // uno. Cada entrada de este archivo es temporal: cuando un módulo se
 // construya de verdad, se quita su registerModule() de aquí y se crea su
-// propio archivo dedicado (housekeeping.js, caja.js, etc.), igual que los
-// módulos que ya están listos (Dashboard, Configuración, Reservas,
-// Recepción, Huéspedes, Housekeeping, Caja).
+// propio archivo dedicado (housekeeping.js, caja.js, indicadores.js, etc.),
+// igual que los módulos que ya están listos (Dashboard, Configuración,
+// Reservas, Recepción, Huéspedes, Housekeeping, Caja, Indicadores).
 //
 // Los módulos pendientes que no se usan a diario están agrupados en 4
 // pestañas contenedoras (Inventario, Finanzas, Análisis, Administración)
 // usando el mismo mecanismo parentId que ya usa Configuración con sus
 // subpestañas — así el menú principal no crece sin control. Housekeeping y
 // Caja ya tienen su propio archivo y quedan sueltas arriba porque el staff
-// las usa todos los días.
+// las usa todos los días. Indicadores también tiene su propio archivo,
+// pero sigue viviendo como subpestaña de "Análisis" (mismo lugar que ya
+// tenía como placeholder).
 //
 // No tocan la base de datos — son solo vista, sin tablas ni RLS propias.
 
@@ -95,7 +97,7 @@ const GRUPOS = [
     descripcion: 'Reportes, indicadores, estadísticas históricas y auditoría del sistema.',
     hijos: [
       { icono: '📈', label: 'Reportes', resumen: 'Reportes operativos exportables a Excel/PDF.' },
-      { icono: '📌', label: 'Indicadores', resumen: 'Ocupación, ADR, RevPAR y comparativos.' },
+      { icono: '📌', label: 'Indicadores', resumen: 'Ocupación, ingresos efectivo/digital y comparativos por día, semana o mes.' },
       { icono: '📉', label: 'Estadísticas', resumen: 'Tendencias históricas de ocupación e ingresos.' },
       { icono: '🔍', label: 'Auditoría', resumen: 'Bitácora de quién hizo qué y cuándo.' },
     ],
@@ -127,7 +129,8 @@ GRUPOS.forEach((grupo) => {
   });
 });
 
-// --- Módulos "próximamente" (Caja ya se construyó — ver caja.js) ---
+// --- Módulos "próximamente" (Caja e Indicadores ya se construyeron — ver
+// caja.js e indicadores.js) ---
 const MODULOS_PENDIENTES = [
   {
     id: 'minibar',
@@ -211,7 +214,7 @@ const MODULOS_PENDIENTES = [
     features: [
       'Resumen de ingresos (Caja, Facturación) y gastos (Gastos, Compras)',
       'Exportable para el contador',
-      'Mismo patrón de "lectura entre módulos" que ya usa el Dashboard',
+      'Mismo patrón de "lectura entre módulos" que ya usa el Dashboard e Indicadores',
     ],
   },
   {
@@ -235,23 +238,10 @@ const MODULOS_PENDIENTES = [
     roles: ['propietario', 'administrador', 'auditor'],
     parentId: 'grupo-analisis',
     titulo: 'Reportes',
-    descripcion: 'Reportes operativos exportables (ocupación, ingresos, gastos, huéspedes).',
+    descripcion: 'Reportes operativos exportables (ocupación, ingresos, gastos, huéspedes) a partir de los mismos datos que ya muestra Indicadores.',
     features: [
       'Reportes por rango de fechas',
       'Exportación a Excel y PDF',
-    ],
-  },
-  {
-    id: 'indicadores',
-    label: 'Indicadores',
-    icono: '📌',
-    roles: ['propietario', 'administrador'],
-    parentId: 'grupo-analisis',
-    titulo: 'Indicadores',
-    descripcion: 'KPIs clave del negocio hotelero.',
-    features: [
-      'Ocupación %, ADR (tarifa promedio), RevPAR',
-      'Comparativos por período',
     ],
   },
   {
@@ -261,7 +251,7 @@ const MODULOS_PENDIENTES = [
     roles: ['propietario', 'administrador'],
     parentId: 'grupo-analisis',
     titulo: 'Estadísticas',
-    descripcion: 'Tendencias históricas de ocupación, ingresos y comportamiento de huéspedes.',
+    descripcion: 'Tendencias históricas de ocupación, ingresos y comportamiento de huéspedes, con gráficas sobre los mismos datos de Indicadores.',
     features: [
       'Gráficas de ocupación e ingresos en el tiempo',
       'Estacionalidad y comparativos año a año',
