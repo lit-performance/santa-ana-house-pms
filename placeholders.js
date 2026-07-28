@@ -4,18 +4,20 @@
 // del software (los 24 módulos acordados) mientras se construyen uno por
 // uno. Cada entrada de este archivo es temporal: cuando un módulo se
 // construya de verdad, se quita su registerModule() de aquí y se crea su
-// propio archivo dedicado (housekeeping.js, caja.js, indicadores.js, etc.),
-// igual que los módulos que ya están listos (Dashboard, Configuración,
-// Reservas, Recepción, Huéspedes, Housekeeping, Caja, Indicadores).
+// propio archivo dedicado (housekeeping.js, caja.js, indicadores.js,
+// minibar.js, etc.), igual que los módulos que ya están listos (Dashboard,
+// Configuración, Reservas, Recepción, Huéspedes, Housekeeping, Caja,
+// Indicadores, Minibar).
 //
 // Los módulos pendientes que no se usan a diario están agrupados en 4
 // pestañas contenedoras (Inventario, Finanzas, Análisis, Administración)
 // usando el mismo mecanismo parentId que ya usa Configuración con sus
 // subpestañas — así el menú principal no crece sin control. Housekeeping y
 // Caja ya tienen su propio archivo y quedan sueltas arriba porque el staff
-// las usa todos los días. Indicadores también tiene su propio archivo,
-// pero sigue viviendo como subpestaña de "Análisis" (mismo lugar que ya
-// tenía como placeholder).
+// las usa todos los días. Indicadores y Minibar también tienen su propio
+// archivo, pero siguen viviendo como subpestañas de "Análisis" e
+// "Inventario" respectivamente (mismo lugar que ya tenían como
+// placeholder).
 //
 // No tocan la base de datos — son solo vista, sin tablas ni RLS propias.
 
@@ -69,7 +71,7 @@ const GRUPOS = [
     titulo: 'Inventario',
     descripcion: 'Minibar, existencias, compras a proveedores y el directorio de proveedores del hotel.',
     hijos: [
-      { icono: '🥤', label: 'Minibar', resumen: 'Control de consumo y cargo a la cuenta del huésped.' },
+      { icono: '🥤', label: 'Minibar', resumen: 'Catálogo real de Santa Ana, consumo por habitación y cargo automático al check-out.' },
       { icono: '📦', label: 'Inventario', resumen: 'Insumos y suministros del hotel, existencias mínimas.' },
       { icono: '🛒', label: 'Compras', resumen: 'Órdenes de compra y seguimiento de pedidos.' },
       { icono: '🚚', label: 'Proveedores', resumen: 'Directorio y condiciones comerciales.' },
@@ -129,24 +131,9 @@ GRUPOS.forEach((grupo) => {
   });
 });
 
-// --- Módulos "próximamente" (Caja e Indicadores ya se construyeron — ver
-// caja.js e indicadores.js) ---
+// --- Módulos "próximamente" (Caja, Indicadores y Minibar ya se
+// construyeron — ver caja.js, indicadores.js y minibar.js) ---
 const MODULOS_PENDIENTES = [
-  {
-    id: 'minibar',
-    label: 'Minibar',
-    icono: '🥤',
-    roles: ['propietario', 'administrador', 'recepcionista', 'bodega'],
-    parentId: 'grupo-inventario',
-    titulo: 'Minibar',
-    descripcion: 'Control de consumo del minibar por habitación y su cargo a la cuenta del huésped.',
-    features: [
-      'Catálogo de productos con precio (ya tenemos la lista de precios real de Santa Ana)',
-      'Inventario estándar por habitación (ya tenemos el checklist real por repisa/nevera)',
-      'Registro de consumo en cada check-out',
-      'Cargo automático al total de la estadía',
-    ],
-  },
   {
     id: 'inventario',
     label: 'Inventario',
