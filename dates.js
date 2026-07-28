@@ -1,6 +1,6 @@
 // dates.js
 //
-// Formateo de fechas reutilizable.
+// Formateo y aritmética de fechas reutilizable.
 
 export function formatFechaCorta(fechaISO) {
   if (!fechaISO) return '—';
@@ -12,4 +12,21 @@ export function formatFechaHora(fechaISO) {
   if (!fechaISO) return '—';
   const d = new Date(fechaISO);
   return d.toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+// Devuelve 'YYYY-MM-DD' a partir de un objeto Date, en hora local (no UTC),
+// para usar directo en <input type="date"> y en comparaciones con columnas
+// `date` de Postgres.
+export function toISODate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// Suma (o resta, con n negativo) n días a una fecha. Acepta Date o string 'YYYY-MM-DD'.
+export function addDays(fecha, n) {
+  const d = typeof fecha === 'string' ? new Date(fecha + 'T00:00:00') : new Date(fecha);
+  d.setDate(d.getDate() + n);
+  return d;
 }
