@@ -12,9 +12,15 @@
 //
 // Además, sin importar si hay turno abierto o no, se muestra siempre una
 // tabla de "Habitaciones en uso" con el saldo pendiente de cada una (mismo
-// cálculo que usa Recepción al liquidar en el check-out — ver
-// cuentas.js), para que el staff pueda ver de un vistazo quién debe qué
-// antes de hacer el checkout.
+// cálculo que usa Recepción al liquidar en el check-out — ver cuentas.js).
+//
+// Entrega de turno: mientras hay un turno abierto se muestra un desglose de
+// cuánto entró en efectivo (físico) y cuánto en medios digitales
+// (transferencia/tarjeta/otro) — eso es lo que el recepcionista saliente le
+// reporta al que entra. Al cerrar la caja ese desglose se guarda en
+// caja_turnos (total_ingresos_efectivo/digital, total_egresos_efectivo/
+// digital — ver sql/011_caja_desglose.sql) y queda visible después en
+// "Cierres anteriores", así sirve de bitácora de entregas de turno.
 //
 // Regla de negocio: solo puede haber UN turno de caja abierto a la vez
 // (impuesto por un índice único parcial en la base de datos — ver
@@ -194,6 +200,7 @@ async function pintarTurnoAbierto(container, wrap, turno) {
   const ingresosReservasEfectivo = (pagos || [])
     .filter((p) => p.metodo_pago === 'Efectivo')
     .reduce((sum, p) => sum + Number(p.monto), 0);
+  const ingresosReservasDigital = ingresosReservas - ingresosReservasEfectivo;
 
   const ingresosManuales = (movimientos || []).filter((m) => m.tipo === 'ingreso');
   const egresosManuales = (movimientos || []).filter((m) => m.tipo === 'egreso');
@@ -206,9 +213,18 @@ async function pintarTurnoAbierto(container, wrap, turno) {
     .reduce((sum, m) => sum + Number(m.monto), 0);
   const totalIngresosManuales = ingresosManuales.reduce((sum, m) => sum + Number(m.monto), 0);
   const totalEgresosManuales = egresosManuales.reduce((sum, m) => sum + Number(m.monto), 0);
+  const ingresosManualesDigital = totalIngresosManuales - ingresosManualesEfectivo;
+  const egresosManualesDigital = totalEgresosManuales - egresosManualesEfectivo;
 
-  const saldoEsperadoEfectivo =
-    Number(turno.saldo_inicial) + ingresosReservasEfectivo + ingresosManualesEfectivo - egresosManualesEfectivo;
+  // --- Desglose para entrega de turno: efectivo (físico) vs digital ---
+  const desglose = {
+    ingresosEfectivo: ingresosReservasEfectivo + ingresosManualesEfectivo,
+    ingresosDigital: ingresosReservasDigital + ingresosManualesDigital,
+    egresosEfectivo: egresosManualesEfectivo,
+    egresosDigital: egresosManualesDigital,
+  };
+
+  const saldoEsperadoEfectivo = Number(turno.saldo_inicial) + desglose.ingresosEfectivo - desglose.egresosEfectivo;
 
   wrap.innerHTML = `
     <div class="grid-tres-columnas">
@@ -219,14 +235,27 @@ async function pintarTurnoAbierto(container, wrap, turno) {
       </div>
       <div class="stat-card stat-card-verde">
         <div class="stat-card-label">Ingresos del turno</div>
-        <div class="stat-card-valor">${formatCOP(ingresosReservas + totalIngresosManuales)}</div>
+        <div class="stat-card-valor">${formatCOP(desglose.ingresosEfectivo + desglose.ingresosDigital)}</div>
         <div class="stat-card-subtitulo">Reservas: ${formatCOP(ingresosReservas)} · Manuales: ${formatCOP(totalIngresosManuales)}</div>
       </div>
       <div class="stat-card stat-card-naranja">
         <div class="stat-card-label">Esperado en efectivo</div>
         <div class="stat-card-valor">${formatCOP(saldoEsperadoEfectivo)}</div>
-        <div class="stat-card-subtitulo">Egresos: ${formatCOP(totalEgresosManuales)}</div>
+        <div class="stat-card-subtitulo">Egresos: ${formatCOP(desglose.egresosEfectivo + desglose.egresosDigital)}</div>
       </div>
+    </div>
+
+    <div class="tarjeta">
+      <h3>💱 Desglose para entrega de turno</h3>
+      <table class="tabla-simple">
+        <thead><tr><th>Medio</th><th>Ingresos</th><th>Egresos</th></tr></thead>
+        <tbody>
+          <tr><td>💵 Efectivo (físico)</td><td>${formatCOP(desglose.ingresosEfectivo)}</td><td>${formatCOP(desglose.egresosEfectivo)}</td></tr>
+          <tr><td>💳 Digital (transferencia/tarjeta/otro)</td><td>${formatCOP(desglose.ingresosDigital)}</td><td>${formatCOP(desglose.egresosDigital)}</td></tr>
+          <tr style="font-weight:700;"><td>Total</td><td>${formatCOP(desglose.ingresosEfectivo + desglose.ingresosDigital)}</td><td>${formatCOP(desglose.egresosEfectivo + desglose.egresosDigital)}</td></tr>
+        </tbody>
+      </table>
+      <p class="mensaje-vacio" style="margin-top:0.5rem;">Esto es lo que el recepcionista saliente le reporta al que entra: cuánto hay en efectivo físico y cuánto entró por medios digitales.</p>
     </div>
 
     ${
@@ -286,7 +315,7 @@ async function pintarTurnoAbierto(container, wrap, turno) {
   if (permitido) {
     wrap.querySelector('#btn-nuevo-movimiento').addEventListener('click', () => abrirModalMovimiento(container, turno.id));
     wrap.querySelector('#btn-cerrar-caja').addEventListener('click', () =>
-      abrirModalCierre(container, turno, saldoEsperadoEfectivo)
+      abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglose)
     );
   }
 
@@ -310,9 +339,10 @@ async function cargarHistorialCierres(elemento) {
 
   elemento.innerHTML = `
     <h3>Cierres anteriores</h3>
+    <p class="mensaje-vacio">Bitácora de entregas de turno: quién cerró, cuánto entró en efectivo vs digital, y la diferencia del arqueo.</p>
     <div class="tabla-scroll">
       <table class="tabla-simple">
-        <thead><tr><th>Cerrada</th><th>Base inicial</th><th>Esperado</th><th>Contado</th><th>Diferencia</th></tr></thead>
+        <thead><tr><th>Cerrada</th><th>Base inicial</th><th>Ingresos efectivo</th><th>Ingresos digital</th><th>Esperado</th><th>Contado</th><th>Diferencia</th></tr></thead>
         <tbody>
           ${
             (data || [])
@@ -320,12 +350,14 @@ async function cargarHistorialCierres(elemento) {
                 (t) => `<tr>
                   <td>${formatFechaHora(t.cerrado_en)}</td>
                   <td>${formatCOP(t.saldo_inicial)}</td>
+                  <td>${formatCOP(t.total_ingresos_efectivo)}</td>
+                  <td>${formatCOP(t.total_ingresos_digital)}</td>
                   <td>${formatCOP(t.saldo_esperado)}</td>
                   <td>${formatCOP(t.saldo_contado)}</td>
                   <td style="color:${Number(t.diferencia) === 0 ? 'var(--color-verde-oscuro)' : 'var(--color-rojo-oscuro)'}; font-weight:700;">${formatCOP(t.diferencia)}</td>
                 </tr>`
               )
-              .join('') || '<tr><td colspan="5" class="mensaje-vacio">Sin cierres registrados todavía.</td></tr>'
+              .join('') || '<tr><td colspan="7" class="mensaje-vacio">Sin cierres registrados todavía.</td></tr>'
           }
         </tbody>
       </table>
@@ -403,7 +435,7 @@ async function abrirModalMovimiento(container, turnoId) {
   });
 }
 
-async function abrirModalCierre(container, turno, saldoEsperadoEfectivo) {
+async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglose) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
@@ -411,6 +443,13 @@ async function abrirModalCierre(container, turno, saldoEsperadoEfectivo) {
       <h3>Cerrar caja</h3>
       <form id="form-cierre-caja">
         <div class="modal-contenido">
+          <table class="tabla-simple" style="margin-bottom:0.75rem;">
+            <tbody>
+              <tr><td>Ingresos efectivo</td><td class="monto">${formatCOP(desglose.ingresosEfectivo)}</td></tr>
+              <tr><td>Ingresos digital</td><td class="monto">${formatCOP(desglose.ingresosDigital)}</td></tr>
+              <tr><td>Egresos efectivo</td><td class="monto">${formatCOP(desglose.egresosEfectivo)}</td></tr>
+            </tbody>
+          </table>
           <p class="mensaje-vacio">Esperado en efectivo: <strong class="monto">${formatCOP(saldoEsperadoEfectivo)}</strong></p>
           <div class="form-grid" style="margin-top:0.75rem;">
             <label>Efectivo contado
@@ -456,6 +495,10 @@ async function abrirModalCierre(container, turno, saldoEsperadoEfectivo) {
         saldo_esperado: saldoEsperadoEfectivo,
         saldo_contado: saldoContado,
         diferencia,
+        total_ingresos_efectivo: desglose.ingresosEfectivo,
+        total_ingresos_digital: desglose.ingresosDigital,
+        total_egresos_efectivo: desglose.egresosEfectivo,
+        total_egresos_digital: desglose.egresosDigital,
         observaciones_cierre: form.get('observaciones_cierre').trim() || null,
         cerrado_por: usuario.id,
         cerrado_en: new Date().toISOString(),
