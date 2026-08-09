@@ -18,6 +18,14 @@
 // pago al check-in (que alimenta Caja automático), firma digital (canvas)
 // y consentimiento Habeas Data.
 //
+// Nota sobre "Ver disponibilidad" en la tarjeta Estadía: abre una mini
+// versión del calendario de Reservas (próximos 10 días x habitaciones) para
+// decidir dónde alojar sin salir del check-in. Solo la columna de HOY es
+// clicable para elegir habitación (el check-in es para hoy); las demás
+// columnas son solo para ver si la habitación se queda libre durante toda
+// la estadía. Usa las mismas reglas de bloqueo que el calendario de
+// Reservas (ver reservas.js) para que ambas pantallas digan lo mismo.
+//
 // Nota de alcance: "Fotografía del documento" queda como un campo de URL
 // (para pegar un link si ya la subieron a otro lado) — la carga de
 // archivos requiere configurar Supabase Storage, pendiente para una
@@ -36,6 +44,12 @@
 // completos que los del huésped principal. Se guardan en la columna
 // jsonb `acompanantes_detalle` de recepcion_checkins (uno o varios
 // bloques, se pueden agregar más con "+ Agregar otro acompañante").
+//
+// Nota sobre métodos de pago: la lista completa vive en METODOS_PAGO —
+// Efectivo, Nequi, Daviplata, QR, Transferencia Bancaria, Datáfono,
+// Llave. Caja consolida cada uno como si fuera una cuenta aparte (ver
+// caja.js), así que agregar/quitar un método aquí también cambia lo que
+// se ve ahí.
 //
 // Nota sobre el pago al check-in: "Pago al check-in" (pendiente / parcial
 // / anticipado) NO se guarda en una columna suelta — si hay monto, se
@@ -65,7 +79,21 @@ import { formatCOP } from './currency.js';
 import { calcularHabitacionesEnUso } from './cuentas.js';
 
 const TIPOS_DOCUMENTO = ['Cédula de ciudadanía', 'Cédula de extranjería', 'Pasaporte', 'Tarjeta de identidad', 'PEP', 'Otro'];
-const METODOS_PAGO = ['Efectivo', 'Transferencia', 'Tarjeta', 'Otro'];
+const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
+
+// Mismas reglas de bloqueo que reservas.js, para que "Ver disponibilidad"
+// diga exactamente lo mismo que el calendario de Reservas.
+const ESTADOS_BLOQUEO_INDEFINIDO = ['mantenimiento', 'bloqueada', 'fuera_servicio'];
+const ESTADOS_BLOQUEO_HOY = ['ocupada', 'limpieza', 'inspeccion'];
+const ETIQUETA_ESTADO_HABITACION = {
+  ocupada: '🔴 Ocupada',
+  limpieza: '🧹 Limpieza',
+  inspeccion: '🔍 Inspección',
+  mantenimiento: '🔧 Mantenim.',
+  bloqueada: '🚫 Bloqueada',
+  fuera_servicio: '⛔ Fuera serv.',
+};
+const DIAS_VISIBLES_DISPONIBILIDAD = 10;
 
 async function render(container) {
   await vistaLista(container);
@@ -293,10 +321,7 @@ async function abrirModalLiquidacion(container, item) {
             </label>
             <label>Método de pago
               <select name="metodo_pago">
-                <option value="Efectivo">Efectivo</option>
-                <option value="Transferencia">Transferencia</option>
-                <option value="Tarjeta">Tarjeta</option>
-                <option value="Otro">Otro</option>
+                ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
               </select>
             </label>
           </div>
@@ -420,6 +445,106 @@ function filaAcompanante(indice) {
   `;
 }
 
+// --- "Ver disponibilidad": mini calendario (10 días) para elegir
+// habitación desde dentro del check-in, sin salir a la pestaña Reservas. ---
+async function abrirModalDisponibilidad(selectHabitacion) {
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+  const hoyISO = toISODate(hoy);
+  const fechas = Array.from({ length: DIAS_VISIBLES_DISPONIBILIDAD }, (_, i) => addDays(hoy, i));
+  const rangoFinISO = toISODate(addDays(hoy, DIAS_VISIBLES_DISPONIBILIDAD));
+
+  const [{ data: habitaciones, error: errHab }, { data: reservas, error: errRes }] = await Promise.all([
+    supabase.from('habitaciones').select('id, numero, nombre, estado').order('numero'),
+    supabase.from('reservas').select('*').lte('fecha_checkin', rangoFinISO).gt('fecha_checkout', hoyISO),
+  ]);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+
+  if (errHab || errRes) {
+    overlay.innerHTML = `
+      <div class="modal-caja modal-caja-ancha">
+        <h3>Disponibilidad de habitaciones</h3>
+        <p class="mensaje-vacio">Error cargando disponibilidad: ${(errHab || errRes).message}</p>
+        <div class="modal-acciones"><button type="button" class="btn btn-secundario" id="btn-cerrar-disponibilidad">Cerrar</button></div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#btn-cerrar-disponibilidad').addEventListener('click', () => overlay.remove());
+    return;
+  }
+
+  const encabezados = fechas
+    .map((f) => {
+      const iso = toISODate(f);
+      const esHoy = iso === hoyISO;
+      const label = f.toLocaleDateString('es-CO', { weekday: 'short', day: '2-digit', month: 'short' });
+      return `<th class="${esHoy ? 'celda-columna-hoy' : ''}">${label}${esHoy ? ' (hoy)' : ''}</th>`;
+    })
+    .join('');
+
+  const filas = (habitaciones || [])
+    .map((h) => {
+      const bloqueoIndefinido = ESTADOS_BLOQUEO_INDEFINIDO.includes(h.estado);
+      const bloqueoHoy = ESTADOS_BLOQUEO_HOY.includes(h.estado);
+      const celdas = fechas
+        .map((f) => {
+          const iso = toISODate(f);
+          const esHoy = iso === hoyISO;
+          const reserva = (reservas || []).find(
+            (r) => r.habitacion_id === h.id && iso >= r.fecha_checkin && iso < r.fecha_checkout
+          );
+          if (reserva) {
+            return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-reserva-ocupada" title="${escaparHTML(reserva.huesped_nombre)}">${escaparHTML(reserva.huesped_nombre)}</div></td>`;
+          }
+          if (bloqueoIndefinido || (esHoy && bloqueoHoy)) {
+            return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-habitacion-bloqueada ${h.estado}" title="Habitación en estado: ${h.estado}">${ETIQUETA_ESTADO_HABITACION[h.estado]}</div></td>`;
+          }
+          // Disponible: solo la columna de HOY es clicable para elegir
+          // habitación (el check-in es para hoy); las demás columnas son
+          // solo informativas, para ver si se queda libre toda la estadía.
+          if (esHoy) {
+            return `<td class="celda-columna-hoy"><div class="celda-reserva-vacia btn-elegir-habitacion" data-habitacion-id="${h.id}" title="Elegir esta habitación">✅ Libre</div></td>`;
+          }
+          return `<td><div class="celda-reserva-vacia" style="cursor:default;">Libre</div></td>`;
+        })
+        .join('');
+      return `<tr><td class="celda-habitacion">${h.numero} — ${h.nombre}</td>${celdas}</tr>`;
+    })
+    .join('');
+
+  overlay.innerHTML = `
+    <div class="modal-caja modal-caja-ancha">
+      <h3>Disponibilidad de habitaciones</h3>
+      <p class="mensaje-vacio">Clic en "✅ Libre" de la columna de hoy para elegir esa habitación. Las columnas futuras son solo para ver si se mantiene libre durante la estadía.</p>
+      <div class="tabla-scroll" style="max-height:60vh;">
+        <table class="tabla-calendario-reservas">
+          <thead><tr><th>Habitación</th>${encabezados}</tr></thead>
+          <tbody>${filas}</tbody>
+        </table>
+      </div>
+      <div class="modal-acciones" style="margin-top:1rem;">
+        <button type="button" class="btn btn-secundario" id="btn-cerrar-disponibilidad">Cerrar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#btn-cerrar-disponibilidad').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  overlay.querySelectorAll('.btn-elegir-habitacion').forEach((el) => {
+    el.addEventListener('click', () => {
+      selectHabitacion.value = el.dataset.habitacionId;
+      overlay.remove();
+      mostrarToast('Habitación seleccionada.', 'exito');
+    });
+  });
+}
+
 async function vistaFormulario(container, reservaIdPreseleccionada) {
   const [{ data: habitaciones }, { data: tarifas }, { data: reservas }] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre').order('numero'),
@@ -540,6 +665,9 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
             <input type="number" name="deposito" step="1000" />
           </label>
         </div>
+        <div class="acciones-tarjeta" style="justify-content:flex-start; margin-top:0.5rem;">
+          <button type="button" id="btn-ver-disponibilidad" class="btn btn-secundario btn-chico">📅 Ver disponibilidad</button>
+        </div>
         <p id="monto-estimado-hint" class="mensaje-vacio" style="font-size:0.8rem; margin-top:0.5rem;"></p>
 
         <div class="form-grid" style="margin-top:0.75rem;">
@@ -620,6 +748,11 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
   container.querySelector('#btn-limpiar-firma').addEventListener('click', () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+  });
+
+  // --- Ver disponibilidad ---
+  container.querySelector('#btn-ver-disponibilidad').addEventListener('click', () => {
+    abrirModalDisponibilidad(container.querySelector('#select-habitacion'));
   });
 
   // --- Acompañantes: toggle + bloques dinámicos con datos completos ---
