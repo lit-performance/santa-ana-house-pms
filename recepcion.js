@@ -723,12 +723,20 @@ async function ejecutarCheckout(container, item, comentarioCheckout) {
     // mostrando esos días futuros como ocupados aunque la habitación ya
     // esté libre. Si el check-out es en la fecha esperada (o después),
     // no se toca la fecha.
+    //
+    // La tabla exige fecha_checkout > fecha_checkin (constraint
+    // "checkout_despues_checkin") — por eso nunca se acorta por debajo de
+    // checkin + 1 día, incluso si el walk-in entró y salió el mismo día.
     const hoyISO = toISODate(new Date());
-    const { data: reservaActual } = await supabase.from('reservas').select('fecha_checkout').eq('id', item.reservaId).maybeSingle();
+    const { data: reservaActual } = await supabase.from('reservas').select('fecha_checkin, fecha_checkout').eq('id', item.reservaId).maybeSingle();
 
     const payloadReserva = { estado: 'check_out' };
-    if (reservaActual && hoyISO < reservaActual.fecha_checkout) {
-      payloadReserva.fecha_checkout = hoyISO;
+    if (reservaActual) {
+      const pisoMinimo = toISODate(addDays(reservaActual.fecha_checkin, 1));
+      const nuevaFecha = hoyISO > pisoMinimo ? hoyISO : pisoMinimo;
+      if (nuevaFecha < reservaActual.fecha_checkout) {
+        payloadReserva.fecha_checkout = nuevaFecha;
+      }
     }
 
     await supabase.from('reservas').update(payloadReserva).eq('id', item.reservaId);
