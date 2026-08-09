@@ -1,17 +1,22 @@
 // recepcion.js
 //
-// Módulo 4: Recepción. Pantalla de manejo diario de la recepcionista.
-// Al entrar se ve de un vistazo: cuántas llegadas y salidas hay hoy, cuántas
-// habitaciones están ocupadas y cuánto saldo pendiente hay en total. Debajo,
-// una tarjeta de "Llegadas de hoy" (reservas sin check-in todavía, con botón
-// para iniciar el check-in ya precargado) y la tabla de habitaciones en uso
-// con badge "Sale hoy" y saldo pendiente resaltado, ordenada para que lo más
-// urgente (sale hoy + debe plata) aparezca primero.
+// Módulo 4: Recepción. Pantalla de manejo diario de la recepcionista — y
+// también la pantalla de "inicio" del sistema (se fusionó aquí el antiguo
+// módulo Dashboard/Inicio, que quedó redundante como pestaña aparte).
+// Al entrar se ve de un vistazo: cuántas llegadas y salidas hay hoy,
+// cuántas habitaciones están ocupadas, cuánto saldo pendiente hay en total,
+// y un resumen rápido del estado del resto de habitaciones (libres, en
+// limpieza, fuera de servicio). Debajo, una tarjeta de "Llegadas de hoy"
+// (reservas sin check-in todavía, con botón para iniciar el check-in ya
+// precargado) y la tabla de habitaciones en uso con badge "Sale hoy" y
+// saldo pendiente resaltado, ordenada para que lo más urgente (sale hoy +
+// debe plata) aparezca primero.
 //
 // "+ Nuevo Check-in" abre un formulario completo (reemplaza el contenido del
 // contenedor, no un modal — son demasiados campos para un modal chico) con
-// todos los datos que pide el Módulo 4, firma digital (canvas) y
-// consentimiento Habeas Data.
+// todos los datos que pide el Módulo 4, acompañantes con datos completos,
+// pago al check-in (que alimenta Caja automático), firma digital (canvas)
+// y consentimiento Habeas Data.
 //
 // Nota de alcance: "Fotografía del documento" queda como un campo de URL
 // (para pegar un link si ya la subieron a otro lado) — la carga de
@@ -21,9 +26,25 @@
 // Nota importante: TODO check-in (venga de una reserva o sea walk-in)
 // queda vinculado a una fila en `reservas` con estado 'hospedado', y
 // además guarda/actualiza la ficha del huésped en `huespedes` (por
-// numero_documento). Esto es lo que hace que el calendario de Reservas,
-// las tarjetas de Inicio y el módulo Huéspedes reflejen la ocupación e
-// historial real sin importar por dónde entró el huésped.
+// numero_documento). Esto es lo que hace que el calendario de Reservas
+// y el módulo Huéspedes reflejen la ocupación e historial real sin
+// importar por dónde entró el huésped.
+//
+// Nota sobre acompañantes: si el huésped trae acompañante(s), se piden
+// TODOS sus datos (no solo el nombre) — nombre, tipo y número de
+// documento, nacionalidad, fecha de nacimiento y celular — igual de
+// completos que los del huésped principal. Se guardan en la columna
+// jsonb `acompanantes_detalle` de recepcion_checkins (uno o varios
+// bloques, se pueden agregar más con "+ Agregar otro acompañante").
+//
+// Nota sobre el pago al check-in: "Pago al check-in" (pendiente / parcial
+// / anticipado) NO se guarda en una columna suelta — si hay monto, se
+// inserta directo en `reservas_pagos` (la misma tabla de abonos que ya
+// usan Reservas y la liquidación del check-out), así el pago aparece
+// automático en Caja ("Ingresos por reservas"), Indicadores y
+// Contabilidad sin ningún paso manual extra. El campo "Monto total
+// estimado" (noches × tarifa) es solo una ayuda visual para la
+// recepcionista, no se guarda.
 //
 // Nota sobre liquidación al check-out: el botón "Check-out" ya NO libera
 // la habitación directo — abre un modal que muestra el saldo pendiente
@@ -99,6 +120,11 @@ async function cargarVistaHoy(container) {
     ? await supabase.from('reservas').select('id, fecha_checkout').in('id', reservaIds)
     : { data: [], error: null };
 
+  // --- Estado general de habitaciones (lo relevante que traía la antigua
+  // pestaña "Inicio"): útil para saber de un vistazo dónde ubicar un
+  // walk-in sin tener que abrir otra pantalla. ---
+  const { data: habitacionesEstado, error: errHabEstado } = await supabase.from('habitaciones').select('estado');
+
   if (errLlegadas || errReservasActivas) {
     wrapCheckins.innerHTML = `<p class="mensaje-vacio">Error cargando el resumen de hoy: ${(errLlegadas || errReservasActivas).message}</p>`;
     return;
@@ -113,7 +139,12 @@ async function cargarVistaHoy(container) {
   const salidasHoy = itemsConSaleHoy.filter((i) => i.saleHoy).length;
   const saldoTotalPendiente = itemsConSaleHoy.reduce((acc, i) => acc + Math.max(0, i.saldoPendiente), 0);
 
-  // --- Resumen del día (4 tarjetas rápidas) ---
+  const contarHabitaciones = (estado) => (habitacionesEstado || []).filter((h) => h.estado === estado).length;
+  const libres = contarHabitaciones('disponible');
+  const enLimpieza = contarHabitaciones('limpieza');
+  const fueraServicio = contarHabitaciones('fuera_servicio') + contarHabitaciones('mantenimiento') + contarHabitaciones('bloqueada');
+
+  // --- Resumen del día (4 tarjetas rápidas + línea de estado general) ---
   wrapResumen.innerHTML = `
     <div class="grid-dos-columnas" style="grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));">
       <div class="tarjeta" style="text-align:center;">
@@ -133,6 +164,11 @@ async function cargarVistaHoy(container) {
         <p style="font-size:1.5rem; font-weight:700; margin:0.2rem 0 0; color:${saldoTotalPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'};">${formatCOP(saldoTotalPendiente)}</p>
       </div>
     </div>
+    ${
+      errHabEstado
+        ? ''
+        : `<p style="margin:0.75rem 0 0; font-size:0.85rem; color:var(--color-texto-suave);">🏠 Libres: <strong>${libres}</strong> &nbsp;·&nbsp; 🧹 En limpieza: <strong>${enLimpieza}</strong> &nbsp;·&nbsp; ⛔ Fuera de servicio: <strong>${fueraServicio}</strong></p>`
+    }
   `;
 
   // --- Llegadas de hoy (reservas sin check-in todavía) ---
@@ -351,6 +387,39 @@ function escaparHTML(texto) {
   return div.innerHTML;
 }
 
+function filaAcompanante(indice) {
+  return `
+    <div class="bloque-acompanante tarjeta" style="margin-bottom:0.75rem;">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-bottom:0.5rem;">
+        <strong style="font-size:0.85rem;">Acompañante ${indice}</strong>
+        <button type="button" class="btn btn-secundario btn-chico btn-quitar-acompanante">Quitar</button>
+      </div>
+      <div class="form-grid">
+        <label>Nombre completo
+          <input type="text" name="acomp_nombre" required />
+        </label>
+        <label>Tipo de documento
+          <select name="acomp_tipo_documento">
+            ${TIPOS_DOCUMENTO.map((t) => `<option value="${t}">${t}</option>`).join('')}
+          </select>
+        </label>
+        <label>Número de documento
+          <input type="text" name="acomp_numero_documento" />
+        </label>
+        <label>Nacionalidad
+          <input type="text" name="acomp_nacionalidad" />
+        </label>
+        <label>Fecha de nacimiento
+          <input type="date" name="acomp_fecha_nacimiento" />
+        </label>
+        <label>Celular
+          <input type="text" name="acomp_celular" />
+        </label>
+      </div>
+    </div>
+  `;
+}
+
 async function vistaFormulario(container, reservaIdPreseleccionada) {
   const [{ data: habitaciones }, { data: tarifas }, { data: reservas }] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre').order('numero'),
@@ -427,11 +496,18 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
             <input type="url" name="foto_documento_url" placeholder="https://..." />
           </label>
         </div>
-        <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
-          Acompañantes (nombres, uno por línea)
-          <textarea name="acompanantes" rows="2" style="padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit;"></textarea>
+
+        <label style="display:flex; align-items:center; gap:0.5rem; margin-top:1.25rem; font-size:0.9rem;">
+          <input type="checkbox" id="check-tiene-acompanante" style="width:auto;" />
+          ¿Trae acompañante(s)?
         </label>
-        <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
+        <div id="acompanantes-wrap" class="oculto" style="margin-top:0.75rem;">
+          <p class="mensaje-vacio" style="margin-bottom:0.5rem;">Se piden los mismos datos del huésped principal para cada acompañante.</p>
+          <div id="acompanantes-lista"></div>
+          <button type="button" id="btn-agregar-acompanante" class="btn btn-secundario btn-chico">+ Agregar otro acompañante</button>
+        </div>
+
+        <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1.25rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
           Observaciones
           <textarea name="observaciones" rows="2" style="padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit;"></textarea>
         </label>
@@ -449,7 +525,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
           <label>Tarifa
             <select name="tarifa_id" id="select-tarifa">
               <option value="">—</option>
-              ${(tarifas || []).map((t) => `<option value="${t.id}">${t.codigo}</option>`).join('')}
+              ${(tarifas || []).map((t) => `<option value="${t.id}">${t.codigo} / ${formatCOP(t.precio_temporada_baja)}</option>`).join('')}
             </select>
           </label>
           <label>Cantidad de noches
@@ -460,10 +536,25 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
               ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
             </select>
           </label>
-          <label>Depósito
+          <label>Depósito de garantía (opcional)
             <input type="number" name="deposito" step="1000" />
           </label>
         </div>
+        <p id="monto-estimado-hint" class="mensaje-vacio" style="font-size:0.8rem; margin-top:0.5rem;"></p>
+
+        <div class="form-grid" style="margin-top:0.75rem;">
+          <label>Pago al check-in
+            <select id="select-estado-pago" name="estado_pago_checkin">
+              <option value="pendiente">Pendiente (sin pago todavía)</option>
+              <option value="parcial">Parcial (abono)</option>
+              <option value="anticipado">Anticipado (pago completo)</option>
+            </select>
+          </label>
+          <label id="wrap-monto-pago-checkin" class="oculto">Monto a cobrar ahora
+            <input type="number" name="monto_pago_checkin" id="input-monto-pago" step="1000" min="0" />
+          </label>
+        </div>
+        <p class="mensaje-vacio" style="font-size:0.78rem; margin-top:0.4rem;">Si registras un pago aquí, queda automáticamente en Caja como "Ingreso por reserva" — no hay que registrarlo de nuevo en Caja.</p>
       </div>
 
       <div class="tarjeta">
@@ -531,6 +622,68 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
   });
 
+  // --- Acompañantes: toggle + bloques dinámicos con datos completos ---
+  const checkAcompanante = container.querySelector('#check-tiene-acompanante');
+  const wrapAcompanantes = container.querySelector('#acompanantes-wrap');
+  const listaAcompanantes = container.querySelector('#acompanantes-lista');
+  let contadorAcompanantes = 0;
+
+  function agregarBloqueAcompanante() {
+    contadorAcompanantes += 1;
+    const envoltorio = document.createElement('div');
+    envoltorio.innerHTML = filaAcompanante(contadorAcompanantes);
+    const bloque = envoltorio.firstElementChild;
+    bloque.querySelector('.btn-quitar-acompanante').addEventListener('click', () => bloque.remove());
+    listaAcompanantes.appendChild(bloque);
+  }
+
+  checkAcompanante.addEventListener('change', () => {
+    wrapAcompanantes.classList.toggle('oculto', !checkAcompanante.checked);
+    if (checkAcompanante.checked && listaAcompanantes.children.length === 0) {
+      agregarBloqueAcompanante();
+    }
+  });
+
+  container.querySelector('#btn-agregar-acompanante').addEventListener('click', agregarBloqueAcompanante);
+
+  // --- Monto estimado de la estadía (noches × tarifa) + pago al check-in ---
+  const selectTarifaEstadia = container.querySelector('#select-tarifa');
+  const inputNochesEstadia = container.querySelector('#input-noches');
+  const hintMontoEstimado = container.querySelector('#monto-estimado-hint');
+  const selectEstadoPago = container.querySelector('#select-estado-pago');
+  const wrapMontoPago = container.querySelector('#wrap-monto-pago-checkin');
+  const inputMontoPago = container.querySelector('#input-monto-pago');
+
+  function calcularMontoEstimado() {
+    const tarifa = (tarifas || []).find((t) => t.id === Number(selectTarifaEstadia.value));
+    const noches = Number(inputNochesEstadia.value) || 0;
+    if (!tarifa || noches <= 0) return 0;
+    return noches * Number(tarifa.precio_temporada_baja);
+  }
+
+  function actualizarHintMonto() {
+    const estimado = calcularMontoEstimado();
+    hintMontoEstimado.textContent = estimado > 0 ? `Monto estimado de la estadía: ${formatCOP(estimado)}` : '';
+    if (selectEstadoPago.value === 'anticipado') {
+      inputMontoPago.value = estimado;
+    }
+  }
+
+  function actualizarVisibilidadPago() {
+    const estado = selectEstadoPago.value;
+    const mostrar = estado === 'parcial' || estado === 'anticipado';
+    wrapMontoPago.classList.toggle('oculto', !mostrar);
+    if (estado === 'anticipado') {
+      inputMontoPago.value = calcularMontoEstimado();
+    } else if (estado === 'pendiente') {
+      inputMontoPago.value = '';
+    }
+  }
+
+  selectTarifaEstadia.addEventListener('change', actualizarHintMonto);
+  inputNochesEstadia.addEventListener('input', actualizarHintMonto);
+  selectEstadoPago.addEventListener('change', actualizarVisibilidadPago);
+
   // --- Vincular reserva: precarga campos (compartido entre el selector
   // manual y la preselección que llega desde "Llegadas de hoy") ---
   function aplicarReserva(reserva) {
@@ -543,6 +696,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
     const noches = Math.round((new Date(reserva.fecha_checkout) - new Date(reserva.fecha_checkin)) / 86400000);
     container.querySelector('#input-noches').value = noches > 0 ? noches : '';
+    actualizarHintMonto();
   }
 
   container.querySelector('#select-reserva').addEventListener('change', (e) => {
@@ -556,6 +710,8 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     selectReserva.value = String(reservaIdPreseleccionada);
     aplicarReserva((reservas || []).find((r) => r.id === reservaIdPreseleccionada));
   }
+
+  actualizarHintMonto();
 
   container.querySelector('#btn-cancelar-checkin').addEventListener('click', () => vistaLista(container));
 
@@ -577,6 +733,26 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     const nombre = form.get('nombre').trim();
     const documento = form.get('numero_documento').trim();
     const celular = form.get('celular').trim() || null;
+    const estadoPagoCheckin = form.get('estado_pago_checkin');
+    const montoPagoCheckin = form.get('monto_pago_checkin') ? Number(form.get('monto_pago_checkin')) : 0;
+
+    // --- Acompañantes: recolectar los bloques (si el checkbox está
+    // marcado) y descartar cualquier bloque que haya quedado sin nombre. ---
+    let acompanantesDetalle = null;
+    if (checkAcompanante.checked) {
+      const bloques = Array.from(listaAcompanantes.querySelectorAll('.bloque-acompanante'));
+      acompanantesDetalle = bloques
+        .map((bloque) => ({
+          nombre: bloque.querySelector('[name="acomp_nombre"]').value.trim(),
+          tipo_documento: bloque.querySelector('[name="acomp_tipo_documento"]').value,
+          numero_documento: bloque.querySelector('[name="acomp_numero_documento"]').value.trim() || null,
+          nacionalidad: bloque.querySelector('[name="acomp_nacionalidad"]').value.trim() || null,
+          fecha_nacimiento: bloque.querySelector('[name="acomp_fecha_nacimiento"]').value || null,
+          celular: bloque.querySelector('[name="acomp_celular"]').value.trim() || null,
+        }))
+        .filter((a) => a.nombre);
+      if (acompanantesDetalle.length === 0) acompanantesDetalle = null;
+    }
 
     // --- Vincular o crear la reserva asociada ---
     let reservaIdFinal = null;
@@ -612,6 +788,24 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
         mostrarToast(`Check-in continuará, pero no se pudo crear la reserva asociada: ${errReservaNueva.message}`, 'error');
       } else {
         reservaIdFinal = nuevaReserva.id;
+      }
+    }
+
+    // --- Pago al check-in: si hay monto, se inserta en reservas_pagos
+    // (misma tabla que lee Caja automático) — no hay campo suelto. ---
+    if ((estadoPagoCheckin === 'parcial' || estadoPagoCheckin === 'anticipado') && montoPagoCheckin > 0) {
+      if (!reservaIdFinal) {
+        mostrarToast('No hay una reserva vinculada; no se pudo registrar el pago en Caja.', 'error');
+      } else {
+        const { error: errPagoInicial } = await supabase.from('reservas_pagos').insert({
+          reserva_id: reservaIdFinal,
+          monto: montoPagoCheckin,
+          metodo_pago: form.get('metodo_pago'),
+          comentarios: estadoPagoCheckin === 'anticipado' ? 'Pago anticipado registrado en el check-in.' : 'Abono parcial registrado en el check-in.',
+        });
+        if (errPagoInicial) {
+          mostrarToast(`Check-in continuará, pero no se pudo registrar el pago en Caja: ${errPagoInicial.message}`, 'error');
+        }
       }
     }
 
@@ -651,7 +845,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
       celular,
       empresa: form.get('empresa').trim() || null,
       placa_vehiculo: form.get('placa_vehiculo').trim() || null,
-      acompanantes: form.get('acompanantes').trim() || null,
+      acompanantes_detalle: acompanantesDetalle,
       foto_documento_url: form.get('foto_documento_url').trim() || null,
       firma_digital: hayFirma ? canvas.toDataURL('image/png') : null,
       consentimiento_habeas_data: true,
