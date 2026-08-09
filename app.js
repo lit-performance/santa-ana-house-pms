@@ -27,6 +27,7 @@ import './compras.js';
 import './facturacion.js';
 import './contabilidad.js';
 import './reportes.js';
+import './estadisticas.js';
 
 // Pestañas "próximamente" para el resto del alcance (demo al cliente).
 // A medida que cada módulo se construya de verdad, se quita su entrada de
