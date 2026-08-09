@@ -104,6 +104,17 @@
 // habitaciones (la anterior pasa a limpieza, la nueva a ocupada) para que
 // Reservas y Housekeeping no queden desincronizados.
 //
+// Nota sobre minibar en la liquidación del check-out: el modal de
+// "Check-out" ya no muestra el consumo de minibar como una sola línea de
+// total — lista cada producto consumido (con cantidad y monto) y permite
+// agregar (o quitar) un consumo de último momento sin salir del modal, por
+// si algo no se había registrado todavía. Cada cambio ahí recalcula el
+// monto total y el saldo pendiente en vivo, y también actualiza el
+// inventario de la habitación (misma función que usa minibar.js), así que
+// nunca queda desincronizado. Ver también el badge "🥤" en la tabla de
+// habitaciones en uso, que avisa cuándo una habitación ya tiene consumo de
+// minibar antes de siquiera abrir el checkout.
+//
 // Nota sobre el resumen visual de la liquidación (tarjeta Estadía): se
 // arma en vivo con lo que la recepcionista va llenando (habitación,
 // tarifa, noches, tipo de pago, monto a cobrar, saldo) usando cajones de
@@ -137,6 +148,8 @@ import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatFechaHora, toISODate, addDays } from './dates.js';
 import { formatCOP } from './currency.js';
 import { calcularHabitacionesEnUso } from './cuentas.js';
+import { getUsuarioActual } from './auth.js';
+import { ajustarInventarioHabitacion } from './inventario.js';
 
 const TIPOS_DOCUMENTO = ['Cédula de ciudadanía', 'Cédula de extranjería', 'Pasaporte', 'Tarjeta de identidad', 'PEP', 'Otro'];
 const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
@@ -344,7 +357,10 @@ async function cargarVistaHoy(container) {
             <td>${formatFechaHora(i.horaIngreso)}</td>
             <td>${i.cantidadNoches ?? '—'}</td>
             <td>${i.saleHoy ? '🔶 Sí' : '—'}</td>
-            <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(i.saldoPendiente)}</td>
+            <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">
+              ${formatCOP(i.saldoPendiente)}
+              ${i.montoMinibar > 0 ? `<div style="font-size:0.72rem; font-weight:500; color:var(--color-texto-suave);">🥤 incluye ${formatCOP(i.montoMinibar)} de minibar</div>` : ''}
+            </td>
             <td style="white-space:nowrap;">
               <button type="button" class="btn-editar btn-editar-checkin" data-checkin-id="${i.checkinId}">✏️ Editar</button>
               <button type="button" class="btn-editar btn-checkout" data-checkin-id="${i.checkinId}">Check-out</button>
@@ -373,36 +389,38 @@ async function cargarVistaHoy(container) {
 }
 
 async function abrirModalLiquidacion(container, item) {
-  const saldoMostrado = Math.max(0, item.saldoPendiente);
+  // --- Consumos de minibar de esta reserva, en detalle (no solo el total
+  // que ya trae `item` desde cuentas.js) + catálogo de productos activos,
+  // para poder agregar un consumo de último momento sin salir de aquí. ---
+  const [{ data: consumosIniciales, error: errConsumos }, { data: productos, error: errProductos }] = await Promise.all([
+    item.reservaId
+      ? supabase
+          .from('minibar_consumos')
+          .select('*, minibar_productos(nombre)')
+          .eq('reserva_id', item.reservaId)
+          .order('creado_en', { ascending: false })
+      : Promise.resolve({ data: [], error: null }),
+    supabase.from('minibar_productos').select('*').eq('activo', true).order('categoria').order('nombre'),
+  ]);
+
+  if (errConsumos || errProductos) {
+    mostrarToast(`Error cargando el detalle de minibar: ${(errConsumos || errProductos).message}`, 'error');
+    return;
+  }
+
+  let consumos = consumosIniciales || [];
+  const categorias = [...new Set((productos || []).map((p) => p.categoria))];
+  let montoEditadoManualmente = false;
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
-    <div class="modal-caja">
+    <div class="modal-caja modal-caja-ancha">
       <h3>Liquidar y hacer check-out</h3>
       <form id="form-liquidacion">
         <div class="modal-contenido">
           <p class="mensaje-vacio">${escaparHTML(item.huespedNombre)} — ${item.habitacionLabel}</p>
-          <table class="tabla-simple" style="margin-top:0.5rem;">
-            <tbody>
-              <tr><td>Habitación (${item.cantidadNoches ?? '—'} noches)</td><td class="monto">${formatCOP(item.montoHabitacion)}</td></tr>
-              ${item.montoMinibar > 0 ? `<tr><td>Minibar</td><td class="monto">${formatCOP(item.montoMinibar)}</td></tr>` : ''}
-              <tr><td><strong>Monto total</strong></td><td class="monto" style="font-weight:700;">${formatCOP(item.montoTotal)}</td></tr>
-              <tr><td>Abonado hasta ahora</td><td class="monto">${formatCOP(item.totalAbonado)}</td></tr>
-              <tr><td><strong>Saldo pendiente</strong></td><td class="monto" style="color:${saldoMostrado > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(saldoMostrado)}</td></tr>
-            </tbody>
-          </table>
-          <div class="form-grid" style="margin-top:1rem;">
-            <label>Pago que recibes ahora
-              <input type="number" name="pago_final" step="1000" min="0" value="${saldoMostrado}" />
-            </label>
-            <label>Método de pago
-              <select name="metodo_pago">
-                ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
-              </select>
-            </label>
-          </div>
-          <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">Si el pago es menor al saldo pendiente, te pedimos confirmar antes de liberar la habitación — el checkout no se bloquea, pero el saldo queda registrado como pendiente de cobro.</p>
+          <div id="liquidacion-cuerpo"></div>
         </div>
         <div class="modal-acciones">
           <button type="button" class="btn btn-secundario" id="btn-cancelar-liquidacion">Cancelar</button>
@@ -412,6 +430,185 @@ async function abrirModalLiquidacion(container, item) {
     </div>
   `;
   document.body.appendChild(overlay);
+
+  const cuerpo = overlay.querySelector('#liquidacion-cuerpo');
+  const inputPago = () => overlay.querySelector('input[name="pago_final"]');
+
+  function montoMinibarActual() {
+    return consumos.reduce((sum, c) => sum + Number(c.monto), 0);
+  }
+  function montoTotalActual() {
+    return item.montoHabitacion + montoMinibarActual();
+  }
+  function saldoActual() {
+    return Math.max(0, montoTotalActual() - item.totalAbonado);
+  }
+
+  function pintarLiquidacion() {
+    // Antes de reescribir el HTML, se guarda lo que la recepcionista ya
+    // haya tocado (método de pago, monto editado a mano) para no perderlo
+    // al repintar después de agregar/quitar un consumo.
+    const metodoPrevio = overlay.querySelector('select[name="metodo_pago"]')?.value;
+    const pagoPrevio = inputPago()?.value;
+
+    const montoMinibar = montoMinibarActual();
+    const montoTotal = montoTotalActual();
+    const saldo = saldoActual();
+
+    cuerpo.innerHTML = `
+      <table class="tabla-simple" style="margin-top:0.5rem;">
+        <tbody>
+          <tr><td>Habitación (${item.cantidadNoches ?? '—'} noches)</td><td class="monto">${formatCOP(item.montoHabitacion)}</td></tr>
+          <tr><td><strong>Monto total</strong></td><td class="monto" style="font-weight:700;">${formatCOP(montoTotal)}</td></tr>
+          <tr><td>Abonado hasta ahora</td><td class="monto">${formatCOP(item.totalAbonado)}</td></tr>
+          <tr><td><strong>Saldo pendiente</strong></td><td class="monto" style="color:${saldo > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(saldo)}</td></tr>
+        </tbody>
+      </table>
+
+      <div class="tarjeta" style="margin-top:0.85rem; background:var(--color-fondo-suave, #f8f9fb);">
+        <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.5rem;">
+          <h3 style="margin:0;">🥤 Consumo de minibar</h3>
+          <strong style="font-size:1.1rem;">${formatCOP(montoMinibar)}</strong>
+        </div>
+        ${
+          consumos.length === 0
+            ? '<p class="mensaje-vacio">Sin consumo de minibar registrado.</p>'
+            : `
+          <table class="tabla-simple">
+            <thead><tr><th>Producto</th><th>Cant.</th><th>Monto</th><th></th></tr></thead>
+            <tbody>
+              ${consumos
+                .map(
+                  (c) => `
+                <tr>
+                  <td>${c.minibar_productos ? escaparHTML(c.minibar_productos.nombre) : '—'}</td>
+                  <td>${c.cantidad}</td>
+                  <td class="monto">${formatCOP(c.monto)}</td>
+                  <td><button type="button" class="btn-editar btn-quitar-consumo-liquidacion" data-id="${c.id}">Quitar</button></td>
+                </tr>
+              `
+                )
+                .join('')}
+            </tbody>
+          </table>
+        `
+        }
+        ${
+          item.reservaId
+            ? `
+          <div class="form-grid" style="margin-top:0.75rem;">
+            <label>Producto
+              <select id="select-producto-liquidacion">
+                ${categorias
+                  .map(
+                    (cat) => `
+                  <optgroup label="${escaparHTML(cat)}">
+                    ${(productos || [])
+                      .filter((p) => p.categoria === cat)
+                      .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)} — ${formatCOP(p.precio)}</option>`)
+                      .join('')}
+                  </optgroup>
+                `
+                  )
+                  .join('')}
+              </select>
+            </label>
+            <label>Cantidad
+              <input type="number" id="input-cantidad-liquidacion" min="1" value="1" />
+            </label>
+            <button type="button" id="btn-agregar-consumo-liquidacion" class="btn btn-secundario btn-chico">+ Agregar consumo</button>
+          </div>
+        `
+            : '<p class="mensaje-vacio" style="margin-top:0.5rem;">Este check-in no tiene reserva vinculada; no se puede agregar consumo desde aquí.</p>'
+        }
+      </div>
+
+      <div class="form-grid" style="margin-top:1rem;">
+        <label>Pago que recibes ahora
+          <input type="number" name="pago_final" step="1000" min="0" value="${montoEditadoManualmente && pagoPrevio !== undefined ? pagoPrevio : saldo}" />
+        </label>
+        <label>Método de pago
+          <select name="metodo_pago">
+            ${METODOS_PAGO.map((m) => `<option value="${m}" ${metodoPrevio === m ? 'selected' : ''}>${m}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">Si el pago es menor al saldo pendiente, te pedimos confirmar antes de liberar la habitación — el checkout no se bloquea, pero el saldo queda registrado como pendiente de cobro.</p>
+    `;
+
+    inputPago().addEventListener('input', () => {
+      montoEditadoManualmente = true;
+    });
+
+    cuerpo.querySelectorAll('.btn-quitar-consumo-liquidacion').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const consumoId = Number(btn.dataset.id);
+        const consumo = consumos.find((c) => c.id === consumoId);
+        if (!consumo) return;
+
+        const { error } = await supabase.from('minibar_consumos').delete().eq('id', consumoId);
+        if (error) {
+          mostrarToast(`Error quitando el consumo: ${error.message}`, 'error');
+          return;
+        }
+
+        try {
+          const usuario = getUsuarioActual();
+          await ajustarInventarioHabitacion(item.habitacionId, consumo.producto_id, consumo.cantidad, usuario?.id || null, 'ajuste_habitacion');
+        } catch (errInv) {
+          mostrarToast('Consumo quitado, pero no se pudo revertir el inventario de la habitación.', 'error');
+        }
+
+        consumos = consumos.filter((c) => c.id !== consumoId);
+        mostrarToast('Consumo quitado de la liquidación.', 'exito');
+        pintarLiquidacion();
+      });
+    });
+
+    const btnAgregar = cuerpo.querySelector('#btn-agregar-consumo-liquidacion');
+    if (btnAgregar) {
+      btnAgregar.addEventListener('click', async () => {
+        const selectProducto = cuerpo.querySelector('#select-producto-liquidacion');
+        const inputCantidad = cuerpo.querySelector('#input-cantidad-liquidacion');
+        const productoId = Number(selectProducto.value);
+        const cantidad = Number(inputCantidad.value) || 1;
+        const producto = (productos || []).find((p) => p.id === productoId);
+        if (!producto) return;
+
+        const usuario = getUsuarioActual();
+        const { data: nuevoConsumo, error } = await supabase
+          .from('minibar_consumos')
+          .insert({
+            reserva_id: item.reservaId,
+            habitacion_id: item.habitacionId,
+            producto_id: productoId,
+            cantidad,
+            precio_unitario: producto.precio,
+            monto: producto.precio * cantidad,
+            registrado_por: usuario?.id || null,
+          })
+          .select('*, minibar_productos(nombre)')
+          .single();
+
+        if (error) {
+          mostrarToast(`Error agregando el consumo: ${error.message}`, 'error');
+          return;
+        }
+
+        try {
+          await ajustarInventarioHabitacion(item.habitacionId, productoId, -cantidad, usuario?.id || null, 'consumo');
+        } catch (errInv) {
+          mostrarToast('Consumo agregado, pero no se pudo actualizar el inventario de la habitación.', 'error');
+        }
+
+        consumos = [nuevoConsumo, ...consumos];
+        mostrarToast('Consumo agregado a la liquidación.', 'exito');
+        pintarLiquidacion();
+      });
+    }
+  }
+
+  pintarLiquidacion();
 
   overlay.querySelector('#btn-cancelar-liquidacion').addEventListener('click', () => overlay.remove());
   overlay.addEventListener('click', (e) => {
@@ -423,7 +620,7 @@ async function abrirModalLiquidacion(container, item) {
     const form = new FormData(e.target);
     const pagoFinal = form.get('pago_final') ? Number(form.get('pago_final')) : 0;
     const metodoPago = form.get('metodo_pago');
-    const saldoRestante = item.saldoPendiente - pagoFinal;
+    const saldoRestante = saldoActual() - pagoFinal;
 
     if (saldoRestante > 0) {
       const ok = await mostrarConfirmacion({
