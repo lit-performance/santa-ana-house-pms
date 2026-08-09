@@ -1,10 +1,17 @@
 // recepcion.js
 //
-// Módulo 4: Recepción. Vista principal: huéspedes actualmente hospedados,
-// con acción de Check-out. "+ Nuevo Check-in" abre un formulario completo
-// (reemplaza el contenido del contenedor, no un modal — son demasiados
-// campos para un modal chico) con todos los datos que pide el Módulo 4,
-// firma digital (canvas) y consentimiento Habeas Data.
+// Módulo 4: Recepción. Pantalla de manejo diario de la recepcionista.
+// Al entrar se ve de un vistazo: cuántas llegadas y salidas hay hoy, cuántas
+// habitaciones están ocupadas y cuánto saldo pendiente hay en total. Debajo,
+// una tarjeta de "Llegadas de hoy" (reservas sin check-in todavía, con botón
+// para iniciar el check-in ya precargado) y la tabla de habitaciones en uso
+// con badge "Sale hoy" y saldo pendiente resaltado, ordenada para que lo más
+// urgente (sale hoy + debe plata) aparezca primero.
+//
+// "+ Nuevo Check-in" abre un formulario completo (reemplaza el contenido del
+// contenedor, no un modal — son demasiados campos para un modal chico) con
+// todos los datos que pide el Módulo 4, firma digital (canvas) y
+// consentimiento Habeas Data.
 //
 // Nota de alcance: "Fotografía del documento" queda como un campo de URL
 // (para pegar un link si ya la subieron a otro lado) — la carga de
@@ -45,10 +52,14 @@ async function render(container) {
 
 async function vistaLista(container) {
   container.innerHTML = `
-    <h2>Recepción</h2>
-    <div class="acciones-tarjeta" style="justify-content:flex-start; margin-bottom:1rem;">
-      <button id="btn-nuevo-checkin" class="btn btn-primario">+ Nuevo Check-in</button>
+    <h2>Recepción — Hoy</h2>
+    <div id="resumen-hoy-wrap" style="margin-bottom:1.25rem;">
+      <p class="mensaje-vacio">Cargando…</p>
     </div>
+    <div class="acciones-tarjeta" style="justify-content:flex-start; margin-bottom:1.25rem;">
+      <button id="btn-nuevo-checkin" class="btn btn-primario">+ Nuevo Check-in (walk-in)</button>
+    </div>
+    <div id="llegadas-hoy-wrap" style="margin-bottom:1.25rem;"></div>
     <div id="checkins-wrap" class="tabla-scroll">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
@@ -56,26 +67,128 @@ async function vistaLista(container) {
 
   container.querySelector('#btn-nuevo-checkin').addEventListener('click', () => vistaFormulario(container));
 
-  await cargarCheckinsActivos(container);
+  await cargarVistaHoy(container);
 }
 
-async function cargarCheckinsActivos(container) {
-  const wrap = container.querySelector('#checkins-wrap');
+async function cargarVistaHoy(container) {
+  const wrapResumen = container.querySelector('#resumen-hoy-wrap');
+  const wrapLlegadas = container.querySelector('#llegadas-hoy-wrap');
+  const wrapCheckins = container.querySelector('#checkins-wrap');
 
   let items = [];
   try {
     items = await calcularHabitacionesEnUso();
   } catch (error) {
-    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando huéspedes: ${error.message}</p>`;
+    wrapResumen.innerHTML = '';
+    wrapLlegadas.innerHTML = '';
+    wrapCheckins.innerHTML = `<p class="mensaje-vacio">Error cargando huéspedes: ${error.message}</p>`;
     return;
   }
 
-  if (items.length === 0) {
-    wrap.innerHTML = '<p class="mensaje-vacio">No hay huéspedes hospedados actualmente.</p>';
+  const hoyISO = toISODate(new Date());
+
+  const { data: llegadasHoy, error: errLlegadas } = await supabase
+    .from('reservas')
+    .select('id, habitacion_id, huesped_nombre, huesped_telefono, huesped_documento, fecha_checkin, fecha_checkout, tarifa_id, habitaciones(numero, nombre)')
+    .eq('fecha_checkin', hoyISO)
+    .in('estado', ['reservada', 'confirmada'])
+    .order('id');
+
+  const reservaIds = items.map((i) => i.reservaId).filter((id) => id !== null);
+  const { data: reservasActivas, error: errReservasActivas } = reservaIds.length
+    ? await supabase.from('reservas').select('id, fecha_checkout').in('id', reservaIds)
+    : { data: [], error: null };
+
+  if (errLlegadas || errReservasActivas) {
+    wrapCheckins.innerHTML = `<p class="mensaje-vacio">Error cargando el resumen de hoy: ${(errLlegadas || errReservasActivas).message}</p>`;
     return;
   }
 
-  wrap.innerHTML = `
+  const checkoutPorReserva = new Map((reservasActivas || []).map((r) => [r.id, r.fecha_checkout]));
+  const itemsConSaleHoy = items.map((i) => ({
+    ...i,
+    saleHoy: i.reservaId ? checkoutPorReserva.get(i.reservaId) === hoyISO : false,
+  }));
+
+  const salidasHoy = itemsConSaleHoy.filter((i) => i.saleHoy).length;
+  const saldoTotalPendiente = itemsConSaleHoy.reduce((acc, i) => acc + Math.max(0, i.saldoPendiente), 0);
+
+  // --- Resumen del día (4 tarjetas rápidas) ---
+  wrapResumen.innerHTML = `
+    <div class="grid-dos-columnas" style="grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));">
+      <div class="tarjeta" style="text-align:center;">
+        <p class="mensaje-vacio" style="margin:0;">Llegadas hoy</p>
+        <p style="font-size:1.8rem; font-weight:700; margin:0.2rem 0 0;">${(llegadasHoy || []).length}</p>
+      </div>
+      <div class="tarjeta" style="text-align:center;">
+        <p class="mensaje-vacio" style="margin:0;">Salidas hoy</p>
+        <p style="font-size:1.8rem; font-weight:700; margin:0.2rem 0 0;">${salidasHoy}</p>
+      </div>
+      <div class="tarjeta" style="text-align:center;">
+        <p class="mensaje-vacio" style="margin:0;">Habitaciones ocupadas</p>
+        <p style="font-size:1.8rem; font-weight:700; margin:0.2rem 0 0;">${itemsConSaleHoy.length}</p>
+      </div>
+      <div class="tarjeta" style="text-align:center;">
+        <p class="mensaje-vacio" style="margin:0;">Saldo pendiente total</p>
+        <p style="font-size:1.5rem; font-weight:700; margin:0.2rem 0 0; color:${saldoTotalPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'};">${formatCOP(saldoTotalPendiente)}</p>
+      </div>
+    </div>
+  `;
+
+  // --- Llegadas de hoy (reservas sin check-in todavía) ---
+  if ((llegadasHoy || []).length === 0) {
+    wrapLlegadas.innerHTML = '';
+  } else {
+    wrapLlegadas.innerHTML = `
+      <div class="tarjeta">
+        <h3>🛬 Llegadas de hoy (${llegadasHoy.length})</h3>
+        <div class="tabla-scroll">
+          <table class="tabla-simple">
+            <thead>
+              <tr>
+                <th>Habitación</th>
+                <th>Huésped</th>
+                <th>Teléfono</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${llegadasHoy
+                .map(
+                  (r) => `
+                <tr>
+                  <td>${r.habitaciones ? `${escaparHTML(r.habitaciones.numero)} — ${escaparHTML(r.habitaciones.nombre)}` : '—'}</td>
+                  <td>${escaparHTML(r.huesped_nombre)}</td>
+                  <td>${escaparHTML(r.huesped_telefono || '—')}</td>
+                  <td><button type="button" class="btn-editar btn-iniciar-checkin" data-reserva-id="${r.id}">Iniciar check-in</button></td>
+                </tr>
+              `
+                )
+                .join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    wrapLlegadas.querySelectorAll('.btn-iniciar-checkin').forEach((btn) => {
+      btn.addEventListener('click', () => vistaFormulario(container, Number(btn.dataset.reservaId)));
+    });
+  }
+
+  // --- Habitaciones en uso, ordenadas por urgencia: sale hoy + debe plata
+  // primero, luego sale hoy, luego debe plata, luego el resto. ---
+  const itemsOrdenados = [...itemsConSaleHoy].sort((a, b) => {
+    const score = (i) => (i.saleHoy && i.saldoPendiente > 0 ? 3 : i.saleHoy ? 2 : i.saldoPendiente > 0 ? 1 : 0);
+    return score(b) - score(a);
+  });
+
+  if (itemsOrdenados.length === 0) {
+    wrapCheckins.innerHTML = '<p class="mensaje-vacio">No hay huéspedes hospedados actualmente.</p>';
+    return;
+  }
+
+  wrapCheckins.innerHTML = `
     <table class="tabla-simple">
       <thead>
         <tr>
@@ -84,20 +197,22 @@ async function cargarCheckinsActivos(container) {
           <th>Documento</th>
           <th>Hora ingreso</th>
           <th>Noches</th>
+          <th>Sale hoy</th>
           <th>Saldo pendiente</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
-        ${items
+        ${itemsOrdenados
           .map(
             (i) => `
-          <tr data-checkin-id="${i.checkinId}">
+          <tr data-checkin-id="${i.checkinId}" style="${i.saleHoy ? 'background:var(--color-alerta-fondo, #fff8e1);' : ''}">
             <td>${i.habitacionLabel}</td>
             <td>${escaparHTML(i.huespedNombre)}</td>
             <td>${i.tipoDocumento || '—'} ${i.numeroDocumento || ''}</td>
             <td>${formatFechaHora(i.horaIngreso)}</td>
             <td>${i.cantidadNoches ?? '—'}</td>
+            <td>${i.saleHoy ? '🔶 Sí' : '—'}</td>
             <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(i.saldoPendiente)}</td>
             <td><button type="button" class="btn-editar btn-checkout" data-checkin-id="${i.checkinId}">Check-out</button></td>
           </tr>
@@ -108,9 +223,9 @@ async function cargarCheckinsActivos(container) {
     </table>
   `;
 
-  wrap.querySelectorAll('.btn-checkout').forEach((btn) => {
+  wrapCheckins.querySelectorAll('.btn-checkout').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const item = items.find((i) => i.checkinId === Number(btn.dataset.checkinId));
+      const item = itemsOrdenados.find((i) => i.checkinId === Number(btn.dataset.checkinId));
       if (item) abrirModalLiquidacion(container, item);
     });
   });
@@ -227,7 +342,7 @@ async function ejecutarCheckout(container, item) {
   }
 
   mostrarToast('Check-out registrado. La habitación quedó en limpieza.', 'exito');
-  await cargarCheckinsActivos(container);
+  await vistaLista(container);
 }
 
 function escaparHTML(texto) {
@@ -236,7 +351,7 @@ function escaparHTML(texto) {
   return div.innerHTML;
 }
 
-async function vistaFormulario(container) {
+async function vistaFormulario(container, reservaIdPreseleccionada) {
   const [{ data: habitaciones }, { data: tarifas }, { data: reservas }] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre').order('numero'),
     supabase.from('tarifas').select('*').order('codigo'),
@@ -416,13 +531,10 @@ async function vistaFormulario(container) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
   });
 
-  // --- Vincular reserva: precarga campos ---
-  container.querySelector('#select-reserva').addEventListener('change', (e) => {
-    const reservaId = e.target.value;
-    if (!reservaId) return;
-    const reserva = (reservas || []).find((r) => String(r.id) === reservaId);
+  // --- Vincular reserva: precarga campos (compartido entre el selector
+  // manual y la preselección que llega desde "Llegadas de hoy") ---
+  function aplicarReserva(reserva) {
     if (!reserva) return;
-
     container.querySelector('input[name="nombre"]').value = reserva.huesped_nombre || '';
     container.querySelector('input[name="numero_documento"]').value = reserva.huesped_documento || '';
     container.querySelector('input[name="celular"]').value = reserva.huesped_telefono || '';
@@ -431,7 +543,19 @@ async function vistaFormulario(container) {
 
     const noches = Math.round((new Date(reserva.fecha_checkout) - new Date(reserva.fecha_checkin)) / 86400000);
     container.querySelector('#input-noches').value = noches > 0 ? noches : '';
+  }
+
+  container.querySelector('#select-reserva').addEventListener('change', (e) => {
+    const reservaId = e.target.value;
+    if (!reservaId) return;
+    aplicarReserva((reservas || []).find((r) => String(r.id) === reservaId));
   });
+
+  if (reservaIdPreseleccionada) {
+    const selectReserva = container.querySelector('#select-reserva');
+    selectReserva.value = String(reservaIdPreseleccionada);
+    aplicarReserva((reservas || []).find((r) => r.id === reservaIdPreseleccionada));
+  }
 
   container.querySelector('#btn-cancelar-checkin').addEventListener('click', () => vistaLista(container));
 
