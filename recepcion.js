@@ -717,7 +717,21 @@ async function ejecutarCheckout(container, item, comentarioCheckout) {
   }
 
   if (item.reservaId) {
-    await supabase.from('reservas').update({ estado: 'check_out' }).eq('id', item.reservaId);
+    // Si el check-out se hace ANTES de la fecha de salida que tenía la
+    // reserva (el huésped se fue antes de lo esperado), se acorta
+    // fecha_checkout a hoy — si no, el calendario de Reservas seguía
+    // mostrando esos días futuros como ocupados aunque la habitación ya
+    // esté libre. Si el check-out es en la fecha esperada (o después),
+    // no se toca la fecha.
+    const hoyISO = toISODate(new Date());
+    const { data: reservaActual } = await supabase.from('reservas').select('fecha_checkout').eq('id', item.reservaId).maybeSingle();
+
+    const payloadReserva = { estado: 'check_out' };
+    if (reservaActual && hoyISO < reservaActual.fecha_checkout) {
+      payloadReserva.fecha_checkout = hoyISO;
+    }
+
+    await supabase.from('reservas').update(payloadReserva).eq('id', item.reservaId);
   }
 
   mostrarToast('Check-out registrado. La habitación quedó en limpieza.', 'exito');
