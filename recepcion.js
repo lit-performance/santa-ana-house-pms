@@ -104,6 +104,21 @@
 // habitaciones (la anterior pasa a limpieza, la nueva a ocupada) para que
 // Reservas y Housekeeping no queden desincronizados.
 //
+// Nota sobre "Pago que recibes ahora" y el minibar: cada vez que se
+// agrega o quita un consumo dentro del modal de liquidación, el campo
+// "Pago que recibes ahora" se vuelve a calcular y se fuerza su valor al
+// nuevo saldo pendiente (a menos que la recepcionista ya lo haya editado a
+// mano, en cuyo caso se respeta lo que escribió) — así nunca queda un
+// consumo de minibar agregado sin que el monto a cobrar lo refleje.
+//
+// Nota sobre comentarios del check-out: el modal de liquidación tiene su
+// propio campo de comentarios (aparte de las "Observaciones" del
+// check-in), para anotar algo puntual del momento de la salida (ej. "dejó
+// olvidada una chaqueta", "pidió factura por correo"). Se guarda siempre
+// en recepcion_checkins.observaciones_checkout (ver sql/021), tenga o no
+// un pago asociado, y si hubo pago también queda anexado al comentario de
+// ese abono en reservas_pagos para que aparezca en el detalle de Caja.
+//
 // Nota sobre minibar en la liquidación del check-out: el modal de
 // "Check-out" ya no muestra el consumo de minibar como una sola línea de
 // total — lista cada producto consumido (con cantidad y monto) y permite
@@ -450,6 +465,7 @@ async function abrirModalLiquidacion(container, item) {
     // al repintar después de agregar/quitar un consumo.
     const metodoPrevio = overlay.querySelector('select[name="metodo_pago"]')?.value;
     const pagoPrevio = inputPago()?.value;
+    const comentarioPrevio = overlay.querySelector('textarea[name="comentarios_checkout"]')?.value;
 
     const montoMinibar = montoMinibarActual();
     const montoTotal = montoTotalActual();
@@ -525,7 +541,7 @@ async function abrirModalLiquidacion(container, item) {
 
       <div class="form-grid" style="margin-top:1rem;">
         <label>Pago que recibes ahora
-          <input type="number" name="pago_final" step="1000" min="0" value="${montoEditadoManualmente && pagoPrevio !== undefined ? pagoPrevio : saldo}" />
+          <input type="number" name="pago_final" step="1000" min="0" value="${saldo}" />
         </label>
         <label>Método de pago
           <select name="metodo_pago">
@@ -533,8 +549,24 @@ async function abrirModalLiquidacion(container, item) {
           </select>
         </label>
       </div>
+      <p class="mensaje-vacio" style="margin-top:0.3rem; font-size:0.78rem;">Este monto ya incluye el consumo de minibar de arriba. Si agregas o quitas un consumo, se vuelve a calcular solo.</p>
       <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">Si el pago es menor al saldo pendiente, te pedimos confirmar antes de liberar la habitación — el checkout no se bloquea, pero el saldo queda registrado como pendiente de cobro.</p>
+
+      <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
+        Comentarios del check-out (opcional)
+        <textarea name="comentarios_checkout" rows="2" placeholder="Ej: dejó olvidada una chaqueta, pidió factura por correo…" style="padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit; text-transform:none;">${comentarioPrevio || ''}</textarea>
+      </label>
     `;
+
+    // El valor del campo de pago se fuerza explícitamente aquí (no solo
+    // vía el atributo "value" de arriba) para que quede garantizado que
+    // refleja el saldo recién calculado — incluyendo minibar — apenas se
+    // repinta, sin depender de cómo cada navegador procese el HTML.
+    if (!montoEditadoManualmente) {
+      inputPago().value = saldo;
+    } else if (pagoPrevio !== undefined) {
+      inputPago().value = pagoPrevio;
+    }
 
     inputPago().addEventListener('input', () => {
       montoEditadoManualmente = true;
@@ -560,7 +592,8 @@ async function abrirModalLiquidacion(container, item) {
         }
 
         consumos = consumos.filter((c) => c.id !== consumoId);
-        mostrarToast('Consumo quitado de la liquidación.', 'exito');
+        montoEditadoManualmente = false;
+        mostrarToast('Consumo quitado de la liquidación. El monto a cobrar se actualizó.', 'exito');
         pintarLiquidacion();
       });
     });
@@ -602,7 +635,8 @@ async function abrirModalLiquidacion(container, item) {
         }
 
         consumos = [nuevoConsumo, ...consumos];
-        mostrarToast('Consumo agregado a la liquidación.', 'exito');
+        montoEditadoManualmente = false;
+        mostrarToast('Consumo agregado. El monto a cobrar se actualizó para incluirlo.', 'exito');
         pintarLiquidacion();
       });
     }
@@ -620,6 +654,7 @@ async function abrirModalLiquidacion(container, item) {
     const form = new FormData(e.target);
     const pagoFinal = form.get('pago_final') ? Number(form.get('pago_final')) : 0;
     const metodoPago = form.get('metodo_pago');
+    const comentarioCheckout = form.get('comentarios_checkout')?.trim() || null;
     const saldoRestante = saldoActual() - pagoFinal;
 
     if (saldoRestante > 0) {
@@ -639,7 +674,7 @@ async function abrirModalLiquidacion(container, item) {
           reserva_id: item.reservaId,
           monto: pagoFinal,
           metodo_pago: metodoPago,
-          comentarios: 'Pago de liquidación al check-out.',
+          comentarios: comentarioCheckout ? `Pago de liquidación al check-out. ${comentarioCheckout}` : 'Pago de liquidación al check-out.',
         });
         if (errPago) {
           mostrarToast(`Error registrando el pago: ${errPago.message}`, 'error');
@@ -648,15 +683,15 @@ async function abrirModalLiquidacion(container, item) {
       }
     }
 
-    await ejecutarCheckout(container, item);
+    await ejecutarCheckout(container, item, comentarioCheckout);
     overlay.remove();
   });
 }
 
-async function ejecutarCheckout(container, item) {
+async function ejecutarCheckout(container, item, comentarioCheckout) {
   const { error: errCheckin } = await supabase
     .from('recepcion_checkins')
-    .update({ check_out_en: new Date().toISOString() })
+    .update({ check_out_en: new Date().toISOString(), observaciones_checkout: comentarioCheckout || null })
     .eq('id', item.checkinId);
 
   if (errCheckin) {
