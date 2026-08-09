@@ -14,11 +14,20 @@
 // Reservas para bloquear celdas: cualquier reserva que NO esté cancelada
 // ni sea no-show y cuya fecha cubra ese día cuenta como una habitación
 // ocupada esa noche.
+//
+// Debajo del reporte de ingresos/ocupación vive el listado de "📋
+// Checkouts": todos los check-outs completados en el mismo rango de
+// fechas, con su monto total, lo pagado y el saldo — cada uno con un
+// botón "Ver resumen" que reabre la misma tarjeta-resumen visual que se
+// muestra justo al hacer el check-out (ver resumen-checkout.js), para
+// poder consultarla o volver a descargarla después.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { formatCOP } from './currency.js';
-import { toISODate, addDays, formatFechaCorta } from './dates.js';
+import { toISODate, addDays, formatFechaCorta, formatFechaHora } from './dates.js';
+import { calcularCheckoutsEnRango } from './cuentas.js';
+import { mostrarResumenCheckout } from './resumen-checkout.js';
 
 const ESTADOS_NO_OCUPAN = ['cancelada', 'no_show'];
 
@@ -49,15 +58,96 @@ async function render(container) {
     <div id="indicadores-resultado">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
+    <div class="tarjeta" style="margin-top:1.25rem;">
+      <h3 style="margin-top:0;">📋 Checkouts</h3>
+      <p class="mensaje-vacio" style="margin-top:-0.4rem;">Check-outs completados en el mismo rango de fechas de arriba.</p>
+      <div id="indicadores-checkouts">
+        <p class="mensaje-vacio">Cargando…</p>
+      </div>
+    </div>
   `;
 
   container.querySelector('#form-indicadores').addEventListener('submit', (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
-    generarReporte(container, form.get('fecha_inicio'), form.get('fecha_fin'), form.get('agrupacion'));
+    const fechaInicio = form.get('fecha_inicio');
+    const fechaFin = form.get('fecha_fin');
+    generarReporte(container, fechaInicio, fechaFin, form.get('agrupacion'));
+    cargarCheckouts(container, fechaInicio, fechaFin);
   });
 
-  await generarReporte(container, inicioDefault, hoyISO, 'dia');
+  await Promise.all([generarReporte(container, inicioDefault, hoyISO, 'dia'), cargarCheckouts(container, inicioDefault, hoyISO)]);
+}
+
+async function cargarCheckouts(container, fechaInicioISO, fechaFinISO) {
+  const wrap = container.querySelector('#indicadores-checkouts');
+  if (!wrap) return;
+
+  if (!fechaInicioISO || !fechaFinISO || fechaFinISO < fechaInicioISO) {
+    wrap.innerHTML = '<p class="mensaje-vacio">Revisa el rango de fechas.</p>';
+    return;
+  }
+
+  wrap.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+
+  const finExclusivoISO = toISODate(addDays(fechaFinISO, 1));
+
+  let checkouts;
+  try {
+    checkouts = await calcularCheckoutsEnRango(fechaInicioISO, finExclusivoISO);
+  } catch (err) {
+    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando los checkouts: ${err.message}</p>`;
+    return;
+  }
+
+  if (checkouts.length === 0) {
+    wrap.innerHTML = '<p class="mensaje-vacio">No hay checkouts en este rango.</p>';
+    return;
+  }
+
+  wrap.innerHTML = `
+    <div class="tabla-scroll">
+      <table class="tabla-simple">
+        <thead>
+          <tr>
+            <th>Salida</th>
+            <th>Huésped</th>
+            <th>Habitación</th>
+            <th>Noches</th>
+            <th>Monto total</th>
+            <th>Pagado</th>
+            <th>Saldo</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${checkouts
+            .map(
+              (c) => `
+            <tr data-checkin-id="${c.checkinId}">
+              <td>${formatFechaHora(c.checkOutEn)}</td>
+              <td>${c.huespedNombre}</td>
+              <td>${c.habitacionLabel}</td>
+              <td>${c.cantidadNoches ?? '—'}</td>
+              <td class="monto">${formatCOP(c.montoTotal)}</td>
+              <td class="monto">${formatCOP(c.totalAbonado)}</td>
+              <td class="monto" style="color:${c.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(c.saldoPendiente)}</td>
+              <td><button type="button" class="btn-editar btn-ver-resumen-checkout">Ver resumen</button></td>
+            </tr>
+          `
+            )
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  wrap.querySelectorAll('.btn-ver-resumen-checkout').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const checkinId = Number(e.target.closest('tr').dataset.checkinId);
+      mostrarResumenCheckout(checkinId);
+    });
+  });
 }
 
 function inicioSemana(fechaISO) {
