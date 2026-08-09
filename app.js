@@ -9,6 +9,12 @@
 // pantalla de inicio para el día a día. El archivo dashboard.js se deja en
 // el repo sin usar por si se quiere recuperar algo de ahí más adelante.
 //
+// Nota: 'caja.js' (pestaña visible "Registro diario de ventas") se movió
+// al segundo lugar, justo después de Recepción — es la otra pestaña de
+// uso constante durante el día (ventas por mostrador, arqueo, cierre de
+// turno), así que va antes que Reservas/Housekeeping que se consultan con
+// menos frecuencia minuto a minuto.
+//
 // Nota: 'huespedes.js' se importa junto con el resto de módulos de
 // "Análisis" (después de estadisticas.js) porque ahora vive ahí como
 // subpestaña (parentId: grupo-analisis, ver huespedes.js) — antes era
@@ -28,9 +34,9 @@ import { initRouter, renderPrimerModuloDisponible } from './router.js';
 import { initTabs } from './ui.js';
 
 import './recepcion.js';
+import './caja.js';
 import './reservas.js';
 import './housekeeping.js';
-import './caja.js';
 import './indicadores.js';
 import './minibar.js';
 import './inventario.js';
