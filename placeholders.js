@@ -6,11 +6,11 @@
 // construya de verdad, se quita su registerModule() de aquí y se crea su
 // propio archivo dedicado (housekeeping.js, caja.js, indicadores.js,
 // minibar.js, inventario.js, proveedores.js, usuarios.js, compras.js,
-// facturacion.js, contabilidad.js, reportes.js, estadisticas.js, etc.),
-// igual que los módulos que ya están listos (Dashboard, Configuración,
-// Reservas, Recepción, Huéspedes, Housekeeping, Caja, Indicadores,
-// Minibar, Inventario, Proveedores, Usuarios, Compras, Facturación,
-// Contabilidad, Reportes, Estadísticas).
+// facturacion.js, contabilidad.js, reportes.js, estadisticas.js, crm.js,
+// etc.), igual que los módulos que ya están listos (Dashboard,
+// Configuración, Reservas, Recepción, Huéspedes, Housekeeping, Caja,
+// Indicadores, Minibar, Inventario, Proveedores, Usuarios, Compras,
+// Facturación, Contabilidad, Reportes, Estadísticas, CRM).
 //
 // Los módulos pendientes que no se usan a diario están agrupados en 4
 // pestañas contenedoras (Inventario, Finanzas, Análisis, Administración)
@@ -18,10 +18,10 @@
 // subpestañas — así el menú principal no crece sin control. Housekeeping y
 // Caja ya tienen su propio archivo y quedan sueltas arriba porque el staff
 // las usa todos los días. Indicadores, Minibar, Inventario, Proveedores,
-// Usuarios, Compras, Facturación, Contabilidad, Reportes y Estadísticas
-// también tienen su propio archivo, pero siguen viviendo como subpestañas
-// de "Análisis", "Inventario" y "Finanzas" respectivamente (mismo lugar
-// que ya tenían como placeholder).
+// Usuarios, Compras, Facturación, Contabilidad, Reportes, Estadísticas y
+// CRM también tienen su propio archivo, pero siguen viviendo como
+// subpestañas de "Análisis", "Inventario", "Finanzas" y "Administración"
+// respectivamente (mismo lugar que ya tenían como placeholder).
 //
 // No tocan la base de datos — son solo vista, sin tablas ni RLS propias.
 
@@ -119,7 +119,7 @@ const GRUPOS = [
       { icono: '👤', label: 'Usuarios', resumen: 'Alta/baja de cuentas del staff y su rol, desde la app.' },
       { icono: '📁', label: 'Documentos', resumen: 'RNT, pólizas, contratos, permisos.' },
       { icono: '🔧', label: 'Mantenimiento', resumen: 'Órdenes de mantenimiento preventivo y correctivo.' },
-      { icono: '🤝', label: 'CRM', resumen: 'Seguimiento comercial de huéspedes frecuentes y agencias.' },
+      { icono: '🤝', label: 'CRM', resumen: 'Oportunidades comerciales con etapa, valor estimado, próximo seguimiento y bitácora de interacciones.' },
       { icono: '🤖', label: 'IA', resumen: 'Recomendaciones y automatización de tareas repetitivas.' },
     ],
   },
@@ -136,10 +136,11 @@ GRUPOS.forEach((grupo) => {
 });
 
 // --- Módulos "próximamente" (Caja, Indicadores, Minibar, Inventario,
-// Proveedores, Usuarios, Compras, Facturación, Contabilidad, Reportes y
-// Estadísticas ya se construyeron — ver caja.js, indicadores.js,
+// Proveedores, Usuarios, Compras, Facturación, Contabilidad, Reportes,
+// Estadísticas y CRM ya se construyeron — ver caja.js, indicadores.js,
 // minibar.js, inventario.js, proveedores.js, usuarios.js, compras.js,
-// facturacion.js, contabilidad.js, reportes.js y estadisticas.js) ---
+// facturacion.js, contabilidad.js, reportes.js, estadisticas.js y
+// crm.js) ---
 const MODULOS_PENDIENTES = [
   {
     id: 'gastos',
@@ -166,19 +167,6 @@ const MODULOS_PENDIENTES = [
     features: [
       'Bitácora de acciones por usuario',
       'Filtro por módulo, usuario y fecha',
-    ],
-  },
-  {
-    id: 'crm',
-    label: 'CRM',
-    icono: '🤝',
-    roles: ['propietario', 'administrador'],
-    parentId: 'grupo-administracion',
-    titulo: 'CRM',
-    descripcion: 'Seguimiento comercial de huéspedes corporativos, agencias y clientes frecuentes.',
-    features: [
-      'Oportunidades y seguimiento comercial',
-      'Se apoya en la ficha de Huéspedes ya construida',
     ],
   },
   {
