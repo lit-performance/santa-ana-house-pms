@@ -113,6 +113,16 @@
 // ya está en el formulario, para reducir errores de digitación antes de
 // guardar el check-in.
 //
+// Nota sobre el cruce con Housekeeping al elegir habitación en el
+// check-in: el desplegable de Habitación solo deja elegir habitaciones
+// cuyo estado sea 'disponible' — las demás (ocupada, limpieza,
+// inspección, mantenimiento, bloqueada, fuera de servicio) aparecen
+// deshabilitadas con su estado entre paréntesis. Justo antes de guardar,
+// se vuelve a confirmar el estado contra la base de datos (por si cambió
+// mientras se llenaba el formulario) y se bloquea el check-in si ya no
+// está disponible. Así Recepción nunca puede hospedar a alguien en una
+// habitación que Housekeeping tiene marcada como no disponible.
+//
 // Nota sobre autocompletar datos de huésped: al salir del campo Número de
 // documento (o del campo Nombre, si el documento sigue vacío), se busca
 // primero en el check-in más reciente de esa persona (recepcion_checkins,
@@ -558,7 +568,11 @@ async function abrirModalEditarCheckin(container, item) {
           <label>Habitación
             <select name="habitacion_id" id="select-habitacion-editar" required>
               ${(habitaciones || [])
-                .map((h) => `<option value="${h.id}" ${h.id === checkin.habitacion_id ? 'selected' : ''}>${h.numero} — ${h.nombre}</option>`)
+                .map((h) => {
+                  const esLaActual = h.id === checkin.habitacion_id;
+                  const bloqueada = h.estado !== 'disponible' && !esLaActual;
+                  return `<option value="${h.id}" ${esLaActual ? 'selected' : ''} ${bloqueada ? 'disabled' : ''}>${h.numero} — ${h.nombre}${bloqueada ? ` (${ETIQUETA_ESTADO_HABITACION[h.estado] || h.estado})` : ''}</option>`;
+                })
                 .join('')}
             </select>
           </label>
@@ -642,10 +656,10 @@ async function abrirModalEditarCheckin(container, item) {
 
     if (habitacionCambio) {
       const nuevaHabitacion = (habitaciones || []).find((h) => h.id === nuevaHabitacionId);
-      if (nuevaHabitacion && nuevaHabitacion.estado === 'ocupada') {
+      if (nuevaHabitacion && nuevaHabitacion.estado !== 'disponible') {
         const ok = await mostrarConfirmacion({
-          titulo: 'Habitación marcada como ocupada',
-          contenidoHTML: `La habitación <strong>${nuevaHabitacion.numero} — ${nuevaHabitacion.nombre}</strong> ya figura como ocupada. ¿Confirmas que quieres mover al huésped ahí de todas formas?`,
+          titulo: 'Habitación no disponible',
+          contenidoHTML: `La habitación <strong>${nuevaHabitacion.numero} — ${nuevaHabitacion.nombre}</strong> figura como "${ETIQUETA_ESTADO_HABITACION[nuevaHabitacion.estado] || nuevaHabitacion.estado}", no disponible. ¿Confirmas que quieres mover al huésped ahí de todas formas?`,
           textoConfirmar: 'Sí, mover de todas formas',
         });
         if (!ok) return;
@@ -1014,7 +1028,7 @@ async function abrirModalDisponibilidad(selectHabitacion) {
 
 async function vistaFormulario(container, reservaIdPreseleccionada) {
   const [{ data: habitaciones }, { data: tarifas }, { data: reservas }] = await Promise.all([
-    supabase.from('habitaciones').select('id, numero, nombre').order('numero'),
+    supabase.from('habitaciones').select('id, numero, nombre, estado').order('numero'),
     supabase.from('tarifas').select('*').order('codigo'),
     supabase
       .from('reservas')
@@ -1112,9 +1126,15 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
           <label>Habitación
             <select name="habitacion_id" id="select-habitacion" required>
               <option value="">—</option>
-              ${(habitaciones || []).map((h) => `<option value="${h.id}">${h.numero} — ${h.nombre}</option>`).join('')}
+              ${(habitaciones || [])
+                .map((h) => {
+                  const bloqueada = h.estado !== 'disponible';
+                  return `<option value="${h.id}" ${bloqueada ? 'disabled' : ''}>${h.numero} — ${h.nombre}${bloqueada ? ` (${ETIQUETA_ESTADO_HABITACION[h.estado] || h.estado})` : ''}</option>`;
+                })
+                .join('')}
             </select>
           </label>
+          <p class="mensaje-vacio" style="grid-column:1 / -1; font-size:0.78rem; margin:0.2rem 0 0;">Solo se pueden elegir habitaciones que figuren "disponible" ahora mismo. Usa "Ver disponibilidad" si necesitas ver otra opción, o corrige el estado desde Housekeeping.</p>
           <label>Tarifa
             <select name="tarifa_id" id="select-tarifa" required>
               <option value="">—</option>
@@ -1428,6 +1448,33 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     const hayFirma = ctx.getImageData(0, 0, canvas.width, canvas.height).data.some((v, i) => i % 4 === 3 && v !== 0);
 
     const habitacionId = Number(form.get('habitacion_id'));
+
+    // Verificación de último momento contra la base de datos: aunque el
+    // desplegable ya deshabilita las habitaciones que no están
+    // "disponible", el estado pudo cambiar mientras se llenaba el
+    // formulario (por ejemplo, Housekeeping la marcó ocupada o en
+    // mantenimiento justo ahora). Sin este chequeo, un check-in podía
+    // colarse en una habitación bloqueada — Recepción y Housekeeping
+    // quedaban desincronizados.
+    const { data: habitacionActual, error: errHabActual } = await supabase
+      .from('habitaciones')
+      .select('estado, numero, nombre')
+      .eq('id', habitacionId)
+      .single();
+
+    if (errHabActual) {
+      mostrarToast(`No se pudo confirmar el estado de la habitación: ${errHabActual.message}`, 'error');
+      return;
+    }
+
+    if (habitacionActual.estado !== 'disponible') {
+      mostrarToast(
+        `${habitacionActual.numero} — ${habitacionActual.nombre} ya no está disponible (${ETIQUETA_ESTADO_HABITACION[habitacionActual.estado] || habitacionActual.estado}). Elige otra habitación o corrige su estado desde Housekeeping antes de continuar.`,
+        'error'
+      );
+      return;
+    }
+
     const tarifaId = form.get('tarifa_id') ? Number(form.get('tarifa_id')) : null;
     const cantidadNoches = form.get('cantidad_noches') ? Number(form.get('cantidad_noches')) : 1;
     const nombre = form.get('nombre').trim();
