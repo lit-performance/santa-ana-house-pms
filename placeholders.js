@@ -6,10 +6,11 @@
 // construya de verdad, se quita su registerModule() de aquí y se crea su
 // propio archivo dedicado (housekeeping.js, caja.js, indicadores.js,
 // minibar.js, inventario.js, proveedores.js, usuarios.js, compras.js,
-// facturacion.js, contabilidad.js, etc.), igual que los módulos que ya
-// están listos (Dashboard, Configuración, Reservas, Recepción, Huéspedes,
-// Housekeeping, Caja, Indicadores, Minibar, Inventario, Proveedores,
-// Usuarios, Compras, Facturación, Contabilidad).
+// facturacion.js, contabilidad.js, reportes.js, etc.), igual que los
+// módulos que ya están listos (Dashboard, Configuración, Reservas,
+// Recepción, Huéspedes, Housekeeping, Caja, Indicadores, Minibar,
+// Inventario, Proveedores, Usuarios, Compras, Facturación, Contabilidad,
+// Reportes).
 //
 // Los módulos pendientes que no se usan a diario están agrupados en 4
 // pestañas contenedoras (Inventario, Finanzas, Análisis, Administración)
@@ -17,8 +18,8 @@
 // subpestañas — así el menú principal no crece sin control. Housekeeping y
 // Caja ya tienen su propio archivo y quedan sueltas arriba porque el staff
 // las usa todos los días. Indicadores, Minibar, Inventario, Proveedores,
-// Usuarios, Compras, Facturación y Contabilidad también tienen su propio
-// archivo, pero siguen viviendo como subpestañas de "Análisis",
+// Usuarios, Compras, Facturación, Contabilidad y Reportes también tienen
+// su propio archivo, pero siguen viviendo como subpestañas de "Análisis",
 // "Inventario" y "Finanzas" respectivamente (mismo lugar que ya tenían
 // como placeholder).
 //
@@ -101,7 +102,7 @@ const GRUPOS = [
     titulo: 'Análisis',
     descripcion: 'Reportes, indicadores, estadísticas históricas y auditoría del sistema.',
     hijos: [
-      { icono: '📈', label: 'Reportes', resumen: 'Reportes operativos exportables a Excel/PDF.' },
+      { icono: '📈', label: 'Reportes', resumen: 'Listados de Reservas, Ocupación por habitación y Huéspedes, exportables a CSV/Excel.' },
       { icono: '📌', label: 'Indicadores', resumen: 'Ocupación, ingresos efectivo/digital y comparativos por período.' },
       { icono: '📉', label: 'Estadísticas', resumen: 'Tendencias históricas de ocupación e ingresos.' },
       { icono: '🔍', label: 'Auditoría', resumen: 'Bitácora de quién hizo qué y cuándo.' },
@@ -135,10 +136,10 @@ GRUPOS.forEach((grupo) => {
 });
 
 // --- Módulos "próximamente" (Caja, Indicadores, Minibar, Inventario,
-// Proveedores, Usuarios, Compras, Facturación y Contabilidad ya se
-// construyeron — ver caja.js, indicadores.js, minibar.js, inventario.js,
-// proveedores.js, usuarios.js, compras.js, facturacion.js y
-// contabilidad.js) ---
+// Proveedores, Usuarios, Compras, Facturación, Contabilidad y Reportes ya
+// se construyeron — ver caja.js, indicadores.js, minibar.js,
+// inventario.js, proveedores.js, usuarios.js, compras.js, facturacion.js,
+// contabilidad.js y reportes.js) ---
 const MODULOS_PENDIENTES = [
   {
     id: 'gastos',
@@ -152,19 +153,6 @@ const MODULOS_PENDIENTES = [
       'Registro de gastos por categoría',
       'Adjuntar soporte/factura',
       'Se sumará a Contabilidad igual que Compras',
-    ],
-  },
-  {
-    id: 'reportes',
-    label: 'Reportes',
-    icono: '📈',
-    roles: ['propietario', 'administrador', 'auditor'],
-    parentId: 'grupo-analisis',
-    titulo: 'Reportes',
-    descripcion: 'Reportes operativos exportables (ocupación, ingresos, gastos, huéspedes) a partir de los mismos datos que ya muestra Indicadores.',
-    features: [
-      'Reportes por rango de fechas',
-      'Exportación a Excel y PDF',
     ],
   },
   {
