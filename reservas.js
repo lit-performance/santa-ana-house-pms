@@ -223,6 +223,54 @@ function escaparHTML(texto) {
 // Número de noches entre dos fechas 'YYYY-MM-DD'. Ambas se interpretan en
 // UTC (comportamiento estándar al pasarle a `new Date()` un string sin hora),
 // así que la resta en milisegundos no se ve afectada por horario de verano.
+// --- Autocompletar datos si el huésped ya estuvo hospedado antes ---
+// Mismo patrón que en recepcion.js: primero se busca en recepcion_checkins
+// (el registro más completo/reciente), y si no hay nada ahí, en la ficha
+// básica de huespedes. Solo aplica al CREAR una reserva rápida — al
+// editar una reserva existente ya se está viendo la info de esa reserva.
+async function buscarHuespedPorDocumento(documento) {
+  if (!documento) return null;
+
+  const { data: checkinPrevio } = await supabase
+    .from('recepcion_checkins')
+    .select('*')
+    .eq('numero_documento', documento)
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (checkinPrevio) return { origen: 'checkin', datos: checkinPrevio };
+
+  const { data: huesped } = await supabase.from('huespedes').select('*').eq('numero_documento', documento).maybeSingle();
+  if (huesped) return { origen: 'huesped', datos: huesped };
+
+  return null;
+}
+
+async function buscarHuespedPorNombre(nombre) {
+  if (!nombre || nombre.trim().length < 3) return null;
+  const valor = nombre.trim();
+
+  const { data: checkinPrevio } = await supabase
+    .from('recepcion_checkins')
+    .select('*')
+    .ilike('nombre', valor)
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (checkinPrevio) return { origen: 'checkin', datos: checkinPrevio };
+
+  const { data: huesped } = await supabase
+    .from('huespedes')
+    .select('*')
+    .ilike('nombre', valor)
+    .order('actualizado_en', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (huesped) return { origen: 'huesped', datos: huesped };
+
+  return null;
+}
+
 function calcularNoches(checkinISO, checkoutISO) {
   if (!checkinISO || !checkoutISO) return 0;
   const ms = new Date(checkoutISO) - new Date(checkinISO);
@@ -364,6 +412,39 @@ async function abrirModalReserva(container, reserva, prellenado) {
   // existente sin monto guardado), calculamos una vez de entrada.
   if (!editando || !reserva.monto_total) {
     recalcularMontoAutomatico();
+  }
+
+  // --- Autocompletar si el huésped ya estuvo hospedado antes (solo al
+  // crear una reserva rápida) ---
+  if (!editando) {
+    const inputNombreHuesped = overlay.querySelector('input[name="huesped_nombre"]');
+    const inputDocumentoHuesped = overlay.querySelector('input[name="huesped_documento"]');
+    const inputTelefonoHuesped = overlay.querySelector('input[name="huesped_telefono"]');
+
+    function precargarDatosHuesped(resultado) {
+      if (!resultado) return;
+      const d = resultado.datos;
+      if (d.nombre) inputNombreHuesped.value = d.nombre;
+      if (d.numero_documento) inputDocumentoHuesped.value = d.numero_documento;
+      const telefono = d.celular || d.telefono;
+      if (telefono) inputTelefonoHuesped.value = telefono;
+      mostrarToast(`Encontramos a ${d.nombre} en el sistema — se autocompletaron sus datos.`, 'exito');
+    }
+
+    inputDocumentoHuesped.addEventListener('blur', async () => {
+      const valor = inputDocumentoHuesped.value.trim();
+      if (!valor) return;
+      const resultado = await buscarHuespedPorDocumento(valor);
+      precargarDatosHuesped(resultado);
+    });
+
+    inputNombreHuesped.addEventListener('blur', async () => {
+      if (inputDocumentoHuesped.value.trim()) return;
+      const valor = inputNombreHuesped.value.trim();
+      if (!valor) return;
+      const resultado = await buscarHuespedPorNombre(valor);
+      precargarDatosHuesped(resultado);
+    });
   }
 
   overlay.querySelector('#btn-cancelar-reserva').addEventListener('click', () => overlay.remove());
