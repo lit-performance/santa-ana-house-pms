@@ -12,6 +12,13 @@
 // La ficha de cada huésped se crea/actualiza automáticamente al hacer un
 // check-in en Recepción (ver recepcion.js), pero también se puede crear o
 // editar manualmente aquí.
+//
+// Nota de ubicación: vive como subpestaña de "Análisis" (parentId
+// grupo-analisis) — es más un histórico/directorio de clientes que una
+// pantalla de uso diario, y el check-in ya autocompleta lo esencial de un
+// huésped recurrente sin tener que entrar aquí. Sigue siendo visible para
+// recepcionista (ver el rol del grupo en placeholders.js) para poder
+// buscar o corregir la ficha de alguien sin necesidad de un check-in.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -306,5 +313,6 @@ registerModule({
   label: 'Huéspedes',
   icono: '🧳',
   roles: ['propietario', 'administrador', 'recepcionista', 'auditor'],
+  parentId: 'grupo-analisis',
   render,
 });
