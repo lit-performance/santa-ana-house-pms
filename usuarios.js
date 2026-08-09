@@ -11,6 +11,14 @@
 // `persistSession: false` — así el signUp() de la cuenta nueva nunca toca
 // la sesión ni el localStorage del admin que la está creando.
 //
+// Nota sobre el aviso "Multiple GoTrueClient instances" en la consola:
+// Supabase avisa (no es un error) cada vez que hay más de un cliente de
+// autenticación activo en la misma pestaña — es justo lo que hacemos a
+// propósito arriba. Se le puso un `storageKey` distinto al del cliente
+// principal para que quede claramente separado y ya no aparezca el aviso;
+// funcionalmente nunca tocó la sesión del admin (persistSession: false),
+// esto solo limpia la consola.
+//
 // "Baja" no borra la cuenta de Supabase Auth (borrar usuarios de Auth
 // requiere la service_role key, que nunca debe vivir en código de cliente
 // por seguridad). En vez de eso, se marca `activo = false` en la tabla
@@ -33,7 +41,16 @@ import { getUsuarioActual } from './auth.js';
 const SUPABASE_URL = 'https://bhtmiqtwbzuezbqsrhej.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_9XKSyYxpCkuIDF8WfW-92A_PHNPoO8r';
 const supabaseAuxiliar = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+    // Clave de storage distinta a la del cliente principal (supabase-client.js).
+    // Este cliente nunca persiste sesión, así que no guarda nada bajo esta
+    // clave — solo evita que Supabase confunda este cliente con el
+    // principal y muestre el aviso de "múltiples instancias" en consola.
+    storageKey: 'sb-santaana-usuarios-auxiliar',
+  },
 });
 
 const ROLES = ['propietario', 'administrador', 'recepcionista', 'auditor', 'housekeeping', 'bodega', 'contador'];
