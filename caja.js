@@ -1,41 +1,57 @@
 // caja.js
 //
-// Módulo: Caja. Apertura y cierre de turno de caja con arqueo, más registro
-// de movimientos manuales (ingresos/egresos) del turno abierto.
+// Módulo: Caja. Apertura y cierre de turno de caja con arqueo, registro de
+// movimientos manuales (ingresos/egresos) del turno abierto, saldos por
+// cuenta (medio de pago) acumulados de todo el tiempo, transferencias
+// entre cuentas, y exportables (Excel/PDF) para auditoría del propietario.
+//
+// Se investigó cómo lo resuelven otros PMS de hotel (night audit / entrega
+// de turno entre recepcionistas) para que esta pantalla sea coherente con
+// esa práctica:
+//   - El arqueo de un turno solo pide contar EFECTIVO físico (los demás
+//     medios son electrónicos, su saldo ya lo dice el sistema).
+//   - El conteo se hace por denominación (billetes + monedas), no un solo
+//     número — es el error más común en cierres de caja mal hechos.
+//   - Si el conteo no cuadra con lo esperado, hay que explicar por qué
+//     (campo obligatorio en ese caso).
+//   - La base inicial de un turno nuevo se sugiere sola con lo que quedó
+//     contado en el cierre anterior (continuidad entre turnos).
+//   - Queda registrado (con nombre, no solo un ID interno) quién abrió y
+//     quién cerró cada turno — es la bitácora de entrega de turno.
+//   - Todo cierre se puede descargar (Excel/PDF) con el detalle completo,
+//     no solo los totales, para que el propietario audite sin tener que
+//     pedir explicaciones.
 //
 // Los abonos de reservas (reservas_pagos, ya registrados desde Reservas y
 // Recepción, incluyendo los pagos de liquidación al check-out) NO se
 // duplican aquí — este módulo los LEE directamente de esa tabla y los
-// muestra como "ingresos automáticos" del turno abierto. caja_movimientos
-// solo guarda lo que no nace de una reserva (gastos operativos, propinas,
-// ingresos varios, etc).
+// muestra como "ingresos automáticos". caja_movimientos solo guarda lo que
+// no nace de una reserva (gastos operativos, propinas, ingresos varios).
 //
 // Medios de pago: cada método (Efectivo, Nequi, Daviplata, QR,
 // Transferencia Bancaria, Datáfono, Llave — ver METODOS_PAGO) se consolida
-// como si fuera una cuenta aparte. El desglose se calcula sumando
-// reservas_pagos + caja_movimientos agrupados por metodo_pago, y se ve en
-// la tarjeta "Desglose por medio de pago" mientras el turno está abierto.
-// Solo Efectivo necesita arqueo físico (contar el cajón); los demás son
-// electrónicos, así que su "saldo" es simplemente lo que entró menos lo
-// que salió por ese medio durante el turno.
+// como si fuera una cuenta aparte.
 //
-// Además, sin importar si hay turno abierto o no, se muestra siempre una
-// tabla de "Habitaciones en uso" con el saldo pendiente de cada una (mismo
-// cálculo que usa Recepción al liquidar en el check-out — ver cuentas.js),
-// y una tarjeta de "Consumo de minibar — hoy" con el detalle por producto
-// (ver cargarResumenMinibarHoy) — es informativa (movimiento de
-// inventario), el dinero real ya entra por "Ingresos por reservas" cuando
-// se liquida el minibar en el check-out, así que no se suma dos veces.
+//   - "Desglose por medio de pago" (dentro de un turno abierto) es del
+//     TURNO actual: cuánto entró/salió por cada medio desde que se abrió.
+//   - "Saldos por cuenta" (siempre visible, con o sin turno abierto) es de
+//     TODO el tiempo: el saldo acumulado histórico de cada medio, sumando
+//     reservas_pagos + caja_movimientos + caja_transferencias — ver
+//     `calcularSaldosPorCuenta`. Es lo que permite, por ejemplo, ver que
+//     Nequi acumuló $800.000 sin retirar y transferirlos (registrar el
+//     movimiento) hacia Efectivo o hacia la cuenta bancaria del negocio.
 //
-// Entrega de turno: al cerrar la caja, el desglose completo por medio de
-// pago se guarda en caja_turnos.desglose_metodos (jsonb) — ver
-// sql/020_caja_metodos_pago.sql — y queda visible después en "Cierres
-// anteriores" (botón "Ver detalle" por cierre), así sirve de bitácora de
-// entregas de turno con el saldo de cada cuenta.
+// Transferencias entre cuentas (caja_transferencias, ver
+// 041_caja_transferencias.sql): mueven saldo de una cuenta a otra sin que
+// cuente como ingreso/egreso real del negocio (por eso no viven en
+// caja_movimientos). Son independientes del turno de caja — excepto que,
+// si una transferencia involucra Efectivo y ocurre mientras hay un turno
+// abierto, sí se sube/baja el "esperado en efectivo" de ese turno (ver
+// `saldoEsperadoEfectivo` en pintarTurnoAbierto), porque eso sí cambia lo
+// que debería contarse físicamente en el cajón.
 //
 // Regla de negocio: solo puede haber UN turno de caja abierto a la vez
-// (impuesto por un índice único parcial en la base de datos — ver
-// sql/010_caja.sql). Mientras haya uno abierto, no se puede abrir otro.
+// (impuesto por un índice único parcial en la base de datos).
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -47,6 +63,7 @@ import { calcularHabitacionesEnUso } from './cuentas.js';
 
 const ROLES_OPERAN_CAJA = ['propietario', 'administrador', 'recepcionista'];
 const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
+const DENOMINACIONES_BILLETES = [100000, 50000, 20000, 10000, 5000, 2000, 1000];
 
 function puedeOperar() {
   const usuario = getUsuarioActual();
@@ -59,11 +76,21 @@ function escaparHTML(texto) {
   return div.innerHTML;
 }
 
-// Suma ingresos/egresos por método de pago, combinando reservas_pagos
-// (siempre ingreso) y caja_movimientos (ingreso o egreso). Devuelve un
-// objeto { [metodo]: { ingresos, egresos } } con TODOS los métodos de
-// METODOS_PAGO presentes (aunque estén en cero), más una clave "Otro" por
-// si algún registro viejo trae un método que ya no está en la lista.
+// --- Resolver nombres reales a partir de IDs de usuario (para mostrar
+// quién abrió/cerró un turno o registró algo, en vez de un uuid interno) ---
+async function obtenerNombresUsuarios(ids) {
+  const idsUnicos = [...new Set((ids || []).filter(Boolean))];
+  if (idsUnicos.length === 0) return new Map();
+  const { data } = await supabase.from('usuarios').select('id, nombre').in('id', idsUnicos);
+  return new Map((data || []).map((u) => [u.id, u.nombre]));
+}
+
+// Suma ingresos/egresos por método de pago DENTRO DE UN TURNO, combinando
+// reservas_pagos (siempre ingreso) y caja_movimientos (ingreso o egreso).
+// Devuelve un objeto { [metodo]: { ingresos, egresos } } con TODOS los
+// métodos de METODOS_PAGO presentes (aunque estén en cero), más una clave
+// extra por si algún registro viejo trae un método que ya no está en la
+// lista.
 function calcularDesglosePorMetodo(pagos, movimientos) {
   const desglose = {};
   METODOS_PAGO.forEach((m) => {
@@ -88,6 +115,112 @@ function calcularDesglosePorMetodo(pagos, movimientos) {
   return desglose;
 }
 
+// --- Saldos por cuenta: acumulado de TODO el tiempo, no solo el turno
+// abierto — reservas_pagos + caja_movimientos + caja_transferencias. ---
+async function calcularSaldosPorCuenta() {
+  const [
+    { data: pagos, error: errPagos },
+    { data: movimientos, error: errMov },
+    { data: transferencias, error: errTrans },
+  ] = await Promise.all([
+    supabase.from('reservas_pagos').select('monto, metodo_pago'),
+    supabase.from('caja_movimientos').select('monto, metodo_pago, tipo'),
+    supabase.from('caja_transferencias').select('monto, cuenta_origen, cuenta_destino'),
+  ]);
+
+  if (errPagos) throw errPagos;
+  if (errMov) throw errMov;
+  if (errTrans) throw errTrans;
+
+  const saldos = {};
+  METODOS_PAGO.forEach((m) => {
+    saldos[m] = 0;
+  });
+  const bucket = (m) => {
+    if (!(m in saldos)) saldos[m] = 0;
+    return m;
+  };
+
+  (pagos || []).forEach((p) => {
+    const m = bucket(p.metodo_pago || 'Efectivo');
+    saldos[m] += Number(p.monto);
+  });
+
+  (movimientos || []).forEach((mv) => {
+    const m = bucket(mv.metodo_pago || 'Efectivo');
+    saldos[m] += mv.tipo === 'ingreso' ? Number(mv.monto) : -Number(mv.monto);
+  });
+
+  (transferencias || []).forEach((t) => {
+    const origen = bucket(t.cuenta_origen);
+    const destino = bucket(t.cuenta_destino);
+    saldos[origen] -= Number(t.monto);
+    saldos[destino] += Number(t.monto);
+  });
+
+  return saldos;
+}
+
+// =========================================================
+// Exportables genéricos (Excel/PDF) — mismo mecanismo seguro ya usado en
+// el resumen de checkout: CSV con BOM (Excel lo abre con doble clic) y
+// vista de impresión del navegador para "Guardar como PDF". Cero
+// librerías externas nuevas.
+// =========================================================
+function descargarCSV(nombreArchivo, filas) {
+  const csv = filas.map((fila) => fila.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const enlace = document.createElement('a');
+  enlace.href = url;
+  enlace.download = nombreArchivo;
+  document.body.appendChild(enlace);
+  enlace.click();
+  enlace.remove();
+  URL.revokeObjectURL(url);
+}
+
+function abrirVistaImpresion(titulo, subtitulo, cuerpoHTML) {
+  const ventana = window.open('', '_blank');
+  if (!ventana) {
+    mostrarToast('El navegador bloqueó la ventana de impresión. Habilita las ventanas emergentes para este sitio e inténtalo de nuevo.', 'error');
+    return;
+  }
+  ventana.document.write(`
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="UTF-8" />
+      <title>${escaparHTML(titulo)}</title>
+      <style>
+        * { print-color-adjust: exact; -webkit-print-color-adjust: exact; box-sizing: border-box; }
+        body { font-family: Arial, Helvetica, sans-serif; padding: 2rem; color: #222; }
+        h1 { font-size: 1.3rem; margin-bottom: 0.1rem; }
+        h2 { font-size: 1rem; margin: 1.4rem 0 0.4rem; }
+        .sub { color: #666; margin-top: 0; }
+        table { width: 100%; border-collapse: collapse; margin-top: 0.3rem; }
+        th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
+        th { background: #f4f4f6; }
+        @media print { body { padding: 0.5rem; } }
+      </style>
+    </head>
+    <body>
+      <h1>${escaparHTML(titulo)}</h1>
+      <p class="sub">${escaparHTML(subtitulo)}</p>
+      ${cuerpoHTML}
+    </body>
+    </html>
+  `);
+  ventana.document.close();
+  ventana.focus();
+  setTimeout(() => ventana.print(), 300);
+}
+
+function filaTablaSimple(cols) {
+  return `<tr>${cols.map((c) => `<td>${c}</td>`).join('')}</tr>`;
+}
+
+// =========================================================
 async function render(container) {
   container.innerHTML = `
     <h2>Caja</h2>
@@ -97,6 +230,9 @@ async function render(container) {
     <div id="minibar-hoy-wrap" style="margin-bottom:1.5rem;">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
+    <div id="saldos-cuenta-wrap" style="margin-bottom:1.5rem;">
+      <p class="mensaje-vacio">Cargando…</p>
+    </div>
     <div id="caja-wrap">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
@@ -104,10 +240,171 @@ async function render(container) {
   await Promise.all([
     cargarHabitacionesEnUso(container.querySelector('#habitaciones-uso-wrap')),
     cargarResumenMinibarHoy(container.querySelector('#minibar-hoy-wrap')),
+    cargarSaldosPorCuenta(container, container.querySelector('#saldos-cuenta-wrap')),
     cargarEstado(container),
   ]);
 }
 
+// =========================================================
+// Saldos por cuenta + transferencias
+// =========================================================
+async function cargarSaldosPorCuenta(container, elemento) {
+  if (!elemento) return;
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando saldos por cuenta…</p>';
+
+  let saldos;
+  try {
+    saldos = await calcularSaldosPorCuenta();
+  } catch (error) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando saldos por cuenta: ${error.message}</p>`;
+    return;
+  }
+
+  const total = METODOS_PAGO.reduce((sum, m) => sum + (saldos[m] || 0), 0);
+  const permitido = puedeOperar();
+
+  elemento.innerHTML = `
+    <div class="tarjeta">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.75rem; flex-wrap:wrap;">
+        <h3 style="margin:0;">💼 Saldos por cuenta <span class="mensaje-vacio" style="font-weight:400;">(acumulado histórico)</span></h3>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+          ${permitido ? '<button type="button" id="btn-transferir-cuentas" class="btn btn-secundario btn-chico">🔁 Transferir entre cuentas</button>' : ''}
+          <button type="button" id="btn-exportar-csv-saldos" class="btn btn-secundario btn-chico">⬇ Excel</button>
+          <button type="button" id="btn-exportar-pdf-saldos" class="btn btn-secundario btn-chico">⬇ PDF</button>
+        </div>
+      </div>
+      <div class="tabla-scroll">
+        <table class="tabla-simple">
+          <thead><tr><th>Cuenta</th><th>Saldo acumulado</th></tr></thead>
+          <tbody>
+            ${METODOS_PAGO.map(
+              (m) => `<tr><td>${m}${m === 'Efectivo' ? ' 💵' : ''}</td><td class="monto" style="font-weight:600;">${formatCOP(saldos[m] || 0)}</td></tr>`
+            ).join('')}
+            <tr style="font-weight:700;"><td>Total</td><td class="monto">${formatCOP(total)}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="mensaje-vacio" style="margin-top:0.6rem;">Es el saldo acumulado de siempre por cada medio de pago (no se reinicia con cada turno). Usa "Transferir entre cuentas" para mover saldo de un medio a otro — por ejemplo, consolidar lo acumulado en Nequi hacia Efectivo o hacia una cuenta bancaria.</p>
+    </div>
+  `;
+
+  if (permitido) {
+    elemento.querySelector('#btn-transferir-cuentas').addEventListener('click', () => abrirModalTransferencia(container, saldos));
+  }
+
+  elemento.querySelector('#btn-exportar-csv-saldos').addEventListener('click', () => {
+    const filas = [
+      ['Saldos por cuenta — Santa Ana House 21'],
+      ['Generado', formatFechaHora(new Date().toISOString())],
+      [],
+      ['Cuenta', 'Saldo acumulado'],
+      ...METODOS_PAGO.map((m) => [m, saldos[m] || 0]),
+      ['Total', total],
+    ];
+    descargarCSV('saldos-por-cuenta.csv', filas);
+  });
+
+  elemento.querySelector('#btn-exportar-pdf-saldos').addEventListener('click', () => {
+    const cuerpo = `
+      <table>
+        <thead><tr><th>Cuenta</th><th>Saldo acumulado</th></tr></thead>
+        <tbody>
+          ${METODOS_PAGO.map((m) => filaTablaSimple([m, formatCOP(saldos[m] || 0)])).join('')}
+          <tr style="font-weight:700;">${filaTablaSimple(['Total', formatCOP(total)])}</tr>
+        </tbody>
+      </table>
+    `;
+    abrirVistaImpresion('Saldos por cuenta — Santa Ana House 21', `Generado ${formatFechaHora(new Date().toISOString())}`, cuerpo);
+  });
+}
+
+async function abrirModalTransferencia(container, saldosActuales) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja">
+      <h3>🔁 Transferir entre cuentas</h3>
+      <form id="form-transferencia">
+        <div class="modal-contenido">
+          <p class="mensaje-vacio">Mueve saldo de una cuenta a otra — no cuenta como ingreso ni egreso del negocio, solo reubica dónde está la plata.</p>
+          <div class="form-grid">
+            <label>Desde
+              <select name="cuenta_origen" required>
+                ${METODOS_PAGO.map((m) => `<option value="${m}">${m} — ${formatCOP(saldosActuales[m] || 0)}</option>`).join('')}
+              </select>
+            </label>
+            <label>Hacia
+              <select name="cuenta_destino" required>
+                ${METODOS_PAGO.map((m, idx) => `<option value="${m}" ${idx === 1 ? 'selected' : ''}>${m}</option>`).join('')}
+              </select>
+            </label>
+            <label>Monto
+              <input type="number" name="monto" step="1000" min="1" required />
+            </label>
+          </div>
+          <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
+            Motivo (opcional)
+            <input type="text" name="motivo" placeholder="Ej: consignación a la cuenta bancaria del negocio" style="text-transform:none; padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit;" />
+          </label>
+        </div>
+        <div class="modal-acciones">
+          <button type="button" class="btn btn-secundario" id="btn-cancelar-transferencia">Cancelar</button>
+          <button type="submit" class="btn btn-primario">Transferir</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#btn-cancelar-transferencia').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  overlay.querySelector('#form-transferencia').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const cuentaOrigen = form.get('cuenta_origen');
+    const cuentaDestino = form.get('cuenta_destino');
+    const monto = Number(form.get('monto'));
+
+    if (cuentaOrigen === cuentaDestino) {
+      mostrarToast('La cuenta de origen y destino no pueden ser la misma.', 'error');
+      return;
+    }
+
+    const saldoOrigen = saldosActuales[cuentaOrigen] || 0;
+    if (monto > saldoOrigen) {
+      const ok = await mostrarConfirmacion({
+        titulo: 'Saldo insuficiente en la cuenta de origen',
+        contenidoHTML: `<strong>${escaparHTML(cuentaOrigen)}</strong> tiene un saldo acumulado de <strong>${formatCOP(saldoOrigen)}</strong>, menor al monto a transferir (<strong>${formatCOP(monto)}</strong>). Esto dejaría esa cuenta en negativo. ¿Transferir de todas formas?`,
+        textoConfirmar: 'Sí, transferir de todas formas',
+      });
+      if (!ok) return;
+    }
+
+    const usuario = getUsuarioActual();
+    const { error } = await supabase.from('caja_transferencias').insert({
+      cuenta_origen: cuentaOrigen,
+      cuenta_destino: cuentaDestino,
+      monto,
+      motivo: form.get('motivo').trim() || null,
+      registrado_por: usuario?.id || null,
+    });
+
+    if (error) {
+      mostrarToast(`Error registrando la transferencia: ${error.message}`, 'error');
+      return;
+    }
+
+    mostrarToast(`Transferidos ${formatCOP(monto)} de ${cuentaOrigen} a ${cuentaDestino}.`, 'exito');
+    overlay.remove();
+    await cargarSaldosPorCuenta(container, container.querySelector('#saldos-cuenta-wrap'));
+    await cargarEstado(container);
+  });
+}
+
+// =========================================================
 // Consumo de minibar del día calendario de hoy (no del turno de caja — el
 // turno puede abrirse/cerrarse en cualquier momento, pero "cuánto se
 // consumió hoy" siempre se refiere al día calendario, igual que Recepción).
@@ -116,6 +413,7 @@ async function render(container) {
 // el momento en que el huésped liquida el minibar al hacer check-out (ver
 // recepcion.js). Este bloque es visible siempre, con caja abierta o
 // cerrada, porque el consumo de minibar no depende del turno.
+// =========================================================
 async function cargarResumenMinibarHoy(elemento) {
   if (!elemento) return;
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando consumo de minibar…</p>';
@@ -251,6 +549,21 @@ async function cargarEstado(container) {
 
 async function pintarSinTurno(container, wrap) {
   const permitido = puedeOperar();
+
+  // Continuidad entre turnos: se sugiere la base inicial con lo que quedó
+  // contado en el cierre anterior, para no digitarlo a mano cada vez ni
+  // arrancar un turno nuevo con un número que no coincide con lo que de
+  // verdad hay en la caja/caja fuerte.
+  const { data: ultimoCierre } = await supabase
+    .from('caja_turnos')
+    .select('saldo_contado, cerrado_en')
+    .eq('estado', 'cerrada')
+    .order('cerrado_en', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const baseSugerida = ultimoCierre ? Number(ultimoCierre.saldo_contado) : null;
+
   wrap.innerHTML = `
     <div class="tarjeta">
       <h3>No hay una caja abierta</h3>
@@ -260,13 +573,20 @@ async function pintarSinTurno(container, wrap) {
           ? `
         <form id="form-abrir-caja" class="form-grid" style="margin-top:1rem;">
           <label>Base inicial (efectivo)
-            <input type="number" name="saldo_inicial" step="1000" min="0" required />
+            <input type="number" name="saldo_inicial" step="1000" min="0" required value="${baseSugerida !== null ? baseSugerida : ''}" />
           </label>
           <label>Observaciones
             <input type="text" name="observaciones_apertura" placeholder="Opcional" />
           </label>
           <button type="submit" class="btn btn-primario">Abrir caja</button>
         </form>
+        <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">
+          ${
+            baseSugerida !== null
+              ? `Sugerido: lo que quedó contado en el último cierre (${formatCOP(baseSugerida)}, ${formatFechaHora(ultimoCierre.cerrado_en)}). Ajústalo si el conteo físico de hoy es distinto.`
+              : 'No hay cierres anteriores todavía — digita el efectivo real que hay en caja para empezar.'
+          }
+        </p>
       `
           : `<p class="mensaje-vacio">Tu rol no tiene permiso para abrir caja.</p>`
       }
@@ -293,19 +613,24 @@ async function pintarSinTurno(container, wrap) {
     });
   }
 
-  await cargarHistorialCierres(wrap.querySelector('#historial-cierres-wrap'));
+  await cargarHistorialCierres(container, wrap.querySelector('#historial-cierres-wrap'));
 }
 
 async function pintarTurnoAbierto(container, wrap, turno) {
   const permitido = puedeOperar();
 
-  const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }] = await Promise.all([
+  const [
+    { data: pagos, error: errPagos },
+    { data: movimientos, error: errMov },
+    { data: transferenciasTurno, error: errTrans },
+  ] = await Promise.all([
     supabase.from('reservas_pagos').select('*').gte('fecha', turno.abierto_en),
     supabase.from('caja_movimientos').select('*').eq('turno_id', turno.id).order('creado_en', { ascending: false }),
+    supabase.from('caja_transferencias').select('*').gte('creado_en', turno.abierto_en).order('creado_en', { ascending: false }),
   ]);
 
-  if (errPagos || errMov) {
-    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando movimientos: ${(errPagos || errMov).message}</p>`;
+  if (errPagos || errMov || errTrans) {
+    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando movimientos: ${(errPagos || errMov || errTrans).message}</p>`;
     return;
   }
 
@@ -318,9 +643,36 @@ async function pintarTurnoAbierto(container, wrap, turno) {
   const ingresosManuales = (movimientos || []).filter((m) => m.tipo === 'ingreso').reduce((sum, m) => sum + Number(m.monto), 0);
 
   const efectivo = desglose['Efectivo'] || { ingresos: 0, egresos: 0 };
-  const saldoEsperadoEfectivo = Number(turno.saldo_inicial) + efectivo.ingresos - efectivo.egresos;
+
+  // Las transferencias no son ingreso/egreso real (no se suman a
+  // totalIngresos/totalEgresos, para no inflar esos totales), pero sí
+  // mueven cuánto debería haber físicamente en el cajón si involucran
+  // Efectivo.
+  const efectivoTransferenciasNeto = (transferenciasTurno || []).reduce((sum, t) => {
+    if (t.cuenta_destino === 'Efectivo') return sum + Number(t.monto);
+    if (t.cuenta_origen === 'Efectivo') return sum - Number(t.monto);
+    return sum;
+  }, 0);
+
+  const saldoEsperadoEfectivo = Number(turno.saldo_inicial) + efectivo.ingresos - efectivo.egresos + efectivoTransferenciasNeto;
+
+  const nombresUsuarios = await obtenerNombresUsuarios([turno.abierto_por, getUsuarioActual()?.id]);
+  const nombreAbrio = nombresUsuarios.get(turno.abierto_por) || '—';
+  const nombreActual = nombresUsuarios.get(getUsuarioActual()?.id) || getUsuarioActual()?.nombre || '—';
 
   wrap.innerHTML = `
+    <div class="tarjeta" style="background:var(--color-fondo-suave, #f8f9fb); margin-bottom:1rem;">
+      <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:0.5rem; align-items:center;">
+        <div>
+          <strong>🤝 Entrega de turno</strong>
+          <p class="mensaje-vacio" style="margin:0.2rem 0 0;">Abierta por <strong>${escaparHTML(nombreAbrio)}</strong> el ${formatFechaHora(turno.abierto_en)}</p>
+        </div>
+        <div style="text-align:right;">
+          <span class="mensaje-vacio">Sesión actual:</span> <strong>${escaparHTML(nombreActual)}</strong>
+        </div>
+      </div>
+    </div>
+
     <div class="grid-tres-columnas">
       <div class="stat-card stat-card-azul">
         <div class="stat-card-label">Base inicial (efectivo)</div>
@@ -340,7 +692,7 @@ async function pintarTurnoAbierto(container, wrap, turno) {
     </div>
 
     <div class="tarjeta">
-      <h3>💱 Desglose por medio de pago</h3>
+      <h3>💱 Desglose por medio de pago (este turno)</h3>
       <table class="tabla-simple">
         <thead><tr><th>Medio</th><th>Ingresos</th><th>Egresos</th><th>Neto</th></tr></thead>
         <tbody>
@@ -354,8 +706,29 @@ async function pintarTurnoAbierto(container, wrap, turno) {
           <tr style="font-weight:700;"><td>Total</td><td>${formatCOP(totalIngresos)}</td><td>${formatCOP(totalEgresos)}</td><td>${formatCOP(totalIngresos - totalEgresos)}</td></tr>
         </tbody>
       </table>
-      <p class="mensaje-vacio" style="margin-top:0.5rem;">Solo Efectivo necesita conteo físico al cerrar caja — los demás medios son electrónicos, su saldo es lo que marca esta tabla.</p>
+      <p class="mensaje-vacio" style="margin-top:0.5rem;">Solo Efectivo necesita conteo físico al cerrar caja — los demás medios son electrónicos, su saldo es lo que marca esta tabla. Las transferencias entre cuentas no están incluidas aquí (no son ingreso/egreso real) — se ven abajo.</p>
     </div>
+
+    ${
+      (transferenciasTurno || []).length > 0
+        ? `
+      <div class="tarjeta">
+        <h3>🔁 Transferencias entre cuentas (este turno)</h3>
+        <table class="tabla-simple">
+          <thead><tr><th>Fecha</th><th>De</th><th>Hacia</th><th>Monto</th><th>Motivo</th></tr></thead>
+          <tbody>
+            ${transferenciasTurno
+              .map(
+                (t) =>
+                  `<tr><td>${formatFechaHora(t.creado_en)}</td><td>${escaparHTML(t.cuenta_origen)}</td><td>${escaparHTML(t.cuenta_destino)}</td><td class="monto">${formatCOP(t.monto)}</td><td>${escaparHTML(t.motivo || '—')}</td></tr>`
+              )
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+    `
+        : ''
+    }
 
     ${
       permitido
@@ -418,10 +791,14 @@ async function pintarTurnoAbierto(container, wrap, turno) {
     );
   }
 
-  await cargarHistorialCierres(wrap.querySelector('#historial-cierres-wrap'));
+  await cargarHistorialCierres(container, wrap.querySelector('#historial-cierres-wrap'));
 }
 
-async function cargarHistorialCierres(elemento) {
+// =========================================================
+// Cierres anteriores — bitácora de entrega de turno, con detalle
+// itemizado y exportable por cierre (para auditoría del propietario).
+// =========================================================
+async function cargarHistorialCierres(container, elemento) {
   if (!elemento) return;
   elemento.innerHTML = `<h3>Cierres anteriores</h3><p class="mensaje-vacio">Cargando…</p>`;
   const { data, error } = await supabase
@@ -436,12 +813,18 @@ async function cargarHistorialCierres(elemento) {
     return;
   }
 
+  const idsUsuarios = [];
+  (data || []).forEach((t) => {
+    idsUsuarios.push(t.abierto_por, t.cerrado_por);
+  });
+  const nombresUsuarios = await obtenerNombresUsuarios(idsUsuarios);
+
   elemento.innerHTML = `
     <h3>Cierres anteriores</h3>
-    <p class="mensaje-vacio">Bitácora de entregas de turno: quién cerró, cuánto entró en efectivo vs otros medios, y la diferencia del arqueo. "Ver detalle" muestra el desglose completo por medio de pago (Nequi, Daviplata, QR, etc).</p>
+    <p class="mensaje-vacio">Bitácora de entregas de turno: quién abrió, quién cerró, cuánto entró en efectivo vs otros medios, y la diferencia del arqueo. "Ver detalle" muestra el desglose completo y el detalle transacción por transacción, descargable en Excel/PDF.</p>
     <div class="tabla-scroll">
       <table class="tabla-simple">
-        <thead><tr><th>Cerrada</th><th>Base inicial</th><th>Ingresos efectivo</th><th>Ingresos otros medios</th><th>Esperado efectivo</th><th>Contado</th><th>Diferencia</th><th></th></tr></thead>
+        <thead><tr><th>Cerrada</th><th>Abrió</th><th>Cerró</th><th>Base inicial</th><th>Ingresos efectivo</th><th>Ingresos otros medios</th><th>Esperado efectivo</th><th>Contado</th><th>Diferencia</th><th></th></tr></thead>
         <tbody>
           ${
             (data || [])
@@ -449,38 +832,22 @@ async function cargarHistorialCierres(elemento) {
                 (t, idx) => `
                 <tr>
                   <td>${formatFechaHora(t.cerrado_en)}</td>
+                  <td>${escaparHTML(nombresUsuarios.get(t.abierto_por) || '—')}</td>
+                  <td>${escaparHTML(nombresUsuarios.get(t.cerrado_por) || '—')}</td>
                   <td>${formatCOP(t.saldo_inicial)}</td>
                   <td>${formatCOP(t.total_ingresos_efectivo)}</td>
                   <td>${formatCOP(t.total_ingresos_digital)}</td>
                   <td>${formatCOP(t.saldo_esperado)}</td>
                   <td>${formatCOP(t.saldo_contado)}</td>
                   <td style="color:${Number(t.diferencia) === 0 ? 'var(--color-verde-oscuro)' : 'var(--color-rojo-oscuro)'}; font-weight:700;">${formatCOP(t.diferencia)}</td>
-                  <td>${t.desglose_metodos ? `<button type="button" class="btn-editar btn-ver-detalle-cierre" data-idx="${idx}">Ver detalle</button>` : '—'}</td>
+                  <td><button type="button" class="btn-editar btn-ver-detalle-cierre" data-idx="${idx}" data-turno-id="${t.id}">Ver detalle</button></td>
                 </tr>
                 <tr class="fila-detalle-cierre oculto" data-detalle-idx="${idx}">
-                  <td colspan="8">
-                    ${
-                      t.desglose_metodos
-                        ? `
-                      <table class="tabla-simple">
-                        <thead><tr><th>Medio</th><th>Ingresos</th><th>Egresos</th><th>Neto</th></tr></thead>
-                        <tbody>
-                          ${Object.entries(t.desglose_metodos)
-                            .map(
-                              ([medio, d]) =>
-                                `<tr><td>${escaparHTML(medio)}</td><td>${formatCOP(d.ingresos)}</td><td>${formatCOP(d.egresos)}</td><td>${formatCOP(d.ingresos - d.egresos)}</td></tr>`
-                            )
-                            .join('')}
-                        </tbody>
-                      </table>
-                    `
-                        : ''
-                    }
-                  </td>
+                  <td colspan="10"><div class="detalle-cierre-contenido"><p class="mensaje-vacio">Cargando detalle…</p></div></td>
                 </tr>
               `
               )
-              .join('') || '<tr><td colspan="8" class="mensaje-vacio">Sin cierres registrados todavía.</td></tr>'
+              .join('') || '<tr><td colspan="10" class="mensaje-vacio">Sin cierres registrados todavía.</td></tr>'
           }
         </tbody>
       </table>
@@ -488,11 +855,221 @@ async function cargarHistorialCierres(elemento) {
   `;
 
   elemento.querySelectorAll('.btn-ver-detalle-cierre').forEach((btn) => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const fila = elemento.querySelector(`.fila-detalle-cierre[data-detalle-idx="${btn.dataset.idx}"]`);
-      if (fila) fila.classList.toggle('oculto');
+      if (!fila) return;
+      const yaAbierta = !fila.classList.contains('oculto');
+      fila.classList.toggle('oculto');
+      if (yaAbierta) return;
+
+      const turno = (data || []).find((t) => t.id === Number(btn.dataset.turnoId));
+      if (!turno) return;
+      const contenedorDetalle = fila.querySelector('.detalle-cierre-contenido');
+      if (contenedorDetalle.dataset.cargado === '1') return; // ya se cargó una vez, no repetir la consulta
+
+      await pintarDetalleCierre(contenedorDetalle, turno, nombresUsuarios);
+      contenedorDetalle.dataset.cargado = '1';
     });
   });
+}
+
+async function pintarDetalleCierre(contenedor, turno, nombresUsuarios) {
+  contenedor.innerHTML = '<p class="mensaje-vacio">Cargando detalle…</p>';
+
+  const desde = turno.abierto_en;
+  const hasta = turno.cerrado_en;
+
+  const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: transferencias, error: errTrans }] =
+    await Promise.all([
+      supabase.from('reservas_pagos').select('*').gte('fecha', desde).lt('fecha', hasta).order('fecha', { ascending: true }),
+      supabase.from('caja_movimientos').select('*').eq('turno_id', turno.id).order('creado_en', { ascending: true }),
+      supabase
+        .from('caja_transferencias')
+        .select('*')
+        .gte('creado_en', desde)
+        .lt('creado_en', hasta)
+        .order('creado_en', { ascending: true }),
+    ]);
+
+  if (errPagos || errMov || errTrans) {
+    contenedor.innerHTML = `<p class="mensaje-vacio">Error cargando el detalle: ${(errPagos || errMov || errTrans).message}</p>`;
+    return;
+  }
+
+  const datosDetalle = {
+    turno,
+    nombreAbrio: nombresUsuarios.get(turno.abierto_por) || '—',
+    nombreCerro: nombresUsuarios.get(turno.cerrado_por) || '—',
+    pagos: pagos || [],
+    movimientos: movimientos || [],
+    transferencias: transferencias || [],
+  };
+
+  contenedor.innerHTML = `
+    ${
+      turno.desglose_metodos
+        ? `
+      <p style="font-weight:600; margin-bottom:0.3rem;">Desglose por medio de pago</p>
+      <table class="tabla-simple">
+        <thead><tr><th>Medio</th><th>Ingresos</th><th>Egresos</th><th>Neto</th></tr></thead>
+        <tbody>
+          ${Object.entries(turno.desglose_metodos)
+            .map(
+              ([medio, d]) =>
+                `<tr><td>${escaparHTML(medio)}</td><td>${formatCOP(d.ingresos)}</td><td>${formatCOP(d.egresos)}</td><td>${formatCOP(d.ingresos - d.egresos)}</td></tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>
+    `
+        : ''
+    }
+
+    <p style="font-weight:600; margin:0.85rem 0 0.3rem;">Pagos de reservas (${datosDetalle.pagos.length})</p>
+    ${
+      datosDetalle.pagos.length === 0
+        ? '<p class="mensaje-vacio">Sin pagos de reservas en este turno.</p>'
+        : `<table class="tabla-simple"><thead><tr><th>Fecha</th><th>Monto</th><th>Método</th><th>Comentario</th></tr></thead><tbody>${datosDetalle.pagos
+            .map((p) => `<tr><td>${formatFechaHora(p.fecha)}</td><td>${formatCOP(p.monto)}</td><td>${p.metodo_pago || '—'}</td><td>${escaparHTML(p.comentarios || '—')}</td></tr>`)
+            .join('')}</tbody></table>`
+    }
+
+    <p style="font-weight:600; margin:0.85rem 0 0.3rem;">Movimientos manuales (${datosDetalle.movimientos.length})</p>
+    ${
+      datosDetalle.movimientos.length === 0
+        ? '<p class="mensaje-vacio">Sin movimientos manuales en este turno.</p>'
+        : `<table class="tabla-simple"><thead><tr><th>Fecha</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Método</th><th>Descripción</th></tr></thead><tbody>${datosDetalle.movimientos
+            .map(
+              (m) =>
+                `<tr><td>${formatFechaHora(m.creado_en)}</td><td>${m.tipo === 'ingreso' ? 'Ingreso' : 'Egreso'}</td><td>${escaparHTML(m.categoria || '—')}</td><td>${formatCOP(m.monto)}</td><td>${m.metodo_pago || '—'}</td><td>${escaparHTML(m.descripcion || '—')}</td></tr>`
+            )
+            .join('')}</tbody></table>`
+    }
+
+    <p style="font-weight:600; margin:0.85rem 0 0.3rem;">Transferencias entre cuentas (${datosDetalle.transferencias.length})</p>
+    ${
+      datosDetalle.transferencias.length === 0
+        ? '<p class="mensaje-vacio">Sin transferencias en este turno.</p>'
+        : `<table class="tabla-simple"><thead><tr><th>Fecha</th><th>De</th><th>Hacia</th><th>Monto</th><th>Motivo</th></tr></thead><tbody>${datosDetalle.transferencias
+            .map(
+              (t) =>
+                `<tr><td>${formatFechaHora(t.creado_en)}</td><td>${escaparHTML(t.cuenta_origen)}</td><td>${escaparHTML(t.cuenta_destino)}</td><td>${formatCOP(t.monto)}</td><td>${escaparHTML(t.motivo || '—')}</td></tr>`
+            )
+            .join('')}</tbody></table>`
+    }
+
+    ${turno.observaciones_cierre ? `<p style="margin-top:0.85rem;"><strong>Observaciones del cierre:</strong> ${escaparHTML(turno.observaciones_cierre)}</p>` : ''}
+
+    <div class="acciones-tarjeta" style="justify-content:flex-start; margin-top:0.85rem;">
+      <button type="button" class="btn btn-secundario btn-chico btn-exportar-csv-cierre">⬇ Excel</button>
+      <button type="button" class="btn btn-secundario btn-chico btn-exportar-pdf-cierre">⬇ PDF</button>
+    </div>
+  `;
+
+  contenedor.querySelector('.btn-exportar-csv-cierre').addEventListener('click', () => exportarCierreCSV(datosDetalle));
+  contenedor.querySelector('.btn-exportar-pdf-cierre').addEventListener('click', () => exportarCierrePDF(datosDetalle));
+}
+
+function exportarCierreCSV(d) {
+  const t = d.turno;
+  const filas = [
+    ['Cierre de caja — Santa Ana House 21'],
+    ['Abierta por', d.nombreAbrio, formatFechaHora(t.abierto_en)],
+    ['Cerrada por', d.nombreCerro, formatFechaHora(t.cerrado_en)],
+    [],
+    ['Base inicial', t.saldo_inicial],
+    ['Esperado en efectivo', t.saldo_esperado],
+    ['Contado en efectivo', t.saldo_contado],
+    ['Diferencia', t.diferencia],
+    ['Observaciones del cierre', t.observaciones_cierre || ''],
+    [],
+    ['Pagos de reservas'],
+    ['Fecha', 'Monto', 'Método', 'Comentario'],
+    ...(d.pagos.length ? d.pagos.map((p) => [formatFechaHora(p.fecha), p.monto, p.metodo_pago || '', p.comentarios || '']) : [['Sin pagos en este turno.', '', '', '']]),
+    [],
+    ['Movimientos manuales'],
+    ['Fecha', 'Tipo', 'Categoría', 'Monto', 'Método', 'Descripción'],
+    ...(d.movimientos.length
+      ? d.movimientos.map((m) => [formatFechaHora(m.creado_en), m.tipo, m.categoria || '', m.monto, m.metodo_pago || '', m.descripcion || ''])
+      : [['Sin movimientos en este turno.', '', '', '', '', '']]),
+    [],
+    ['Transferencias entre cuentas'],
+    ['Fecha', 'De', 'Hacia', 'Monto', 'Motivo'],
+    ...(d.transferencias.length
+      ? d.transferencias.map((t2) => [formatFechaHora(t2.creado_en), t2.cuenta_origen, t2.cuenta_destino, t2.monto, t2.motivo || ''])
+      : [['Sin transferencias en este turno.', '', '', '', '']]),
+  ];
+  descargarCSV(`cierre-caja-${toISODate(new Date(t.cerrado_en))}-turno-${t.id}.csv`, filas);
+}
+
+function exportarCierrePDF(d) {
+  const t = d.turno;
+  const cuerpo = `
+    <h2>Entrega de turno</h2>
+    <table>
+      <tr><td>Abierta por</td><td>${escaparHTML(d.nombreAbrio)} — ${formatFechaHora(t.abierto_en)}</td></tr>
+      <tr><td>Cerrada por</td><td>${escaparHTML(d.nombreCerro)} — ${formatFechaHora(t.cerrado_en)}</td></tr>
+    </table>
+
+    <h2>Arqueo de efectivo</h2>
+    <table>
+      <tr><td>Base inicial</td><td>${formatCOP(t.saldo_inicial)}</td></tr>
+      <tr><td>Esperado</td><td>${formatCOP(t.saldo_esperado)}</td></tr>
+      <tr><td>Contado</td><td>${formatCOP(t.saldo_contado)}</td></tr>
+      <tr><td>Diferencia</td><td>${formatCOP(t.diferencia)}</td></tr>
+    </table>
+    ${t.observaciones_cierre ? `<p><strong>Observaciones:</strong> ${escaparHTML(t.observaciones_cierre)}</p>` : ''}
+
+    <h2>Pagos de reservas (${d.pagos.length})</h2>
+    <table>
+      <thead><tr><th>Fecha</th><th>Monto</th><th>Método</th><th>Comentario</th></tr></thead>
+      <tbody>
+        ${
+          d.pagos.length
+            ? d.pagos.map((p) => filaTablaSimple([formatFechaHora(p.fecha), formatCOP(p.monto), p.metodo_pago || '—', escaparHTML(p.comentarios || '—')])).join('')
+            : filaTablaSimple(['Sin pagos en este turno.', '', '', ''])
+        }
+      </tbody>
+    </table>
+
+    <h2>Movimientos manuales (${d.movimientos.length})</h2>
+    <table>
+      <thead><tr><th>Fecha</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Método</th><th>Descripción</th></tr></thead>
+      <tbody>
+        ${
+          d.movimientos.length
+            ? d.movimientos
+                .map((m) =>
+                  filaTablaSimple([
+                    formatFechaHora(m.creado_en),
+                    m.tipo === 'ingreso' ? 'Ingreso' : 'Egreso',
+                    escaparHTML(m.categoria || '—'),
+                    formatCOP(m.monto),
+                    m.metodo_pago || '—',
+                    escaparHTML(m.descripcion || '—'),
+                  ])
+                )
+                .join('')
+            : filaTablaSimple(['Sin movimientos en este turno.', '', '', '', '', ''])
+        }
+      </tbody>
+    </table>
+
+    <h2>Transferencias entre cuentas (${d.transferencias.length})</h2>
+    <table>
+      <thead><tr><th>Fecha</th><th>De</th><th>Hacia</th><th>Monto</th><th>Motivo</th></tr></thead>
+      <tbody>
+        ${
+          d.transferencias.length
+            ? d.transferencias
+                .map((t2) => filaTablaSimple([formatFechaHora(t2.creado_en), escaparHTML(t2.cuenta_origen), escaparHTML(t2.cuenta_destino), formatCOP(t2.monto), escaparHTML(t2.motivo || '—')]))
+                .join('')
+            : filaTablaSimple(['Sin transferencias en este turno.', '', '', '', ''])
+        }
+      </tbody>
+    </table>
+  `;
+  abrirVistaImpresion(`Cierre de caja #${t.id} — Santa Ana House 21`, `Turno del ${formatFechaHora(t.abierto_en)} al ${formatFechaHora(t.cerrado_en)}`, cuerpo);
 }
 
 async function abrirModalMovimiento(container, turnoId) {
@@ -562,6 +1139,11 @@ async function abrirModalMovimiento(container, turnoId) {
   });
 }
 
+// =========================================================
+// Cerrar caja: conteo de efectivo POR DENOMINACIÓN (menos errores que un
+// solo campo total) + explicación obligatoria si la diferencia no da
+// exacto.
+// =========================================================
 async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglose) {
   const efectivo = desglose['Efectivo'] || { ingresos: 0, egresos: 0 };
   const otrosMedios = Object.entries(desglose).filter(([medio]) => medio !== 'Efectivo');
@@ -571,7 +1153,7 @@ async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglos
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
-    <div class="modal-caja">
+    <div class="modal-caja modal-caja-ancha">
       <h3>Cerrar caja</h3>
       <form id="form-cierre-caja">
         <div class="modal-contenido">
@@ -584,14 +1166,43 @@ async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglos
             </tbody>
           </table>
           <p class="mensaje-vacio">Esperado en efectivo: <strong class="monto">${formatCOP(saldoEsperadoEfectivo)}</strong> (esto es lo único que hay que contar físicamente — los demás medios ya son electrónicos).</p>
+
+          <div class="tarjeta" style="margin-top:0.75rem; background:var(--color-fondo-suave, #f8f9fb);">
+            <h4 style="margin-top:0;">Conteo de efectivo por denominación</h4>
+            <table class="tabla-simple">
+              <thead><tr><th>Denominación</th><th>Cantidad</th><th>Subtotal</th></tr></thead>
+              <tbody>
+                ${DENOMINACIONES_BILLETES.map(
+                  (v) => `
+                  <tr>
+                    <td>${formatCOP(v)}</td>
+                    <td><input type="number" min="0" step="1" value="0" class="input-cantidad-denominacion" data-valor="${v}" style="width:90px;" /></td>
+                    <td class="monto subtotal-denominacion" data-valor="${v}">${formatCOP(0)}</td>
+                  </tr>
+                `
+                ).join('')}
+                <tr>
+                  <td>Monedas y billetes menores (efectivo directo)</td>
+                  <td><input type="number" min="0" step="100" value="0" id="input-monedas-otros" style="width:90px;" /></td>
+                  <td class="monto" id="subtotal-monedas">${formatCOP(0)}</td>
+                </tr>
+              </tbody>
+              <tfoot>
+                <tr style="font-weight:700;"><td colspan="2">Total contado</td><td class="monto" id="total-contado-denominaciones">${formatCOP(0)}</td></tr>
+              </tfoot>
+            </table>
+          </div>
+
           <div class="form-grid" style="margin-top:0.75rem;">
-            <label>Efectivo contado
-              <input type="number" name="saldo_contado" step="1000" min="0" required />
-            </label>
-            <label>Observaciones
-              <input type="text" name="observaciones_cierre" placeholder="Opcional" />
+            <label>Diferencia
+              <input type="text" id="input-diferencia-display" disabled value="${formatCOP(0 - saldoEsperadoEfectivo)}" />
             </label>
           </div>
+          <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:0.75rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);" id="label-observaciones-cierre">
+            Observaciones
+            <textarea name="observaciones_cierre" id="input-observaciones-cierre" rows="2" placeholder="Opcional" style="text-transform:none; padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit;"></textarea>
+          </label>
+          <p class="mensaje-vacio" id="aviso-explicacion-diferencia" style="margin-top:0.3rem; font-size:0.78rem; color:var(--color-rojo-oscuro); display:none;">El conteo no cuadra con lo esperado — explica en Observaciones a qué se debe la diferencia antes de cerrar.</p>
         </div>
         <div class="modal-acciones">
           <button type="button" class="btn btn-secundario" id="btn-cancelar-cierre">Cancelar</button>
@@ -602,6 +1213,46 @@ async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglos
   `;
   document.body.appendChild(overlay);
 
+  let totalContadoActual = 0;
+
+  function recalcularConteo() {
+    let total = 0;
+    overlay.querySelectorAll('.input-cantidad-denominacion').forEach((input) => {
+      const valor = Number(input.dataset.valor);
+      const cantidad = Number(input.value) || 0;
+      const subtotal = valor * cantidad;
+      total += subtotal;
+      overlay.querySelector(`.subtotal-denominacion[data-valor="${valor}"]`).textContent = formatCOP(subtotal);
+    });
+    const monedas = Number(overlay.querySelector('#input-monedas-otros').value) || 0;
+    overlay.querySelector('#subtotal-monedas').textContent = formatCOP(monedas);
+    total += monedas;
+
+    totalContadoActual = total;
+    overlay.querySelector('#total-contado-denominaciones').textContent = formatCOP(total);
+
+    const diferencia = total - saldoEsperadoEfectivo;
+    overlay.querySelector('#input-diferencia-display').value = formatCOP(diferencia);
+
+    const textarea = overlay.querySelector('#input-observaciones-cierre');
+    const aviso = overlay.querySelector('#aviso-explicacion-diferencia');
+    const labelObs = overlay.querySelector('#label-observaciones-cierre');
+    if (diferencia !== 0) {
+      textarea.required = true;
+      aviso.style.display = 'block';
+      labelObs.firstChild.textContent = 'Observaciones (obligatorio — explica la diferencia)';
+    } else {
+      textarea.required = false;
+      aviso.style.display = 'none';
+      labelObs.firstChild.textContent = 'Observaciones';
+    }
+  }
+
+  overlay.querySelectorAll('.input-cantidad-denominacion, #input-monedas-otros').forEach((input) => {
+    input.addEventListener('input', recalcularConteo);
+  });
+  recalcularConteo();
+
   overlay.querySelector('#btn-cancelar-cierre').addEventListener('click', () => overlay.remove());
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) overlay.remove();
@@ -610,8 +1261,13 @@ async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglos
   overlay.querySelector('#form-cierre-caja').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
-    const saldoContado = Number(form.get('saldo_contado'));
+    const saldoContado = totalContadoActual;
     const diferencia = saldoContado - saldoEsperadoEfectivo;
+
+    if (diferencia !== 0 && !form.get('observaciones_cierre').trim()) {
+      mostrarToast('El conteo no cuadra con lo esperado — explica la diferencia en Observaciones antes de cerrar.', 'error');
+      return;
+    }
 
     const ok = await mostrarConfirmacion({
       titulo: 'Confirmar cierre de caja',
