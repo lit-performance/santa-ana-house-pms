@@ -2,6 +2,18 @@
 //
 // Único punto de entrada de JS y única "lista central" de módulos: cada
 // módulo nuevo se agrega aquí con una línea de import (ver ARCHITECTURE.md).
+//
+// Orden de pestañas = orden de estos imports (ver modules-registry.js).
+// Nota: 'dashboard.js' (antiguo módulo "Inicio") ya NO se importa — su
+// contenido relevante se fusionó dentro de recepcion.js, que ahora hace de
+// pantalla de inicio para el día a día. El archivo dashboard.js se deja en
+// el repo sin usar por si se quiere recuperar algo de ahí más adelante.
+//
+// Nota: 'config-habitaciones.js' (+ config-tipos.js + config-tarifas.js,
+// que son sus subpestañas) se importan AL FINAL a propósito, después de
+// 'placeholders.js' — así "Configuración" queda como la última pestaña
+// del menú (se usa pocas veces, no debe distraer al lado de las pantallas
+// de uso diario).
 
 import { iniciarSesion, cerrarSesion, restaurarSesion } from './auth.js';
 import { initRouter, renderPrimerModuloDisponible } from './router.js';
@@ -9,12 +21,8 @@ import { initTabs } from './ui.js';
 
 // --- Módulos registrados (agregar una línea por módulo nuevo, en el
 // orden en que deben aparecer las pestañas) ---
-import './dashboard.js';
-import './config-habitaciones.js';
-import './config-tipos.js';
-import './config-tarifas.js';
-import './reservas.js';
 import './recepcion.js';
+import './reservas.js';
 import './huespedes.js';
 import './housekeeping.js';
 import './caja.js';
@@ -34,6 +42,11 @@ import './crm.js';
 // A medida que cada módulo se construya de verdad, se quita su entrada de
 // placeholders.js y se agrega aquí su propio archivo dedicado.
 import './placeholders.js';
+
+// Configuración va al final del todo (ver nota arriba).
+import './config-habitaciones.js';
+import './config-tipos.js';
+import './config-tarifas.js';
 
 const pantallaLogin = document.getElementById('pantalla-login');
 const pantallaApp = document.getElementById('pantalla-app');
