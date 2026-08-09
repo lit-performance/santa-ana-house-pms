@@ -18,10 +18,16 @@
 // subpestañas — así el menú principal no crece sin control. Housekeeping y
 // Caja ya tienen su propio archivo y quedan sueltas arriba porque el staff
 // las usa todos los días. Indicadores, Minibar, Inventario, Proveedores,
-// Usuarios, Compras, Facturación, Contabilidad, Reportes, Estadísticas y
-// CRM también tienen su propio archivo, pero siguen viviendo como
-// subpestañas de "Análisis", "Inventario", "Finanzas" y "Administración"
-// respectivamente (mismo lugar que ya tenían como placeholder).
+// Usuarios, Compras, Facturación, Contabilidad, Reportes, Estadísticas,
+// Huéspedes y CRM también tienen su propio archivo, pero siguen viviendo
+// como subpestañas de "Análisis", "Inventario", "Finanzas" y
+// "Administración" respectivamente.
+//
+// Nota sobre el render de cada grupo (vistaGrupo): ya NO se usa como
+// contenido por defecto al entrar al grupo (ver ui.js — ahora se entra
+// directo a la primera subpestaña real), pero se deja registrado por si
+// alguna vez se necesita un resumen del grupo; hoy no es alcanzable desde
+// la navegación normal.
 //
 // No tocan la base de datos — son solo vista, sin tablas ni RLS propias.
 
@@ -98,10 +104,15 @@ const GRUPOS = [
     id: 'grupo-analisis',
     label: 'Análisis',
     icono: '📈',
-    roles: ['propietario', 'administrador', 'auditor'],
+    // 'recepcionista' se agregó para que siga viendo Huéspedes (el resto
+    // de subpestañas de este grupo — Reportes, Indicadores, Estadísticas,
+    // Auditoría — tienen su propio rol y no incluyen recepcionista, así
+    // que a ella solo le aparece Huéspedes dentro de Análisis).
+    roles: ['propietario', 'administrador', 'auditor', 'recepcionista'],
     titulo: 'Análisis',
-    descripcion: 'Reportes, indicadores, estadísticas históricas y auditoría del sistema.',
+    descripcion: 'Huéspedes, reportes, indicadores, estadísticas históricas y auditoría del sistema.',
     hijos: [
+      { icono: '🧳', label: 'Huéspedes', resumen: 'Ficha por huésped con historial de estadías, preferencias, alergias y observaciones.' },
       { icono: '📈', label: 'Reportes', resumen: 'Listados de Reservas, Ocupación por habitación y Huéspedes, exportables a CSV/Excel.' },
       { icono: '📌', label: 'Indicadores', resumen: 'Ocupación, ingresos efectivo/digital y comparativos por período.' },
       { icono: '📉', label: 'Estadísticas', resumen: 'Tendencias mensuales de ingresos y ocupación, más ranking de habitaciones más rentables.' },
@@ -137,10 +148,10 @@ GRUPOS.forEach((grupo) => {
 
 // --- Módulos "próximamente" (Caja, Indicadores, Minibar, Inventario,
 // Proveedores, Usuarios, Compras, Facturación, Contabilidad, Reportes,
-// Estadísticas y CRM ya se construyeron — ver caja.js, indicadores.js,
-// minibar.js, inventario.js, proveedores.js, usuarios.js, compras.js,
-// facturacion.js, contabilidad.js, reportes.js, estadisticas.js y
-// crm.js) ---
+// Estadísticas, Huéspedes y CRM ya se construyeron — ver caja.js,
+// indicadores.js, minibar.js, inventario.js, proveedores.js, usuarios.js,
+// compras.js, facturacion.js, contabilidad.js, reportes.js,
+// estadisticas.js, huespedes.js y crm.js) ---
 const MODULOS_PENDIENTES = [
   {
     id: 'gastos',
