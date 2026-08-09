@@ -29,6 +29,15 @@
 // mano, el cálculo automático se detiene para esa apertura del modal (para
 // no pisar un valor que alguien ajustó a propósito, ej. un descuento).
 //
+// Nota sobre el chequeo de cruce de fechas: antes de crear o editar una
+// reserva se verifica que ninguna otra reserva activa (reservada,
+// confirmada, check_in, hospedado) de la MISMA habitación se cruce con
+// las fechas elegidas. Esto es lo que evita, por ejemplo, hacer una
+// "Reserva rápida" para hoy sobre una habitación que ya está ocupada —
+// el estado de la habitación (ocupada/limpieza/etc) por sí solo no
+// alcanzaba a detectar eso, porque solo bloqueaba el desplegable en
+// ciertos casos, no validaba las fechas reales contra otras reservas.
+//
 // Nota sobre métodos de pago (abonos): la lista completa vive en
 // METODOS_PAGO — Efectivo, Nequi, Daviplata, QR, Transferencia Bancaria,
 // Datáfono, Llave. Caja consolida cada uno como si fuera una cuenta
@@ -55,6 +64,12 @@ let rangoInicio = new Date();
 rangoInicio.setHours(0, 0, 0, 0);
 
 const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
+
+// Estados de reserva que "ocupan" la habitación para efectos de detectar
+// cruces de fechas. 'cancelada' y 'no_show' se excluyen a propósito: una
+// reserva cancelada no debe seguir bloqueando esas fechas para otra
+// reserva nueva.
+const ESTADOS_RESERVA_ACTIVOS = ['reservada', 'confirmada', 'check_in', 'hospedado'];
 
 const CLASE_CELDA = {
   reservada: 'celda-estado-reservada',
@@ -386,6 +401,39 @@ async function abrirModalReserva(container, reserva, prellenado) {
 
     if (payload.fecha_checkout <= payload.fecha_checkin) {
       mostrarToast('La fecha de check-out debe ser posterior al check-in.', 'error');
+      return;
+    }
+
+    // --- Verificación de disponibilidad: el estado de la habitación
+    // (ocupada/limpieza/etc) por sí solo no alcanza para detectar un
+    // cruce, porque una reserva puede ser para cualquier rango de fechas
+    // futuras. Lo que realmente importa es si OTRA reserva activa de esa
+    // MISMA habitación se cruza con las fechas elegidas — incluye el caso
+    // de "Reserva rápida" para hoy sobre una habitación ya ocupada, que
+    // siempre tiene una reserva 'hospedado' cubriendo el día de hoy. ---
+    let consultaCruce = supabase
+      .from('reservas')
+      .select('id, huesped_nombre, fecha_checkin, fecha_checkout')
+      .eq('habitacion_id', payload.habitacion_id)
+      .in('estado', ESTADOS_RESERVA_ACTIVOS)
+      .lt('fecha_checkin', payload.fecha_checkout)
+      .gt('fecha_checkout', payload.fecha_checkin);
+
+    if (editando) {
+      consultaCruce = consultaCruce.neq('id', reserva.id);
+    }
+
+    const { data: cruces, error: errCruce } = await consultaCruce;
+    if (errCruce) {
+      mostrarToast(`No se pudo verificar disponibilidad: ${errCruce.message}`, 'error');
+      return;
+    }
+    if (cruces && cruces.length > 0) {
+      const conflicto = cruces[0];
+      mostrarToast(
+        `Esa habitación ya tiene una reserva de ${conflicto.huesped_nombre} del ${conflicto.fecha_checkin} al ${conflicto.fecha_checkout}. Elige otra habitación o cambia las fechas.`,
+        'error'
+      );
       return;
     }
 
