@@ -6,8 +6,16 @@
 //   solo muestra las subpestañas de ESE módulo, nunca las de otro. Si una
 //   sección no tiene subpestañas propias, esta fila se oculta.
 //
-// El propio módulo principal aparece como el primer botón de su fila de
-// subpestañas (representa su vista "por defecto").
+// Nota: el módulo principal (el grupo en sí, ej. "Administración") YA NO
+// aparece como una subpestaña más — antes salía duplicado ("Administración"
+// como pestaña Y como primera subpestaña de sí misma) y su contenido
+// propio era solo un resumen genérico que quedaba obsoleto en cuanto sus
+// hijos se terminaban de construir. Ahora, al entrar a un grupo, se
+// renderiza directo la PRIMERA subpestaña real (ej. entrar a
+// "Administración" muestra "Usuarios" de una), y la fila de subpestañas
+// solo lista los módulos reales. Los grupos sin subpestañas para el rol
+// actual (ej. Recepción, Reservas, Caja) siguen funcionando igual que
+// siempre: se renderizan a sí mismos y no muestran fila de subpestañas.
 
 import { getModulesForRole, getSubModulesForRole } from './modules-registry.js';
 import { renderModulo } from './router.js';
@@ -40,12 +48,17 @@ export function initTabs({ rol, nombreUsuario, onLogout }) {
 }
 
 function seleccionarSeccion(modulo) {
-  renderModulo(modulo.id, rolActual);
+  const subs = getSubModulesForRole(modulo.id, rolActual);
+  // Si el grupo tiene subpestañas reales para este rol, se entra directo a
+  // la primera (ver nota de cabecera) — si no tiene ninguna, se renderiza
+  // el propio módulo como siempre (caso de Recepción, Reservas, Caja, etc).
+  const moduloParaMostrar = subs.length > 0 ? subs[0] : modulo;
+  renderModulo(moduloParaMostrar.id, rolActual);
   marcarActivoEnFila(navPrincipal, modulo.id);
-  pintarSubNav(modulo);
+  pintarSubNav(modulo, moduloParaMostrar.id);
 }
 
-function pintarSubNav(moduloActivo) {
+function pintarSubNav(moduloActivo, idSubActivo) {
   const subs = getSubModulesForRole(moduloActivo.id, rolActual);
 
   if (subs.length === 0) {
@@ -57,18 +70,12 @@ function pintarSubNav(moduloActivo) {
   navSub.classList.remove('oculto');
   navSub.innerHTML = '';
 
-  const propia = crearBotonPestana(moduloActivo, () => {
-    renderModulo(moduloActivo.id, rolActual);
-    marcarActivoEnFila(navSub, moduloActivo.id);
-  });
-  propia.classList.add('activo');
-  navSub.appendChild(propia);
-
   subs.forEach((sub) => {
     const tab = crearBotonPestana(sub, () => {
       renderModulo(sub.id, rolActual);
       marcarActivoEnFila(navSub, sub.id);
     });
+    if (sub.id === idSubActivo) tab.classList.add('activo');
     navSub.appendChild(tab);
   });
 }
