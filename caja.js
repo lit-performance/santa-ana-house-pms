@@ -21,7 +21,11 @@
 //
 // Además, sin importar si hay turno abierto o no, se muestra siempre una
 // tabla de "Habitaciones en uso" con el saldo pendiente de cada una (mismo
-// cálculo que usa Recepción al liquidar en el check-out — ver cuentas.js).
+// cálculo que usa Recepción al liquidar en el check-out — ver cuentas.js),
+// y una tarjeta de "Consumo de minibar — hoy" con el detalle por producto
+// (ver cargarResumenMinibarHoy) — es informativa (movimiento de
+// inventario), el dinero real ya entra por "Ingresos por reservas" cuando
+// se liquida el minibar en el check-out, así que no se suma dos veces.
 //
 // Entrega de turno: al cerrar la caja, el desglose completo por medio de
 // pago se guarda en caja_turnos.desglose_metodos (jsonb) — ver
@@ -37,7 +41,7 @@ import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
-import { formatFechaHora } from './dates.js';
+import { formatFechaHora, toISODate, addDays } from './dates.js';
 import { getUsuarioActual } from './auth.js';
 import { calcularHabitacionesEnUso } from './cuentas.js';
 
@@ -90,11 +94,83 @@ async function render(container) {
     <div id="habitaciones-uso-wrap" style="margin-bottom:1.5rem;">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
+    <div id="minibar-hoy-wrap" style="margin-bottom:1.5rem;">
+      <p class="mensaje-vacio">Cargando…</p>
+    </div>
     <div id="caja-wrap">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
   `;
-  await Promise.all([cargarHabitacionesEnUso(container.querySelector('#habitaciones-uso-wrap')), cargarEstado(container)]);
+  await Promise.all([
+    cargarHabitacionesEnUso(container.querySelector('#habitaciones-uso-wrap')),
+    cargarResumenMinibarHoy(container.querySelector('#minibar-hoy-wrap')),
+    cargarEstado(container),
+  ]);
+}
+
+// Consumo de minibar del día calendario de hoy (no del turno de caja — el
+// turno puede abrirse/cerrarse en cualquier momento, pero "cuánto se
+// consumió hoy" siempre se refiere al día calendario, igual que Recepción).
+// Es un valor INFORMATIVO de movimiento de inventario: no se suma aparte
+// al desglose por método de pago porque ese dinero ya entra ahí solo, en
+// el momento en que el huésped liquida el minibar al hacer check-out (ver
+// recepcion.js). Este bloque es visible siempre, con caja abierta o
+// cerrada, porque el consumo de minibar no depende del turno.
+async function cargarResumenMinibarHoy(elemento) {
+  if (!elemento) return;
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando consumo de minibar…</p>';
+
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+
+  const { data: consumos, error } = await supabase
+    .from('minibar_consumos')
+    .select('cantidad, monto, creado_en, minibar_productos(nombre)')
+    .gte('creado_en', hoyISO)
+    .lt('creado_en', mananaISO)
+    .order('creado_en', { ascending: false });
+
+  if (error) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando consumo de minibar: ${error.message}</p>`;
+    return;
+  }
+
+  const totalMonto = (consumos || []).reduce((sum, c) => sum + Number(c.monto), 0);
+  const totalItems = (consumos || []).reduce((sum, c) => sum + Number(c.cantidad), 0);
+
+  const porProducto = new Map();
+  (consumos || []).forEach((c) => {
+    const nombre = c.minibar_productos ? c.minibar_productos.nombre : 'Producto eliminado';
+    const actual = porProducto.get(nombre) || { cantidad: 0, monto: 0 };
+    actual.cantidad += Number(c.cantidad);
+    actual.monto += Number(c.monto);
+    porProducto.set(nombre, actual);
+  });
+
+  elemento.innerHTML = `
+    <div class="tarjeta">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.5rem;">
+        <h3 style="margin:0;">🥤 Consumo de minibar — hoy</h3>
+        <strong style="font-size:1.2rem;">${formatCOP(totalMonto)}</strong>
+      </div>
+      <p class="mensaje-vacio" style="margin-bottom:0.5rem;">${totalItems} producto(s) consumido(s) hoy — movimiento de inventario. El cobro real ya queda incluido en "Ingresos por reservas" en cuanto el huésped liquida el minibar al hacer check-out.</p>
+      ${
+        porProducto.size === 0
+          ? '<p class="mensaje-vacio">Sin consumo de minibar hoy.</p>'
+          : `
+        <table class="tabla-simple">
+          <thead><tr><th>Producto</th><th>Cant.</th><th>Monto</th></tr></thead>
+          <tbody>
+            ${Array.from(porProducto.entries())
+              .sort((a, b) => b[1].monto - a[1].monto)
+              .map(([nombre, d]) => `<tr><td>${escaparHTML(nombre)}</td><td>${d.cantidad}</td><td>${formatCOP(d.monto)}</td></tr>`)
+              .join('')}
+          </tbody>
+        </table>
+      `
+      }
+    </div>
+  `;
 }
 
 async function cargarHabitacionesEnUso(elemento) {
