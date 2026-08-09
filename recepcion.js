@@ -70,6 +70,23 @@
 // darse cuenta" de que quedó plata por cobrar. Ese pago final se registra
 // en reservas_pagos igual que un abono normal, así que aparece automático
 // en Caja e Indicadores.
+//
+// Nota sobre el resumen visual de la liquidación (tarjeta Estadía): se
+// arma en vivo con lo que la recepcionista va llenando (habitación,
+// tarifa, noches, tipo de pago, monto a cobrar, saldo) usando cajones de
+// color para que sea imposible perderse — azul para el estimado total,
+// verde para lo que se cobra ahora, rojo (o verde si queda en cero) para
+// el saldo pendiente. No guarda nada aparte: es solo una vista de lo que
+// ya está en el formulario, para reducir errores de digitación antes de
+// guardar el check-in.
+//
+// Nota sobre autocompletar datos de huésped: al salir del campo Número de
+// documento (o del campo Nombre, si el documento sigue vacío), se busca
+// primero en el check-in más reciente de esa persona (recepcion_checkins,
+// tiene el set completo de campos) y si no aparece ahí, en la ficha
+// básica de huespedes (solo contacto). Si encuentra algo, rellena los
+// campos y avisa con un toast — así un huésped recurrente no tiene que
+// volver a dictar todos sus datos.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -94,6 +111,13 @@ const ETIQUETA_ESTADO_HABITACION = {
   fuera_servicio: '⛔ Fuera serv.',
 };
 const DIAS_VISIBLES_DISPONIBILIDAD = 10;
+
+// Colores/etiquetas del resumen visual de liquidación (tarjeta Estadía).
+const ETIQUETA_ESTADO_PAGO = {
+  pendiente: { texto: '🕒 Pendiente — sin pago todavía', color: '#8a6d00', fondo: 'var(--color-alerta-fondo, #fff8e1)', borde: '#e8c547' },
+  parcial: { texto: '🔷 Parcial — abono ahora', color: '#0b5fae', fondo: '#eaf3ff', borde: '#8ec1f5' },
+  anticipado: { texto: '✅ Anticipado — pago completo', color: 'var(--color-verde-oscuro, #1b7a3d)', fondo: '#eafbea', borde: '#8fd3a4' },
+};
 
 async function render(container) {
   await vistaLista(container);
@@ -445,6 +469,72 @@ function filaAcompanante(indice) {
   `;
 }
 
+// --- Helpers del resumen visual de liquidación (tarjeta Estadía) ---
+function filaResumen(label, valor, opts = {}) {
+  return `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:0.45rem 0.1rem; border-bottom:1px dashed var(--color-borde, #ddd);">
+      <span style="font-size:0.82rem; color:var(--color-texto-suave, #666);">${label}</span>
+      <span style="font-weight:${opts.negrita ? 700 : 500}; font-size:${opts.grande ? '1.05rem' : '0.92rem'};">${escaparHTML(String(valor))}</span>
+    </div>
+  `;
+}
+
+function cajonMonto(label, montoTexto, color, fondo, borde) {
+  return `
+    <div style="background:${fondo}; border:1.5px solid ${borde}; border-radius:10px; padding:0.7rem 1rem; margin-top:0.6rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.4rem;">
+      <span style="font-weight:700; color:${color}; font-size:0.85rem;">${label}</span>
+      <span style="font-weight:800; font-size:1.3rem; color:${color};">${montoTexto}</span>
+    </div>
+  `;
+}
+
+// --- Autocompletar datos de un huésped que ya existe en el sistema ---
+// Busca primero en su check-in más reciente (recepcion_checkins, tiene el
+// set completo de campos) y si no aparece, en la ficha básica de
+// huespedes (solo contacto). Devuelve null si no encuentra nada.
+async function buscarHuespedPorDocumento(documento) {
+  if (!documento) return null;
+
+  const { data: checkinPrevio } = await supabase
+    .from('recepcion_checkins')
+    .select('*')
+    .eq('numero_documento', documento)
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (checkinPrevio) return { origen: 'checkin', datos: checkinPrevio };
+
+  const { data: huesped } = await supabase.from('huespedes').select('*').eq('numero_documento', documento).maybeSingle();
+  if (huesped) return { origen: 'huesped', datos: huesped };
+
+  return null;
+}
+
+async function buscarHuespedPorNombre(nombre) {
+  if (!nombre || nombre.trim().length < 3) return null;
+  const valor = nombre.trim();
+
+  const { data: checkinPrevio } = await supabase
+    .from('recepcion_checkins')
+    .select('*')
+    .ilike('nombre', valor)
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (checkinPrevio) return { origen: 'checkin', datos: checkinPrevio };
+
+  const { data: huesped } = await supabase
+    .from('huespedes')
+    .select('*')
+    .ilike('nombre', valor)
+    .order('actualizado_en', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (huesped) return { origen: 'huesped', datos: huesped };
+
+  return null;
+}
+
 // --- "Ver disponibilidad": mini calendario (10 días) para elegir
 // habitación desde dentro del check-in, sin salir a la pestaña Reservas. ---
 async function abrirModalDisponibilidad(selectHabitacion) {
@@ -575,6 +665,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
       <div class="tarjeta">
         <h3>Datos del huésped</h3>
+        <p class="mensaje-vacio" style="margin-bottom:0.75rem;">Si ya se hospedó antes, escribe su número de documento (o su nombre) y sale del campo — te autocompletamos lo que ya tenemos de él.</p>
         <div class="form-grid">
           <label>Nombre completo
             <input type="text" name="nombre" required />
@@ -657,7 +748,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
             <input type="number" name="cantidad_noches" id="input-noches" min="1" value="1" />
           </label>
           <label>Método de pago
-            <select name="metodo_pago">
+            <select name="metodo_pago" id="select-metodo-pago-estadia">
               ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
             </select>
           </label>
@@ -668,7 +759,6 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
         <div class="acciones-tarjeta" style="justify-content:flex-start; margin-top:0.5rem;">
           <button type="button" id="btn-ver-disponibilidad" class="btn btn-secundario btn-chico">📅 Ver disponibilidad</button>
         </div>
-        <p id="monto-estimado-hint" class="mensaje-vacio" style="font-size:0.8rem; margin-top:0.5rem;"></p>
 
         <div class="form-grid" style="margin-top:0.75rem;">
           <label>Pago al check-in
@@ -682,7 +772,8 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
             <input type="number" name="monto_pago_checkin" id="input-monto-pago" step="1000" min="0" />
           </label>
         </div>
-        <p class="mensaje-vacio" style="font-size:0.78rem; margin-top:0.4rem;">Si registras un pago aquí, queda automáticamente en Caja como "Ingreso por reserva" — no hay que registrarlo de nuevo en Caja.</p>
+
+        <div id="resumen-liquidacion-wrap" style="margin-top:1.25rem;"></div>
       </div>
 
       <div class="tarjeta">
@@ -779,10 +870,60 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
   container.querySelector('#btn-agregar-acompanante').addEventListener('click', agregarBloqueAcompanante);
 
+  // --- Autocompletar datos si el huésped ya existe en el sistema ---
+  const inputNombreHuesped = container.querySelector('input[name="nombre"]');
+  const inputDocumentoHuesped = container.querySelector('input[name="numero_documento"]');
+
+  function precargarDatosHuesped(resultado) {
+    if (!resultado) return;
+    const d = resultado.datos;
+
+    const setVal = (selector, valor) => {
+      const el = container.querySelector(selector);
+      if (el && valor !== undefined && valor !== null && valor !== '') el.value = valor;
+    };
+
+    setVal('input[name="nombre"]', d.nombre);
+    if (d.tipo_documento) setVal('select[name="tipo_documento"]', d.tipo_documento);
+    setVal('input[name="numero_documento"]', d.numero_documento);
+    setVal('input[name="celular"]', d.celular || d.telefono);
+    setVal('input[name="correo"]', d.correo);
+    setVal('input[name="empresa"]', d.empresa);
+
+    // Estos campos solo existen en un check-in anterior (la ficha básica
+    // de huespedes solo guarda datos de contacto), así que solo se
+    // rellenan cuando la coincidencia viene de recepcion_checkins.
+    if (resultado.origen === 'checkin') {
+      setVal('input[name="nacionalidad"]', d.nacionalidad);
+      setVal('input[name="fecha_nacimiento"]', d.fecha_nacimiento);
+      setVal('input[name="direccion"]', d.direccion);
+      setVal('input[name="ciudad"]', d.ciudad);
+      setVal('input[name="departamento"]', d.departamento);
+      setVal('input[name="pais"]', d.pais);
+      setVal('input[name="placa_vehiculo"]', d.placa_vehiculo);
+    }
+
+    mostrarToast(`Encontramos a ${d.nombre} en el sistema — se autocompletaron sus datos.`, 'exito');
+  }
+
+  inputDocumentoHuesped.addEventListener('blur', async () => {
+    const valor = inputDocumentoHuesped.value.trim();
+    if (!valor) return;
+    const resultado = await buscarHuespedPorDocumento(valor);
+    precargarDatosHuesped(resultado);
+  });
+
+  inputNombreHuesped.addEventListener('blur', async () => {
+    if (inputDocumentoHuesped.value.trim()) return;
+    const valor = inputNombreHuesped.value.trim();
+    if (!valor) return;
+    const resultado = await buscarHuespedPorNombre(valor);
+    precargarDatosHuesped(resultado);
+  });
+
   // --- Monto estimado de la estadía (noches × tarifa) + pago al check-in ---
   const selectTarifaEstadia = container.querySelector('#select-tarifa');
   const inputNochesEstadia = container.querySelector('#input-noches');
-  const hintMontoEstimado = container.querySelector('#monto-estimado-hint');
   const selectEstadoPago = container.querySelector('#select-estado-pago');
   const wrapMontoPago = container.querySelector('#wrap-monto-pago-checkin');
   const inputMontoPago = container.querySelector('#input-monto-pago');
@@ -794,12 +935,54 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     return noches * Number(tarifa.precio_temporada_baja);
   }
 
+  // Arma la tarjeta-recibo con lo que la recepcionista lleva llenado hasta
+  // ahora — se repinta completa cada vez que cambia algo relevante.
+  function pintarResumenLiquidacion() {
+    const wrap = container.querySelector('#resumen-liquidacion-wrap');
+    if (!wrap) return;
+
+    const habitacionSel = container.querySelector('#select-habitacion');
+    const habitacionTexto = habitacionSel && habitacionSel.value ? habitacionSel.selectedOptions[0].textContent : 'Sin elegir';
+    const tarifa = (tarifas || []).find((t) => t.id === Number(selectTarifaEstadia.value));
+    const noches = Number(inputNochesEstadia.value) || 0;
+    const montoEstimado = calcularMontoEstimado();
+    const estadoPago = selectEstadoPago.value;
+    const metodoPagoSel = container.querySelector('#select-metodo-pago-estadia');
+    const metodoPago = metodoPagoSel ? metodoPagoSel.value : '—';
+    const montoACobrar = estadoPago === 'parcial' || estadoPago === 'anticipado' ? Number(inputMontoPago.value) || 0 : 0;
+    const saldo = Math.max(0, montoEstimado - montoACobrar);
+    const info = ETIQUETA_ESTADO_PAGO[estadoPago] || ETIQUETA_ESTADO_PAGO.pendiente;
+
+    wrap.innerHTML = `
+      <div class="tarjeta" style="background:var(--color-fondo-suave, #f8f9fb); border:2px solid var(--color-borde, #ddd);">
+        <h3 style="margin-top:0;">🧾 Resumen de la liquidación</h3>
+        ${filaResumen('Habitación', habitacionTexto, { negrita: true })}
+        ${filaResumen('Tarifa', tarifa ? tarifa.codigo : 'Sin elegir', {})}
+        ${filaResumen('Cantidad de noches', noches || '—', {})}
+        ${cajonMonto('Monto estimado estadía', formatCOP(montoEstimado), '#0b5fae', '#eaf3ff', '#8ec1f5')}
+        <div style="margin-top:0.75rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.4rem;">
+          <span style="font-size:0.82rem; color:var(--color-texto-suave, #666);">Pago al check-in</span>
+          <span style="display:inline-block; padding:0.3rem 0.7rem; border-radius:999px; background:${info.fondo}; color:${info.color}; font-weight:700; font-size:0.8rem; border:1px solid ${info.borde};">${info.texto}</span>
+        </div>
+        ${filaResumen('Método de pago', metodoPago, {})}
+        ${cajonMonto('Monto a cobrar ahora', formatCOP(montoACobrar), 'var(--color-verde-oscuro, #1b7a3d)', '#eafbea', '#8fd3a4')}
+        ${cajonMonto(
+          'Saldo pendiente después de este pago',
+          formatCOP(saldo),
+          saldo > 0 ? 'var(--color-rojo-oscuro, #b3261e)' : 'var(--color-verde-oscuro, #1b7a3d)',
+          saldo > 0 ? '#fdeceb' : '#eafbea',
+          saldo > 0 ? '#f0a8a0' : '#8fd3a4'
+        )}
+      </div>
+    `;
+  }
+
   function actualizarHintMonto() {
     const estimado = calcularMontoEstimado();
-    hintMontoEstimado.textContent = estimado > 0 ? `Monto estimado de la estadía: ${formatCOP(estimado)}` : '';
     if (selectEstadoPago.value === 'anticipado') {
       inputMontoPago.value = estimado;
     }
+    pintarResumenLiquidacion();
   }
 
   function actualizarVisibilidadPago() {
@@ -811,11 +994,16 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     } else if (estado === 'pendiente') {
       inputMontoPago.value = '';
     }
+    pintarResumenLiquidacion();
   }
 
   selectTarifaEstadia.addEventListener('change', actualizarHintMonto);
   inputNochesEstadia.addEventListener('input', actualizarHintMonto);
   selectEstadoPago.addEventListener('change', actualizarVisibilidadPago);
+  inputMontoPago.addEventListener('input', pintarResumenLiquidacion);
+  container.querySelector('#select-habitacion').addEventListener('change', pintarResumenLiquidacion);
+  const selectMetodoPagoEstadia = container.querySelector('#select-metodo-pago-estadia');
+  if (selectMetodoPagoEstadia) selectMetodoPagoEstadia.addEventListener('change', pintarResumenLiquidacion);
 
   // --- Vincular reserva: precarga campos (compartido entre el selector
   // manual y la preselección que llega desde "Llegadas de hoy") ---
