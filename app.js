@@ -23,6 +23,7 @@ import './minibar.js';
 import './inventario.js';
 import './proveedores.js';
 import './usuarios.js';
+import './compras.js';
 
 // Pestañas "próximamente" para el resto del alcance (demo al cliente).
 // A medida que cada módulo se construya de verdad, se quita su entrada de
