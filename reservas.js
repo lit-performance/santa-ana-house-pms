@@ -304,6 +304,27 @@ async function abrirModalReserva(container, reserva, prellenado) {
           <textarea name="comentarios" rows="2" style="padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit;">${editando ? escaparHTML(reserva.comentarios || '') : ''}</textarea>
         </label>
 
+        ${
+          !editando
+            ? `
+          <div class="tarjeta" style="margin-top:1rem; background:var(--color-fondo-suave, #f8f9fb);">
+            <h3 style="margin-top:0;">¿Hubo abono al crear la reserva?</h3>
+            <div class="form-grid">
+              <label>Abono inicial (opcional)
+                <input type="number" name="abono_inicial" step="1000" min="0" placeholder="0" />
+              </label>
+              <label>Método de pago
+                <select name="metodo_pago_abono">
+                  ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
+                </select>
+              </label>
+            </div>
+            <p class="mensaje-vacio" style="margin-top:0.3rem; font-size:0.78rem;">Déjalo en blanco o en 0 si la reserva queda sin abono por ahora — se puede agregar después reabriendo la reserva.</p>
+          </div>
+        `
+            : ''
+        }
+
         ${editando ? '<div id="pagos-wrap" style="margin-top:1.25rem;"><p class="mensaje-vacio">Cargando abonos…</p></div>' : ''}
 
         <div class="modal-acciones" style="margin-top:1.25rem;">
@@ -438,13 +459,32 @@ async function abrirModalReserva(container, reserva, prellenado) {
     }
 
     const query = editando
-      ? supabase.from('reservas').update(payload).eq('id', reserva.id)
-      : supabase.from('reservas').insert(payload);
+      ? supabase.from('reservas').update(payload).eq('id', reserva.id).select('id').single()
+      : supabase.from('reservas').insert(payload).select('id').single();
 
-    const { error } = await query;
+    const { data: reservaGuardada, error } = await query;
     if (error) {
       mostrarToast(`Error guardando: ${error.message}`, 'error');
       return;
+    }
+
+    // --- Abono inicial (solo aplica al crear, ver el bloque "¿Hubo abono
+    // al crear la reserva?" arriba) — se registra en reservas_pagos, la
+    // misma tabla que ya lee Caja/Indicadores automático, igual que el
+    // pago al check-in. ---
+    if (!editando) {
+      const abonoInicial = form.get('abono_inicial') ? Number(form.get('abono_inicial')) : 0;
+      if (abonoInicial > 0) {
+        const { error: errAbono } = await supabase.from('reservas_pagos').insert({
+          reserva_id: reservaGuardada.id,
+          monto: abonoInicial,
+          metodo_pago: form.get('metodo_pago_abono'),
+          comentarios: 'Abono registrado al crear la reserva.',
+        });
+        if (errAbono) {
+          mostrarToast(`Reserva creada, pero no se pudo registrar el abono: ${errAbono.message}`, 'error');
+        }
+      }
     }
 
     // --- Ficha de huésped (histórico) ---
