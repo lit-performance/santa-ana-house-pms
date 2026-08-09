@@ -43,13 +43,32 @@
 // documento, nacionalidad, fecha de nacimiento y celular — igual de
 // completos que los del huésped principal. Se guardan en la columna
 // jsonb `acompanantes_detalle` de recepcion_checkins (uno o varios
-// bloques, se pueden agregar más con "+ Agregar otro acompañante").
+// bloques, se pueden agregar más con "+ Agregar otro acompañante"). Si el
+// acompañante trae número de documento, también queda (o se actualiza) en
+// el listado general de huespedes, igual que el huésped principal — sin
+// documento no hay con qué identificarlo ahí, así que en ese caso solo
+// queda guardado dentro del check-in.
+//
+// Nota sobre acompañante menor de edad: si la fecha de nacimiento indica
+// que el acompañante es menor de 18 años, aparece una alerta recordando
+// pedir el registro civil de nacimiento (para verificar que el adulto es
+// su padre/madre) o la autorización notarial correspondiente si viaja con
+// otra persona, más una casilla para que la recepcionista confirme que
+// verificó el documento. Esto es un recordatorio operativo — no bloquea
+// el check-in, queda guardado dentro del acompañante (verificado_menor)
+// como bitácora.
 //
 // Nota sobre métodos de pago: la lista completa vive en METODOS_PAGO —
 // Efectivo, Nequi, Daviplata, QR, Transferencia Bancaria, Datáfono,
 // Llave. Caja consolida cada uno como si fuera una cuenta aparte (ver
 // caja.js), así que agregar/quitar un método aquí también cambia lo que
 // se ve ahí.
+//
+// Nota sobre campos obligatorios en Estadía: habitación, tarifa, cantidad
+// de noches, método de pago y "Pago al check-in" son obligatorios — y si
+// el pago es parcial o anticipado, el monto a cobrar también. Esto es a
+// propósito: evita check-ins a medio llenar que después generan dudas en
+// Caja o en Reservas sobre cuánto se cobró o a qué tarifa.
 //
 // Nota sobre el pago al check-in: "Pago al check-in" (pendiente / parcial
 // / anticipado) NO se guarda en una columna suelta — si hay monto, se
@@ -70,6 +89,20 @@
 // darse cuenta" de que quedó plata por cobrar. Ese pago final se registra
 // en reservas_pagos igual que un abono normal, así que aparece automático
 // en Caja e Indicadores.
+//
+// Nota sobre "✏️ Editar" en la tabla de habitaciones en uso: abre un
+// modal para corregir un check-in ya registrado (typo en el nombre,
+// documento mal digitado, cambio de tarifa, cambio de habitación, etc).
+// Lo que SÍ se puede editar: todos los datos del huésped, acompañantes,
+// tarifa, cantidad de noches, método de pago y depósito. Lo que NO se
+// edita desde aquí: la firma digital y el consentimiento de Habeas Data
+// (quedan tal como se capturaron en el momento del check-in — no tiene
+// sentido "re-firmar" retroactivamente), y los pagos ya registrados en
+// Caja (esos se corrigen desde Caja o desde el propio módulo Reservas,
+// nunca reescribiendo el check-in). Si se cambia la habitación, el
+// cambio se sincroniza con la reserva vinculada y con el estado de AMBAS
+// habitaciones (la anterior pasa a limpieza, la nueva a ocupada) para que
+// Reservas y Housekeeping no queden desincronizados.
 //
 // Nota sobre el resumen visual de la liquidación (tarjeta Estadía): se
 // arma en vivo con lo que la recepcionista va llenando (habitación,
@@ -302,7 +335,10 @@ async function cargarVistaHoy(container) {
             <td>${i.cantidadNoches ?? '—'}</td>
             <td>${i.saleHoy ? '🔶 Sí' : '—'}</td>
             <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(i.saldoPendiente)}</td>
-            <td><button type="button" class="btn-editar btn-checkout" data-checkin-id="${i.checkinId}">Check-out</button></td>
+            <td style="white-space:nowrap;">
+              <button type="button" class="btn-editar btn-editar-checkin" data-checkin-id="${i.checkinId}">✏️ Editar</button>
+              <button type="button" class="btn-editar btn-checkout" data-checkin-id="${i.checkinId}">Check-out</button>
+            </td>
           </tr>
         `
           )
@@ -315,6 +351,13 @@ async function cargarVistaHoy(container) {
     btn.addEventListener('click', () => {
       const item = itemsOrdenados.find((i) => i.checkinId === Number(btn.dataset.checkinId));
       if (item) abrirModalLiquidacion(container, item);
+    });
+  });
+
+  wrapCheckins.querySelectorAll('.btn-editar-checkin').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const item = itemsOrdenados.find((i) => i.checkinId === Number(btn.dataset.checkinId));
+      if (item) abrirModalEditarCheckin(container, item);
     });
   });
 }
@@ -430,10 +473,312 @@ async function ejecutarCheckout(container, item) {
   await vistaLista(container);
 }
 
+// --- "✏️ Editar" un check-in ya registrado ---
+async function abrirModalEditarCheckin(container, item) {
+  const [{ data: checkin, error: errCheckin }, { data: habitaciones }, { data: tarifas }] = await Promise.all([
+    supabase.from('recepcion_checkins').select('*').eq('id', item.checkinId).single(),
+    supabase.from('habitaciones').select('id, numero, nombre, estado').order('numero'),
+    supabase.from('tarifas').select('*').order('codigo'),
+  ]);
+
+  if (errCheckin) {
+    mostrarToast(`Error cargando el check-in: ${errCheckin.message}`, 'error');
+    return;
+  }
+
+  const acompanantesExistentes = Array.isArray(checkin.acompanantes_detalle) ? checkin.acompanantes_detalle : [];
+  const habitacionOriginalId = checkin.habitacion_id;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja modal-caja-ancha">
+      <h3>✏️ Editar check-in — ${escaparHTML(checkin.nombre)}</h3>
+      <form id="form-editar-checkin" class="modal-contenido">
+        <p class="mensaje-vacio">Si cambias de habitación aquí, la reserva vinculada y el estado de ambas habitaciones se actualizan solos. La firma digital, el Habeas Data y los pagos ya registrados no se tocan desde este formulario.</p>
+
+        <h4>Datos del huésped</h4>
+        <div class="form-grid">
+          <label>Nombre completo
+            <input type="text" name="nombre" required value="${escaparHTML(checkin.nombre)}" />
+          </label>
+          <label>Tipo de documento
+            <select name="tipo_documento">
+              ${TIPOS_DOCUMENTO.map((t) => `<option value="${t}" ${checkin.tipo_documento === t ? 'selected' : ''}>${t}</option>`).join('')}
+            </select>
+          </label>
+          <label>Número de documento
+            <input type="text" name="numero_documento" required value="${escaparHTML(checkin.numero_documento)}" />
+          </label>
+          <label>Nacionalidad
+            <input type="text" name="nacionalidad" value="${escaparHTML(checkin.nacionalidad || '')}" />
+          </label>
+          <label>Fecha de nacimiento
+            <input type="date" name="fecha_nacimiento" value="${checkin.fecha_nacimiento || ''}" />
+          </label>
+          <label>Dirección
+            <input type="text" name="direccion" value="${escaparHTML(checkin.direccion || '')}" />
+          </label>
+          <label>Ciudad
+            <input type="text" name="ciudad" value="${escaparHTML(checkin.ciudad || '')}" />
+          </label>
+          <label>Departamento
+            <input type="text" name="departamento" value="${escaparHTML(checkin.departamento || '')}" />
+          </label>
+          <label>País
+            <input type="text" name="pais" value="${escaparHTML(checkin.pais || '')}" />
+          </label>
+          <label>Correo
+            <input type="email" name="correo" value="${escaparHTML(checkin.correo || '')}" />
+          </label>
+          <label>Celular
+            <input type="text" name="celular" value="${escaparHTML(checkin.celular || '')}" />
+          </label>
+          <label>Empresa
+            <input type="text" name="empresa" value="${escaparHTML(checkin.empresa || '')}" />
+          </label>
+          <label>Placa del vehículo
+            <input type="text" name="placa_vehiculo" value="${escaparHTML(checkin.placa_vehiculo || '')}" />
+          </label>
+          <label>Foto del documento (URL)
+            <input type="url" name="foto_documento_url" value="${escaparHTML(checkin.foto_documento_url || '')}" />
+          </label>
+        </div>
+        <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
+          Observaciones
+          <textarea name="observaciones" rows="2" style="padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit;">${escaparHTML(checkin.observaciones || '')}</textarea>
+        </label>
+
+        <h4 style="margin-top:1.25rem;">Acompañantes</h4>
+        <div id="acompanantes-editar-lista"></div>
+        <button type="button" id="btn-agregar-acompanante-editar" class="btn btn-secundario btn-chico">+ Agregar acompañante</button>
+
+        <h4 style="margin-top:1.25rem;">Estadía</h4>
+        <div class="form-grid">
+          <label>Habitación
+            <select name="habitacion_id" id="select-habitacion-editar" required>
+              ${(habitaciones || [])
+                .map((h) => `<option value="${h.id}" ${h.id === checkin.habitacion_id ? 'selected' : ''}>${h.numero} — ${h.nombre}</option>`)
+                .join('')}
+            </select>
+          </label>
+          <label>Tarifa
+            <select name="tarifa_id" required>
+              <option value="">—</option>
+              ${(tarifas || [])
+                .map((t) => `<option value="${t.id}" ${checkin.tarifa_id === t.id ? 'selected' : ''}>${t.codigo} / ${formatCOP(t.precio_temporada_baja)}</option>`)
+                .join('')}
+            </select>
+          </label>
+          <label>Cantidad de noches
+            <input type="number" name="cantidad_noches" min="1" required value="${checkin.cantidad_noches || 1}" />
+          </label>
+          <label>Método de pago
+            <select name="metodo_pago" required>
+              ${METODOS_PAGO.map((m) => `<option value="${m}" ${checkin.metodo_pago === m ? 'selected' : ''}>${m}</option>`).join('')}
+            </select>
+          </label>
+          <label>Depósito de garantía
+            <input type="number" name="deposito" step="1000" value="${checkin.deposito ?? ''}" />
+          </label>
+        </div>
+
+        <p class="mensaje-vacio" style="margin-top:0.75rem; font-size:0.78rem;">No editables desde aquí: firma digital, consentimiento Habeas Data y pagos ya registrados (se corrigen en Caja o Reservas).</p>
+
+        <div class="modal-acciones" style="margin-top:1.25rem;">
+          <button type="button" class="btn btn-secundario" id="btn-cancelar-editar-checkin">Cancelar</button>
+          <button type="submit" class="btn btn-primario">Guardar cambios</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // --- Acompañantes: misma plantilla que el check-in nuevo, pero
+  // precargada con lo que ya había guardado. ---
+  const listaAcompEditar = overlay.querySelector('#acompanantes-editar-lista');
+  let contadorAcompEditar = 0;
+
+  function agregarBloqueAcompEditar(datos) {
+    contadorAcompEditar += 1;
+    const envoltorio = document.createElement('div');
+    envoltorio.innerHTML = filaAcompanante(contadorAcompEditar);
+    const bloque = envoltorio.firstElementChild;
+    if (datos) {
+      const setCampo = (nombreCampo, valor) => {
+        const el = bloque.querySelector(`[name="${nombreCampo}"]`);
+        if (el && valor) el.value = valor;
+      };
+      setCampo('acomp_nombre', datos.nombre);
+      setCampo('acomp_tipo_documento', datos.tipo_documento);
+      setCampo('acomp_numero_documento', datos.numero_documento);
+      setCampo('acomp_nacionalidad', datos.nacionalidad);
+      setCampo('acomp_fecha_nacimiento', datos.fecha_nacimiento);
+      setCampo('acomp_celular', datos.celular);
+      const checkVerificado = bloque.querySelector('.check-verificacion-menor');
+      if (checkVerificado && datos.verificado_menor) checkVerificado.checked = true;
+    }
+    bloque.querySelector('.btn-quitar-acompanante').addEventListener('click', () => bloque.remove());
+    wireAlertaMenorAcompanante(bloque);
+    listaAcompEditar.appendChild(bloque);
+  }
+
+  if (acompanantesExistentes.length) {
+    acompanantesExistentes.forEach((a) => agregarBloqueAcompEditar(a));
+  }
+  overlay.querySelector('#btn-agregar-acompanante-editar').addEventListener('click', () => agregarBloqueAcompEditar(null));
+
+  overlay.querySelector('#btn-cancelar-editar-checkin').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  overlay.querySelector('#form-editar-checkin').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+
+    const nuevaHabitacionId = Number(form.get('habitacion_id'));
+    const habitacionCambio = nuevaHabitacionId !== habitacionOriginalId;
+
+    if (habitacionCambio) {
+      const nuevaHabitacion = (habitaciones || []).find((h) => h.id === nuevaHabitacionId);
+      if (nuevaHabitacion && nuevaHabitacion.estado === 'ocupada') {
+        const ok = await mostrarConfirmacion({
+          titulo: 'Habitación marcada como ocupada',
+          contenidoHTML: `La habitación <strong>${nuevaHabitacion.numero} — ${nuevaHabitacion.nombre}</strong> ya figura como ocupada. ¿Confirmas que quieres mover al huésped ahí de todas formas?`,
+          textoConfirmar: 'Sí, mover de todas formas',
+        });
+        if (!ok) return;
+      }
+    }
+
+    const bloquesAcomp = Array.from(listaAcompEditar.querySelectorAll('.bloque-acompanante'));
+    let acompanantesDetalle = bloquesAcomp
+      .map((bloque) => ({
+        nombre: bloque.querySelector('[name="acomp_nombre"]').value.trim(),
+        tipo_documento: bloque.querySelector('[name="acomp_tipo_documento"]').value,
+        numero_documento: bloque.querySelector('[name="acomp_numero_documento"]').value.trim() || null,
+        nacionalidad: bloque.querySelector('[name="acomp_nacionalidad"]').value.trim() || null,
+        fecha_nacimiento: bloque.querySelector('[name="acomp_fecha_nacimiento"]').value || null,
+        celular: bloque.querySelector('[name="acomp_celular"]').value.trim() || null,
+        verificado_menor: bloque.querySelector('.check-verificacion-menor')?.checked || false,
+      }))
+      .filter((a) => a.nombre);
+    if (acompanantesDetalle.length === 0) acompanantesDetalle = null;
+
+    const nombre = form.get('nombre').trim();
+    const documento = form.get('numero_documento').trim();
+    const celular = form.get('celular').trim() || null;
+
+    const payload = {
+      nombre,
+      tipo_documento: form.get('tipo_documento'),
+      numero_documento: documento,
+      nacionalidad: form.get('nacionalidad').trim() || null,
+      fecha_nacimiento: form.get('fecha_nacimiento') || null,
+      direccion: form.get('direccion').trim() || null,
+      ciudad: form.get('ciudad').trim() || null,
+      departamento: form.get('departamento').trim() || null,
+      pais: form.get('pais').trim() || null,
+      correo: form.get('correo').trim() || null,
+      celular,
+      empresa: form.get('empresa').trim() || null,
+      placa_vehiculo: form.get('placa_vehiculo').trim() || null,
+      foto_documento_url: form.get('foto_documento_url').trim() || null,
+      observaciones: form.get('observaciones').trim() || null,
+      acompanantes_detalle: acompanantesDetalle,
+      habitacion_id: nuevaHabitacionId,
+      tarifa_id: form.get('tarifa_id') ? Number(form.get('tarifa_id')) : null,
+      cantidad_noches: form.get('cantidad_noches') ? Number(form.get('cantidad_noches')) : 1,
+      metodo_pago: form.get('metodo_pago'),
+      deposito: form.get('deposito') ? Number(form.get('deposito')) : null,
+    };
+
+    const { error: errUpdate } = await supabase.from('recepcion_checkins').update(payload).eq('id', checkin.id);
+    if (errUpdate) {
+      mostrarToast(`Error guardando cambios: ${errUpdate.message}`, 'error');
+      return;
+    }
+
+    // --- Mantener sincronizada la reserva vinculada (huésped + habitación) ---
+    if (checkin.reserva_id) {
+      const { error: errReserva } = await supabase
+        .from('reservas')
+        .update({
+          huesped_nombre: nombre,
+          huesped_documento: documento,
+          huesped_telefono: celular,
+          habitacion_id: nuevaHabitacionId,
+        })
+        .eq('id', checkin.reserva_id);
+      if (errReserva) {
+        mostrarToast(`Check-in actualizado, pero no se pudo sincronizar la reserva vinculada: ${errReserva.message}`, 'error');
+      }
+    }
+
+    // --- Cambio de habitación: liberar la anterior, ocupar la nueva ---
+    if (habitacionCambio) {
+      await supabase.rpc('cambiar_estado_habitacion', { p_habitacion_id: habitacionOriginalId, p_estado: 'limpieza' });
+      await supabase.rpc('cambiar_estado_habitacion', { p_habitacion_id: nuevaHabitacionId, p_estado: 'ocupada' });
+    }
+
+    // --- Ficha de huésped (histórico), igual que en el check-in nuevo ---
+    const { error: errHuesped } = await supabase.from('huespedes').upsert(
+      {
+        numero_documento: documento,
+        tipo_documento: form.get('tipo_documento'),
+        nombre,
+        telefono: celular,
+        correo: form.get('correo').trim() || null,
+        empresa: form.get('empresa').trim() || null,
+        actualizado_en: new Date().toISOString(),
+      },
+      { onConflict: 'numero_documento' }
+    );
+    if (errHuesped) {
+      mostrarToast(`Cambios guardados, pero no se pudo actualizar la ficha del huésped: ${errHuesped.message}`, 'error');
+    }
+
+    await alimentarHuespedesConAcompanantes(acompanantesDetalle);
+
+    mostrarToast('Check-in actualizado.', 'exito');
+    overlay.remove();
+    await vistaLista(container);
+  });
+}
+
 function escaparHTML(texto) {
   const div = document.createElement('div');
   div.textContent = texto || '';
   return div.innerHTML;
+}
+
+// Edad en años cumplidos a partir de una fecha 'YYYY-MM-DD'. Devuelve null
+// si no hay fecha (para no marcar como "menor" a alguien sin dato).
+function calcularEdad(fechaISO) {
+  if (!fechaISO) return null;
+  const hoy = new Date();
+  const nacimiento = new Date(fechaISO);
+  let edad = hoy.getFullYear() - nacimiento.getFullYear();
+  const mesDiff = hoy.getMonth() - nacimiento.getMonth();
+  if (mesDiff < 0 || (mesDiff === 0 && hoy.getDate() < nacimiento.getDate())) edad -= 1;
+  return edad;
+}
+
+// Muestra/oculta la alerta de menor de edad de un bloque de acompañante
+// según su fecha de nacimiento, cada vez que esta cambia.
+function wireAlertaMenorAcompanante(bloque) {
+  const inputFecha = bloque.querySelector('.input-fecha-nacimiento-acomp');
+  const alerta = bloque.querySelector('.alerta-menor-acompanante');
+  if (!inputFecha || !alerta) return;
+
+  function actualizar() {
+    const edad = calcularEdad(inputFecha.value);
+    alerta.classList.toggle('oculto', !(edad !== null && edad < 18));
+  }
+
+  inputFecha.addEventListener('change', actualizar);
+  actualizar();
 }
 
 function filaAcompanante(indice) {
@@ -459,10 +804,18 @@ function filaAcompanante(indice) {
           <input type="text" name="acomp_nacionalidad" />
         </label>
         <label>Fecha de nacimiento
-          <input type="date" name="acomp_fecha_nacimiento" />
+          <input type="date" name="acomp_fecha_nacimiento" class="input-fecha-nacimiento-acomp" />
         </label>
         <label>Celular
           <input type="text" name="acomp_celular" />
+        </label>
+      </div>
+      <div class="alerta-menor-acompanante oculto" style="margin-top:0.6rem; background:var(--color-alerta-fondo, #fff8e1); border:1px solid #e8c547; border-radius:8px; padding:0.65rem 0.85rem;">
+        <p style="margin:0; font-size:0.82rem; color:#8a6d00; font-weight:600;">⚠️ Este acompañante es menor de edad.</p>
+        <p style="margin:0.3rem 0 0; font-size:0.8rem; color:#8a6d00;">Solicita el registro civil de nacimiento para verificar que el adulto responsable es su padre/madre, o la autorización notarial correspondiente si viaja con otra persona.</p>
+        <label style="display:flex; align-items:center; gap:0.4rem; margin-top:0.5rem; font-size:0.82rem; color:#8a6d00;">
+          <input type="checkbox" class="check-verificacion-menor" style="width:auto;" />
+          Verifiqué el documento (registro civil / autorización notarial)
         </label>
       </div>
     </div>
@@ -533,6 +886,30 @@ async function buscarHuespedPorNombre(nombre) {
   if (huesped) return { origen: 'huesped', datos: huesped };
 
   return null;
+}
+
+// Da de alta (o actualiza) en el listado general de huespedes a cada
+// acompañante que traiga número de documento — sin documento no hay con
+// qué identificarlo ahí, así que esos quedan solo dentro del check-in.
+async function alimentarHuespedesConAcompanantes(acompanantesDetalle) {
+  if (!Array.isArray(acompanantesDetalle) || acompanantesDetalle.length === 0) return;
+
+  for (const acomp of acompanantesDetalle) {
+    if (!acomp.numero_documento) continue;
+    const { error } = await supabase.from('huespedes').upsert(
+      {
+        numero_documento: acomp.numero_documento,
+        tipo_documento: acomp.tipo_documento || null,
+        nombre: acomp.nombre,
+        telefono: acomp.celular || null,
+        actualizado_en: new Date().toISOString(),
+      },
+      { onConflict: 'numero_documento' }
+    );
+    if (error) {
+      mostrarToast(`No se pudo agregar a ${acomp.nombre} al listado de huéspedes: ${error.message}`, 'error');
+    }
+  }
 }
 
 // --- "Ver disponibilidad": mini calendario (10 días) para elegir
@@ -718,7 +1095,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
           ¿Trae acompañante(s)?
         </label>
         <div id="acompanantes-wrap" class="oculto" style="margin-top:0.75rem;">
-          <p class="mensaje-vacio" style="margin-bottom:0.5rem;">Se piden los mismos datos del huésped principal para cada acompañante.</p>
+          <p class="mensaje-vacio" style="margin-bottom:0.5rem;">Se piden los mismos datos del huésped principal para cada acompañante. Si trae número de documento, también queda en el listado general de huéspedes.</p>
           <div id="acompanantes-lista"></div>
           <button type="button" id="btn-agregar-acompanante" class="btn btn-secundario btn-chico">+ Agregar otro acompañante</button>
         </div>
@@ -739,16 +1116,16 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
             </select>
           </label>
           <label>Tarifa
-            <select name="tarifa_id" id="select-tarifa">
+            <select name="tarifa_id" id="select-tarifa" required>
               <option value="">—</option>
               ${(tarifas || []).map((t) => `<option value="${t.id}">${t.codigo} / ${formatCOP(t.precio_temporada_baja)}</option>`).join('')}
             </select>
           </label>
           <label>Cantidad de noches
-            <input type="number" name="cantidad_noches" id="input-noches" min="1" value="1" />
+            <input type="number" name="cantidad_noches" id="input-noches" min="1" value="1" required />
           </label>
           <label>Método de pago
-            <select name="metodo_pago" id="select-metodo-pago-estadia">
+            <select name="metodo_pago" id="select-metodo-pago-estadia" required>
               ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
             </select>
           </label>
@@ -762,7 +1139,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
         <div class="form-grid" style="margin-top:0.75rem;">
           <label>Pago al check-in
-            <select id="select-estado-pago" name="estado_pago_checkin">
+            <select id="select-estado-pago" name="estado_pago_checkin" required>
               <option value="pendiente">Pendiente (sin pago todavía)</option>
               <option value="parcial">Parcial (abono)</option>
               <option value="anticipado">Anticipado (pago completo)</option>
@@ -858,6 +1235,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     envoltorio.innerHTML = filaAcompanante(contadorAcompanantes);
     const bloque = envoltorio.firstElementChild;
     bloque.querySelector('.btn-quitar-acompanante').addEventListener('click', () => bloque.remove());
+    wireAlertaMenorAcompanante(bloque);
     listaAcompanantes.appendChild(bloque);
   }
 
@@ -989,6 +1367,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     const estado = selectEstadoPago.value;
     const mostrar = estado === 'parcial' || estado === 'anticipado';
     wrapMontoPago.classList.toggle('oculto', !mostrar);
+    inputMontoPago.required = mostrar;
     if (estado === 'anticipado') {
       inputMontoPago.value = calcularMontoEstimado();
     } else if (estado === 'pendiente') {
@@ -1070,6 +1449,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
           nacionalidad: bloque.querySelector('[name="acomp_nacionalidad"]').value.trim() || null,
           fecha_nacimiento: bloque.querySelector('[name="acomp_fecha_nacimiento"]').value || null,
           celular: bloque.querySelector('[name="acomp_celular"]').value.trim() || null,
+          verificado_menor: bloque.querySelector('.check-verificacion-menor')?.checked || false,
         }))
         .filter((a) => a.nombre);
       if (acompanantesDetalle.length === 0) acompanantesDetalle = null;
@@ -1149,6 +1529,10 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     if (errHuesped) {
       mostrarToast(`Check-in guardado, pero no se pudo actualizar la ficha del huésped: ${errHuesped.message}`, 'error');
     }
+
+    // --- Acompañantes con documento también quedan en el listado general
+    // de huespedes, igual que el huésped principal. ---
+    await alimentarHuespedesConAcompanantes(acompanantesDetalle);
 
     const payload = {
       reserva_id: reservaIdFinal,
