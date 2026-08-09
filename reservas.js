@@ -28,6 +28,12 @@
 // tarifa en el formulario. Si el usuario edita el campo "Monto total" a
 // mano, el cálculo automático se detiene para esa apertura del modal (para
 // no pisar un valor que alguien ajustó a propósito, ej. un descuento).
+//
+// Nota sobre métodos de pago (abonos): la lista completa vive en
+// METODOS_PAGO — Efectivo, Nequi, Daviplata, QR, Transferencia Bancaria,
+// Datáfono, Llave. Caja consolida cada uno como si fuera una cuenta
+// aparte (ver caja.js), así que agregar/quitar un método aquí también
+// cambia lo que se ve ahí.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -39,6 +45,8 @@ import { toISODate, addDays, formatFechaHora } from './dates.js';
 const DIAS_VISIBLES = 14;
 let rangoInicio = new Date();
 rangoInicio.setHours(0, 0, 0, 0);
+
+const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
 
 const CLASE_CELDA = {
   reservada: 'celda-estado-reservada',
@@ -427,10 +435,7 @@ async function cargarPagos(overlay, reservaId) {
       </label>
       <label>Método de pago
         <select name="metodo_pago">
-          <option value="Efectivo">Efectivo</option>
-          <option value="Transferencia">Transferencia</option>
-          <option value="Tarjeta">Tarjeta</option>
-          <option value="Otro">Otro</option>
+          ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
         </select>
       </label>
       <label>Comentario
