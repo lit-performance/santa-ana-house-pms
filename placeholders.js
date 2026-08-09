@@ -6,10 +6,10 @@
 // construya de verdad, se quita su registerModule() de aquí y se crea su
 // propio archivo dedicado (housekeeping.js, caja.js, indicadores.js,
 // minibar.js, inventario.js, proveedores.js, usuarios.js, compras.js,
-// facturacion.js, etc.), igual que los módulos que ya están listos
-// (Dashboard, Configuración, Reservas, Recepción, Huéspedes, Housekeeping,
-// Caja, Indicadores, Minibar, Inventario, Proveedores, Usuarios, Compras,
-// Facturación).
+// facturacion.js, contabilidad.js, etc.), igual que los módulos que ya
+// están listos (Dashboard, Configuración, Reservas, Recepción, Huéspedes,
+// Housekeeping, Caja, Indicadores, Minibar, Inventario, Proveedores,
+// Usuarios, Compras, Facturación, Contabilidad).
 //
 // Los módulos pendientes que no se usan a diario están agrupados en 4
 // pestañas contenedoras (Inventario, Finanzas, Análisis, Administración)
@@ -17,9 +17,10 @@
 // subpestañas — así el menú principal no crece sin control. Housekeeping y
 // Caja ya tienen su propio archivo y quedan sueltas arriba porque el staff
 // las usa todos los días. Indicadores, Minibar, Inventario, Proveedores,
-// Usuarios, Compras y Facturación también tienen su propio archivo, pero
-// siguen viviendo como subpestañas de "Análisis", "Inventario" y
-// "Finanzas" respectivamente (mismo lugar que ya tenían como placeholder).
+// Usuarios, Compras, Facturación y Contabilidad también tienen su propio
+// archivo, pero siguen viviendo como subpestañas de "Análisis",
+// "Inventario" y "Finanzas" respectivamente (mismo lugar que ya tenían
+// como placeholder).
 //
 // No tocan la base de datos — son solo vista, sin tablas ni RLS propias.
 
@@ -88,7 +89,7 @@ const GRUPOS = [
     descripcion: 'Facturación, contabilidad y gastos operativos. Caja queda aparte porque Recepción la usa todos los días.',
     hijos: [
       { icono: '🧾', label: 'Facturación', resumen: 'Documento equivalente por estadía, generado desde el check-out, con impuesto editable por factura.' },
-      { icono: '📊', label: 'Contabilidad', resumen: 'Consolidado de ingresos y gastos para el contador.' },
+      { icono: '📊', label: 'Contabilidad', resumen: 'Consolidado de ingresos y egresos por rango de fechas, exportable a CSV para el contador.' },
       { icono: '💸', label: 'Gastos', resumen: 'Registro y categorización de gastos operativos.' },
     ],
   },
@@ -134,24 +135,11 @@ GRUPOS.forEach((grupo) => {
 });
 
 // --- Módulos "próximamente" (Caja, Indicadores, Minibar, Inventario,
-// Proveedores, Usuarios, Compras y Facturación ya se construyeron — ver
-// caja.js, indicadores.js, minibar.js, inventario.js, proveedores.js,
-// usuarios.js, compras.js y facturacion.js) ---
+// Proveedores, Usuarios, Compras, Facturación y Contabilidad ya se
+// construyeron — ver caja.js, indicadores.js, minibar.js, inventario.js,
+// proveedores.js, usuarios.js, compras.js, facturacion.js y
+// contabilidad.js) ---
 const MODULOS_PENDIENTES = [
-  {
-    id: 'contabilidad',
-    label: 'Contabilidad',
-    icono: '📊',
-    roles: ['propietario', 'administrador', 'contador'],
-    parentId: 'grupo-finanzas',
-    titulo: 'Contabilidad',
-    descripcion: 'Consolidación de ingresos y gastos del hotel para el contador.',
-    features: [
-      'Resumen de ingresos (Caja, Facturación) y gastos (Gastos, Compras)',
-      'Exportable para el contador',
-      'Mismo patrón de "lectura entre módulos" que ya usa el Dashboard e Indicadores',
-    ],
-  },
   {
     id: 'gastos',
     label: 'Gastos',
@@ -163,7 +151,7 @@ const MODULOS_PENDIENTES = [
     features: [
       'Registro de gastos por categoría',
       'Adjuntar soporte/factura',
-      'Vínculo con Caja y Contabilidad',
+      'Se sumará a Contabilidad igual que Compras',
     ],
   },
   {
