@@ -5,10 +5,11 @@
 // efectivo vs digital: transferencia, tarjeta, otro) y qué tan ocupado
 // estuvo el hotel.
 //
-// El dinero se calcula directo de reservas_pagos + caja_movimientos,
-// agrupado por la fecha real del pago/movimiento — NO desde caja_turnos —
-// así no se pierde nada que haya entrado sin un turno de caja abierto en
-// ese momento.
+// El dinero se calcula directo de reservas_pagos + caja_movimientos +
+// ventas_mostrador (ventas de mostrador — clientes que no se hospedan,
+// ver caja.js), agrupado por la fecha real del pago/movimiento — NO desde
+// caja_turnos — así no se pierde nada que haya entrado sin un turno de
+// caja abierto en ese momento.
 //
 // La ocupación se calcula con la misma regla que usa el calendario de
 // Reservas para bloquear celdas: cualquier reserva que NO esté cancelada
@@ -187,6 +188,7 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
     { data: totalHabitacionesRows, error: errHab },
     { data: pagos, error: errPagos },
     { data: movimientos, error: errMov },
+    { data: ventasMostrador, error: errVentas },
     { data: reservas, error: errReservas },
   ] = await Promise.all([
     supabase.from('habitaciones').select('id'),
@@ -197,13 +199,18 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
       .gte('creado_en', fechaInicioISO)
       .lt('creado_en', finExclusivoISO),
     supabase
+      .from('ventas_mostrador')
+      .select('creado_en, monto, metodo_pago')
+      .gte('creado_en', fechaInicioISO)
+      .lt('creado_en', finExclusivoISO),
+    supabase
       .from('reservas')
       .select('fecha_checkin, fecha_checkout, estado')
       .lt('fecha_checkin', finExclusivoISO)
       .gt('fecha_checkout', fechaInicioISO),
   ]);
 
-  const error = errHab || errPagos || errMov || errReservas;
+  const error = errHab || errPagos || errMov || errVentas || errReservas;
   if (error) {
     wrap.innerHTML = `<p class="mensaje-vacio">Error calculando indicadores: ${error.message}</p>`;
     return;
@@ -218,7 +225,7 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
   }
 
   const porDia = new Map(
-    dias.map((d) => [d, { ingresosEfectivo: 0, ingresosDigital: 0, egresosEfectivo: 0, egresosDigital: 0, ocupadas: 0 }])
+    dias.map((d) => [d, { ingresosEfectivo: 0, ingresosDigital: 0, egresosEfectivo: 0, egresosDigital: 0, ventasMostrador: 0, ocupadas: 0 }])
   );
 
   (pagos || []).forEach((p) => {
@@ -227,6 +234,15 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
     if (!bucket) return;
     if (p.metodo_pago === 'Efectivo') bucket.ingresosEfectivo += Number(p.monto);
     else bucket.ingresosDigital += Number(p.monto);
+  });
+
+  (ventasMostrador || []).forEach((v) => {
+    const dia = toISODate(new Date(v.creado_en));
+    const bucket = porDia.get(dia);
+    if (!bucket) return;
+    if (v.metodo_pago === 'Efectivo') bucket.ingresosEfectivo += Number(v.monto);
+    else bucket.ingresosDigital += Number(v.monto);
+    bucket.ventasMostrador += Number(v.monto);
   });
 
   (movimientos || []).forEach((m) => {
@@ -260,6 +276,7 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
         ingresosDigital: 0,
         egresosEfectivo: 0,
         egresosDigital: 0,
+        ventasMostrador: 0,
         nochesOcupadas: 0,
         numDias: 0,
       });
@@ -270,6 +287,7 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
     p.ingresosDigital += b.ingresosDigital;
     p.egresosEfectivo += b.egresosEfectivo;
     p.egresosDigital += b.egresosDigital;
+    p.ventasMostrador += b.ventasMostrador;
     p.nochesOcupadas += b.ocupadas;
     p.numDias += 1;
   });
@@ -286,6 +304,7 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
 
   const totalIngresosRango = filas.reduce((sum, f) => sum + f.totalIngresos, 0);
   const totalEgresosRango = filas.reduce((sum, f) => sum + f.totalEgresos, 0);
+  const totalVentasMostradorRango = filas.reduce((sum, f) => sum + f.ventasMostrador, 0);
   const totalNochesOcupadasRango = filas.reduce((sum, f) => sum + f.nochesOcupadas, 0);
   const capacidadTotalRango = totalHabitaciones * dias.length;
   const ocupacionPromedioRango = capacidadTotalRango > 0 ? (totalNochesOcupadasRango / capacidadTotalRango) * 100 : 0;
@@ -295,7 +314,7 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
       <div class="stat-card stat-card-verde">
         <div class="stat-card-label">Ingresos del rango</div>
         <div class="stat-card-valor">${formatCOP(totalIngresosRango)}</div>
-        <div class="stat-card-subtitulo">Egresos: ${formatCOP(totalEgresosRango)}</div>
+        <div class="stat-card-subtitulo">Egresos: ${formatCOP(totalEgresosRango)} · Mostrador: ${formatCOP(totalVentasMostradorRango)}</div>
       </div>
       <div class="stat-card stat-card-azul">
         <div class="stat-card-label">Ocupación promedio</div>
