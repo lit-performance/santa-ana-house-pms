@@ -5,20 +5,20 @@
 // uno. Cada entrada de este archivo es temporal: cuando un módulo se
 // construya de verdad, se quita su registerModule() de aquí y se crea su
 // propio archivo dedicado (housekeeping.js, caja.js, indicadores.js,
-// minibar.js, inventario.js, proveedores.js, etc.), igual que los módulos
-// que ya están listos (Dashboard, Configuración, Reservas, Recepción,
-// Huéspedes, Housekeeping, Caja, Indicadores, Minibar, Inventario,
-// Proveedores).
+// minibar.js, inventario.js, proveedores.js, usuarios.js, etc.), igual que
+// los módulos que ya están listos (Dashboard, Configuración, Reservas,
+// Recepción, Huéspedes, Housekeeping, Caja, Indicadores, Minibar,
+// Inventario, Proveedores, Usuarios).
 //
 // Los módulos pendientes que no se usan a diario están agrupados en 4
 // pestañas contenedoras (Inventario, Finanzas, Análisis, Administración)
 // usando el mismo mecanismo parentId que ya usa Configuración con sus
 // subpestañas — así el menú principal no crece sin control. Housekeeping y
 // Caja ya tienen su propio archivo y quedan sueltas arriba porque el staff
-// las usa todos los días. Indicadores, Minibar, Inventario y Proveedores
-// también tienen su propio archivo, pero siguen viviendo como subpestañas
-// de "Análisis" e "Inventario" respectivamente (mismo lugar que ya tenían
-// como placeholder).
+// las usa todos los días. Indicadores, Minibar, Inventario, Proveedores y
+// Usuarios también tienen su propio archivo, pero siguen viviendo como
+// subpestañas de "Análisis", "Inventario" y "Administración" respectivamente
+// (mismo lugar que ya tenían como placeholder).
 //
 // No tocan la base de datos — son solo vista, sin tablas ni RLS propias.
 
@@ -113,7 +113,7 @@ const GRUPOS = [
     titulo: 'Administración',
     descripcion: 'Usuarios, documentos legales, mantenimiento, CRM e inteligencia artificial.',
     hijos: [
-      { icono: '👤', label: 'Usuarios', resumen: 'Cuentas del staff y sus roles.' },
+      { icono: '👤', label: 'Usuarios', resumen: 'Alta/baja de cuentas del staff y su rol, desde la app.' },
       { icono: '📁', label: 'Documentos', resumen: 'RNT, pólizas, contratos, permisos.' },
       { icono: '🔧', label: 'Mantenimiento', resumen: 'Órdenes de mantenimiento preventivo y correctivo.' },
       { icono: '🤝', label: 'CRM', resumen: 'Seguimiento comercial de huéspedes frecuentes y agencias.' },
@@ -132,9 +132,9 @@ GRUPOS.forEach((grupo) => {
   });
 });
 
-// --- Módulos "próximamente" (Caja, Indicadores, Minibar, Inventario y
-// Proveedores ya se construyeron — ver caja.js, indicadores.js, minibar.js,
-// inventario.js y proveedores.js) ---
+// --- Módulos "próximamente" (Caja, Indicadores, Minibar, Inventario,
+// Proveedores y Usuarios ya se construyeron — ver caja.js, indicadores.js,
+// minibar.js, inventario.js, proveedores.js y usuarios.js) ---
 const MODULOS_PENDIENTES = [
   {
     id: 'compras',
@@ -229,19 +229,6 @@ const MODULOS_PENDIENTES = [
     features: [
       'Bitácora de acciones por usuario',
       'Filtro por módulo, usuario y fecha',
-    ],
-  },
-  {
-    id: 'usuarios',
-    label: 'Usuarios',
-    icono: '👤',
-    roles: ['propietario', 'administrador'],
-    parentId: 'grupo-administracion',
-    titulo: 'Usuarios',
-    descripcion: 'Gestión de las cuentas del staff y sus roles dentro del sistema.',
-    features: [
-      'Alta/baja de usuarios y asignación de rol',
-      'Interfaz sobre la tabla usuarios ya existente (hoy se gestiona por Supabase directamente)',
     ],
   },
   {
