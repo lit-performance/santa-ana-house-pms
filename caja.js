@@ -1,9 +1,19 @@
 // caja.js
 //
-// Módulo: Caja. Apertura y cierre de turno de caja con arqueo, registro de
-// movimientos manuales (ingresos/egresos) del turno abierto, saldos por
+// Módulo: "Registro diario de ventas" (antes "Caja", el id interno y el
+// nombre del archivo se quedan igual para no romper nada). Apertura y
+// cierre de turno de caja con arqueo, registro de movimientos manuales
+// (ingresos/egresos) y ventas por mostrador del turno abierto, saldos por
 // cuenta (medio de pago) acumulados de todo el tiempo, transferencias
 // entre cuentas, y exportables (Excel/PDF) para auditoría del propietario.
+//
+// Pensada para ser LA pestaña de mayor uso del día (junto con Recepción):
+// arriba de todo va el pulso del día (resumen de ventas + estado de caja),
+// luego lo que falta por cobrar (huéspedes alojados), luego el turno en
+// curso con las ventas de mostrador — clientes que compran algo del
+// inventario sin hospedarse, no vale la pena crearles ficha de huésped —
+// y al final lo que se consulta con menos frecuencia (saldos por cuenta,
+// minibar informativo, historial de cierres).
 //
 // Se investigó cómo lo resuelven otros PMS de hotel (night audit / entrega
 // de turno entre recepcionistas) para que esta pantalla sea coherente con
@@ -91,7 +101,7 @@ async function obtenerNombresUsuarios(ids) {
 // métodos de METODOS_PAGO presentes (aunque estén en cero), más una clave
 // extra por si algún registro viejo trae un método que ya no está en la
 // lista.
-function calcularDesglosePorMetodo(pagos, movimientos) {
+function calcularDesglosePorMetodo(pagos, movimientos, ventasMostrador) {
   const desglose = {};
   METODOS_PAGO.forEach((m) => {
     desglose[m] = { ingresos: 0, egresos: 0 };
@@ -104,6 +114,10 @@ function calcularDesglosePorMetodo(pagos, movimientos) {
 
   (pagos || []).forEach((p) => {
     bucket(p.metodo_pago || 'Efectivo').ingresos += Number(p.monto);
+  });
+
+  (ventasMostrador || []).forEach((v) => {
+    bucket(v.metodo_pago || 'Efectivo').ingresos += Number(v.monto);
   });
 
   (movimientos || []).forEach((m) => {
@@ -122,15 +136,18 @@ async function calcularSaldosPorCuenta() {
     { data: pagos, error: errPagos },
     { data: movimientos, error: errMov },
     { data: transferencias, error: errTrans },
+    { data: ventasMostrador, error: errVentas },
   ] = await Promise.all([
     supabase.from('reservas_pagos').select('monto, metodo_pago'),
     supabase.from('caja_movimientos').select('monto, metodo_pago, tipo'),
     supabase.from('caja_transferencias').select('monto, cuenta_origen, cuenta_destino'),
+    supabase.from('ventas_mostrador').select('monto, metodo_pago'),
   ]);
 
   if (errPagos) throw errPagos;
   if (errMov) throw errMov;
   if (errTrans) throw errTrans;
+  if (errVentas) throw errVentas;
 
   const saldos = {};
   METODOS_PAGO.forEach((m) => {
@@ -144,6 +161,11 @@ async function calcularSaldosPorCuenta() {
   (pagos || []).forEach((p) => {
     const m = bucket(p.metodo_pago || 'Efectivo');
     saldos[m] += Number(p.monto);
+  });
+
+  (ventasMostrador || []).forEach((v) => {
+    const m = bucket(v.metodo_pago || 'Efectivo');
+    saldos[m] += Number(v.monto);
   });
 
   (movimientos || []).forEach((mv) => {
@@ -222,27 +244,96 @@ function filaTablaSimple(cols) {
 
 // =========================================================
 async function render(container) {
+  // Orden pensado para ser la pestaña de más uso del día: primero el
+  // pulso del día (cuánto se ha vendido, cuánto hay en caja), luego lo
+  // que queda pendiente por cobrar (huéspedes alojados), luego el turno
+  // en curso (ventas de mostrador + arqueo + cierre), y al final lo que
+  // se consulta con menos frecuencia (saldos por cuenta, minibar
+  // informativo, historial de cierres).
   container.innerHTML = `
-    <h2>Caja</h2>
+    <h2>Registro diario de ventas</h2>
+    <div id="resumen-dia-wrap" style="margin-bottom:1.5rem;">
+      <p class="mensaje-vacio">Cargando…</p>
+    </div>
     <div id="habitaciones-uso-wrap" style="margin-bottom:1.5rem;">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
-    <div id="minibar-hoy-wrap" style="margin-bottom:1.5rem;">
+    <div id="caja-wrap" style="margin-bottom:1.5rem;">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
     <div id="saldos-cuenta-wrap" style="margin-bottom:1.5rem;">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
-    <div id="caja-wrap">
+    <div id="minibar-hoy-wrap">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
   `;
   await Promise.all([
+    cargarResumenDelDia(container.querySelector('#resumen-dia-wrap')),
     cargarHabitacionesEnUso(container.querySelector('#habitaciones-uso-wrap')),
-    cargarResumenMinibarHoy(container.querySelector('#minibar-hoy-wrap')),
     cargarSaldosPorCuenta(container, container.querySelector('#saldos-cuenta-wrap')),
+    cargarResumenMinibarHoy(container.querySelector('#minibar-hoy-wrap')),
     cargarEstado(container),
   ]);
+}
+
+// =========================================================
+// Resumen del día — el pulso del negocio hoy, independiente de si el
+// turno de caja está abierto o cerrado: cuánto se ha vendido en total (
+// reservas liquidadas + ventas de mostrador + ingresos manuales) y cuánto
+// efectivo hay en este momento.
+// =========================================================
+async function cargarResumenDelDia(elemento) {
+  if (!elemento) return;
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando el resumen del día…</p>';
+
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+
+  const [
+    { data: pagosHoy, error: errPagos },
+    { data: movimientosHoy, error: errMov },
+    { data: ventasHoy, error: errVentas },
+    { data: turnoAbierto, error: errTurno },
+  ] = await Promise.all([
+    supabase.from('reservas_pagos').select('monto').gte('fecha', hoyISO).lt('fecha', mananaISO),
+    supabase.from('caja_movimientos').select('monto, tipo').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
+    supabase.from('ventas_mostrador').select('monto').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
+    supabase.from('caja_turnos').select('id, abierto_en, saldo_inicial').eq('estado', 'abierta').limit(1).maybeSingle(),
+  ]);
+
+  const error = errPagos || errMov || errVentas || errTurno;
+  if (error) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando el resumen del día: ${error.message}</p>`;
+    return;
+  }
+
+  const ventasReservasHoy = (pagosHoy || []).reduce((sum, p) => sum + Number(p.monto), 0);
+  const ventasManualesHoy = (movimientosHoy || []).filter((m) => m.tipo === 'ingreso').reduce((sum, m) => sum + Number(m.monto), 0);
+  const ventasMostradorHoy = (ventasHoy || []).reduce((sum, v) => sum + Number(v.monto), 0);
+  const egresosHoy = (movimientosHoy || []).filter((m) => m.tipo === 'egreso').reduce((sum, m) => sum + Number(m.monto), 0);
+  const totalVentasHoy = ventasReservasHoy + ventasManualesHoy + ventasMostradorHoy;
+
+  elemento.innerHTML = `
+    <div class="grid-tres-columnas">
+      <div class="stat-card stat-card-verde">
+        <div class="stat-card-label">💵 Ventas de hoy</div>
+        <div class="stat-card-valor">${formatCOP(totalVentasHoy)}</div>
+        <div class="stat-card-subtitulo">Estadías: ${formatCOP(ventasReservasHoy)} · Mostrador: ${formatCOP(ventasMostradorHoy)} · Otras: ${formatCOP(ventasManualesHoy)}</div>
+      </div>
+      <div class="stat-card stat-card-naranja">
+        <div class="stat-card-label">↘️ Egresos de hoy</div>
+        <div class="stat-card-valor">${formatCOP(egresosHoy)}</div>
+        <div class="stat-card-subtitulo">Gastos y salidas manuales registradas hoy</div>
+      </div>
+      <div class="stat-card ${turnoAbierto ? 'stat-card-azul' : 'stat-card-naranja'}">
+        <div class="stat-card-label">🗝 Estado de la caja</div>
+        <div class="stat-card-valor" style="font-size:1.3rem;">${turnoAbierto ? 'Abierta' : 'Cerrada'}</div>
+        <div class="stat-card-subtitulo">${turnoAbierto ? `Desde ${formatFechaHora(turnoAbierto.abierto_en)}` : 'Ábrela para empezar a vender'}</div>
+      </div>
+    </div>
+    <p class="mensaje-vacio" style="margin-top:0.6rem;">Este resumen es del día calendario de hoy (no del turno) — para el detalle exacto del turno en curso, revisa "Desglose por medio de pago" más abajo.</p>
+  `;
 }
 
 // =========================================================
@@ -488,7 +579,7 @@ async function cargarHabitacionesEnUso(elemento) {
   elemento.innerHTML = `
     <div class="tarjeta">
       <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.75rem;">
-        <h3 style="margin:0;">🛎 Habitaciones en uso ${items.length ? `(${items.length})` : ''}</h3>
+        <h3 style="margin:0;">🧳 Huéspedes alojados ${items.length ? `(${items.length})` : ''}</h3>
         <button type="button" id="btn-refrescar-habitaciones-uso" class="btn btn-secundario btn-chico">🔄 Actualizar</button>
       </div>
       ${
@@ -567,7 +658,7 @@ async function pintarSinTurno(container, wrap) {
   wrap.innerHTML = `
     <div class="tarjeta">
       <h3>No hay una caja abierta</h3>
-      <p class="mensaje-vacio">Abre la caja al iniciar el turno para empezar a registrar ingresos y egresos.</p>
+      <p class="mensaje-vacio">Abre la caja al iniciar el turno para empezar a registrar ingresos, egresos y ventas por mostrador.</p>
       ${
         permitido
           ? `
@@ -623,24 +714,31 @@ async function pintarTurnoAbierto(container, wrap, turno) {
     { data: pagos, error: errPagos },
     { data: movimientos, error: errMov },
     { data: transferenciasTurno, error: errTrans },
+    { data: ventasMostradorTurno, error: errVentas },
   ] = await Promise.all([
     supabase.from('reservas_pagos').select('*').gte('fecha', turno.abierto_en),
     supabase.from('caja_movimientos').select('*').eq('turno_id', turno.id).order('creado_en', { ascending: false }),
     supabase.from('caja_transferencias').select('*').gte('creado_en', turno.abierto_en).order('creado_en', { ascending: false }),
+    supabase
+      .from('ventas_mostrador')
+      .select('*, minibar_productos(nombre)')
+      .eq('turno_id', turno.id)
+      .order('creado_en', { ascending: false }),
   ]);
 
-  if (errPagos || errMov || errTrans) {
-    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando movimientos: ${(errPagos || errMov || errTrans).message}</p>`;
+  if (errPagos || errMov || errTrans || errVentas) {
+    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando movimientos: ${(errPagos || errMov || errTrans || errVentas).message}</p>`;
     return;
   }
 
-  const desglose = calcularDesglosePorMetodo(pagos, movimientos);
+  const desglose = calcularDesglosePorMetodo(pagos, movimientos, ventasMostradorTurno);
   const metodosPresentes = Array.from(new Set([...METODOS_PAGO, ...Object.keys(desglose)]));
 
   const totalIngresos = Object.values(desglose).reduce((sum, m) => sum + m.ingresos, 0);
   const totalEgresos = Object.values(desglose).reduce((sum, m) => sum + m.egresos, 0);
   const ingresosReservas = (pagos || []).reduce((sum, p) => sum + Number(p.monto), 0);
   const ingresosManuales = (movimientos || []).filter((m) => m.tipo === 'ingreso').reduce((sum, m) => sum + Number(m.monto), 0);
+  const ingresosMostrador = (ventasMostradorTurno || []).reduce((sum, v) => sum + Number(v.monto), 0);
 
   const efectivo = desglose['Efectivo'] || { ingresos: 0, egresos: 0 };
 
@@ -682,7 +780,7 @@ async function pintarTurnoAbierto(container, wrap, turno) {
       <div class="stat-card stat-card-verde">
         <div class="stat-card-label">Ingresos del turno (todos los medios)</div>
         <div class="stat-card-valor">${formatCOP(totalIngresos)}</div>
-        <div class="stat-card-subtitulo">Reservas: ${formatCOP(ingresosReservas)} · Manuales: ${formatCOP(ingresosManuales)}</div>
+        <div class="stat-card-subtitulo">Reservas: ${formatCOP(ingresosReservas)} · Mostrador: ${formatCOP(ingresosMostrador)} · Manuales: ${formatCOP(ingresosManuales)}</div>
       </div>
       <div class="stat-card stat-card-naranja">
         <div class="stat-card-label">Esperado en efectivo (para arqueo)</div>
@@ -708,6 +806,8 @@ async function pintarTurnoAbierto(container, wrap, turno) {
       </table>
       <p class="mensaje-vacio" style="margin-top:0.5rem;">Solo Efectivo necesita conteo físico al cerrar caja — los demás medios son electrónicos, su saldo es lo que marca esta tabla. Las transferencias entre cuentas no están incluidas aquí (no son ingreso/egreso real) — se ven abajo.</p>
     </div>
+
+    <div id="ventas-mostrador-wrap"></div>
 
     ${
       (transferenciasTurno || []).length > 0
@@ -791,7 +891,165 @@ async function pintarTurnoAbierto(container, wrap, turno) {
     );
   }
 
+  await cargarVentasMostrador(container, wrap.querySelector('#ventas-mostrador-wrap'), turno.id, ventasMostradorTurno);
   await cargarHistorialCierres(container, wrap.querySelector('#historial-cierres-wrap'));
+}
+
+// =========================================================
+// Ventas por mostrador: productos de bodega vendidos directo en
+// Recepción a un cliente que no se hospeda (no vale la pena crearle
+// ficha de huésped) — no se cargan a ninguna habitación. Descuenta
+// inventario_bodega y deja su propio movimiento en
+// inventario_movimientos, igual que cualquier otra salida de bodega.
+// Requiere un turno abierto (igual que un movimiento manual).
+// =========================================================
+async function cargarVentasMostrador(container, elemento, turnoId, ventasIniciales) {
+  if (!elemento) return;
+  const permitido = puedeOperar();
+
+  const [{ data: bodega, error: errBodega }, { data: productos, error: errProductos }] = await Promise.all([
+    supabase.from('inventario_bodega').select('producto_id, cantidad_actual'),
+    supabase.from('minibar_productos').select('*').eq('activo', true).order('categoria').order('nombre'),
+  ]);
+
+  if (errBodega || errProductos) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando productos de bodega: ${(errBodega || errProductos).message}</p>`;
+    return;
+  }
+
+  const stockPorProducto = new Map((bodega || []).map((b) => [b.producto_id, b.cantidad_actual]));
+  const categorias = [...new Set((productos || []).map((p) => p.categoria))];
+  const totalVentas = (ventasIniciales || []).reduce((sum, v) => sum + Number(v.monto), 0);
+
+  elemento.innerHTML = `
+    <div class="tarjeta">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.5rem;">
+        <h3 style="margin:0;">🛒 Ventas por mostrador (este turno)</h3>
+        <strong style="font-size:1.1rem;">${formatCOP(totalVentas)}</strong>
+      </div>
+      <p class="mensaje-vacio" style="margin-bottom:0.75rem;">Para un cliente que compra algo del inventario sin hospedarse — no queda ligado a ninguna habitación ni huésped, solo descuenta bodega y suma a la venta del día.</p>
+      ${
+        permitido
+          ? `
+        <form id="form-venta-mostrador" class="form-grid">
+          <label>Producto
+            <select name="producto_id" required>
+              ${categorias
+                .map(
+                  (cat) => `
+                <optgroup label="${escaparHTML(cat)}">
+                  ${(productos || [])
+                    .filter((p) => p.categoria === cat)
+                    .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)} — ${formatCOP(p.precio)} (${stockPorProducto.get(p.id) || 0} en bodega)</option>`)
+                    .join('')}
+                </optgroup>
+              `
+                )
+                .join('')}
+            </select>
+          </label>
+          <label>Cantidad
+            <input type="number" name="cantidad" min="1" value="1" required />
+          </label>
+          <label>Método de pago
+            <select name="metodo_pago">
+              ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
+            </select>
+          </label>
+          <label>Cliente <span class="mensaje-vacio" style="font-size:0.7rem;">(opcional)</span>
+            <input type="text" name="cliente_nombre" placeholder="Opcional" />
+          </label>
+          <button type="submit" class="btn btn-secundario btn-chico">+ Registrar venta</button>
+        </form>
+      `
+          : ''
+      }
+      <div class="tabla-scroll" style="margin-top:0.75rem;">
+        <table class="tabla-simple">
+          <thead><tr><th>Hora</th><th>Producto</th><th>Cant.</th><th>Monto</th><th>Método</th><th>Cliente</th></tr></thead>
+          <tbody>
+            ${
+              (ventasIniciales || [])
+                .map(
+                  (v) =>
+                    `<tr><td>${formatFechaHora(v.creado_en)}</td><td>${v.minibar_productos ? escaparHTML(v.minibar_productos.nombre) : '—'}</td><td>${v.cantidad}</td><td>${formatCOP(v.monto)}</td><td>${v.metodo_pago}</td><td>${escaparHTML(v.cliente_nombre || '—')}</td></tr>`
+                )
+                .join('') || '<tr><td colspan="6" class="mensaje-vacio">Sin ventas de mostrador en este turno.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  if (!permitido) return;
+
+  elemento.querySelector('#form-venta-mostrador').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const productoId = Number(form.get('producto_id'));
+    const cantidad = Number(form.get('cantidad'));
+    const producto = (productos || []).find((p) => p.id === productoId);
+    if (!producto) return;
+
+    const stockDisponible = stockPorProducto.get(productoId) || 0;
+    if (cantidad > stockDisponible) {
+      const seguir = await mostrarConfirmacion({
+        titulo: 'Stock insuficiente en bodega',
+        contenidoHTML: `En bodega solo hay ${stockDisponible} unidad(es) registradas de ${escaparHTML(producto.nombre)}. ¿Continuar de todas formas?`,
+        textoConfirmar: 'Continuar',
+      });
+      if (!seguir) return;
+    }
+
+    const monto = producto.precio * cantidad;
+    const usuario = getUsuarioActual();
+
+    const { error: errVenta } = await supabase.from('ventas_mostrador').insert({
+      turno_id: turnoId,
+      producto_id: productoId,
+      cantidad,
+      precio_unitario: producto.precio,
+      monto,
+      metodo_pago: form.get('metodo_pago'),
+      cliente_nombre: form.get('cliente_nombre').trim() || null,
+      registrado_por: usuario?.id || null,
+    });
+
+    if (errVenta) {
+      mostrarToast(`Error registrando la venta: ${errVenta.message}`, 'error');
+      return;
+    }
+
+    const { data: filaBodega } = await supabase
+      .from('inventario_bodega')
+      .select('id, cantidad_actual')
+      .eq('producto_id', productoId)
+      .maybeSingle();
+
+    if (filaBodega) {
+      await supabase
+        .from('inventario_bodega')
+        .update({ cantidad_actual: filaBodega.cantidad_actual - cantidad, actualizado_en: new Date().toISOString() })
+        .eq('id', filaBodega.id);
+    }
+
+    await supabase.from('inventario_movimientos').insert({
+      tipo: 'venta_mostrador',
+      producto_id: productoId,
+      cantidad,
+      notas: 'Venta directa por mostrador.',
+      registrado_por: usuario?.id || null,
+    });
+
+    mostrarToast('Venta registrada.', 'exito');
+    document.dispatchEvent(new CustomEvent('inventario:actualizado'));
+    await cargarEstado(container);
+    const wrapSaldos = container.querySelector('#saldos-cuenta-wrap');
+    if (wrapSaldos) await cargarSaldosPorCuenta(container, wrapSaldos);
+    const wrapResumen = container.querySelector('#resumen-dia-wrap');
+    if (wrapResumen) await cargarResumenDelDia(wrapResumen);
+  });
 }
 
 // =========================================================
@@ -879,20 +1137,25 @@ async function pintarDetalleCierre(contenedor, turno, nombresUsuarios) {
   const desde = turno.abierto_en;
   const hasta = turno.cerrado_en;
 
-  const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: transferencias, error: errTrans }] =
-    await Promise.all([
-      supabase.from('reservas_pagos').select('*').gte('fecha', desde).lt('fecha', hasta).order('fecha', { ascending: true }),
-      supabase.from('caja_movimientos').select('*').eq('turno_id', turno.id).order('creado_en', { ascending: true }),
-      supabase
-        .from('caja_transferencias')
-        .select('*')
-        .gte('creado_en', desde)
-        .lt('creado_en', hasta)
-        .order('creado_en', { ascending: true }),
-    ]);
+  const [
+    { data: pagos, error: errPagos },
+    { data: movimientos, error: errMov },
+    { data: transferencias, error: errTrans },
+    { data: ventasMostrador, error: errVentas },
+  ] = await Promise.all([
+    supabase.from('reservas_pagos').select('*').gte('fecha', desde).lt('fecha', hasta).order('fecha', { ascending: true }),
+    supabase.from('caja_movimientos').select('*').eq('turno_id', turno.id).order('creado_en', { ascending: true }),
+    supabase
+      .from('caja_transferencias')
+      .select('*')
+      .gte('creado_en', desde)
+      .lt('creado_en', hasta)
+      .order('creado_en', { ascending: true }),
+    supabase.from('ventas_mostrador').select('*, minibar_productos(nombre)').eq('turno_id', turno.id).order('creado_en', { ascending: true }),
+  ]);
 
-  if (errPagos || errMov || errTrans) {
-    contenedor.innerHTML = `<p class="mensaje-vacio">Error cargando el detalle: ${(errPagos || errMov || errTrans).message}</p>`;
+  if (errPagos || errMov || errTrans || errVentas) {
+    contenedor.innerHTML = `<p class="mensaje-vacio">Error cargando el detalle: ${(errPagos || errMov || errTrans || errVentas).message}</p>`;
     return;
   }
 
@@ -903,6 +1166,7 @@ async function pintarDetalleCierre(contenedor, turno, nombresUsuarios) {
     pagos: pagos || [],
     movimientos: movimientos || [],
     transferencias: transferencias || [],
+    ventasMostrador: ventasMostrador || [],
   };
 
   contenedor.innerHTML = `
@@ -942,6 +1206,18 @@ async function pintarDetalleCierre(contenedor, turno, nombresUsuarios) {
             .map(
               (m) =>
                 `<tr><td>${formatFechaHora(m.creado_en)}</td><td>${m.tipo === 'ingreso' ? 'Ingreso' : 'Egreso'}</td><td>${escaparHTML(m.categoria || '—')}</td><td>${formatCOP(m.monto)}</td><td>${m.metodo_pago || '—'}</td><td>${escaparHTML(m.descripcion || '—')}</td></tr>`
+            )
+            .join('')}</tbody></table>`
+    }
+
+    <p style="font-weight:600; margin:0.85rem 0 0.3rem;">Ventas por mostrador (${datosDetalle.ventasMostrador.length})</p>
+    ${
+      datosDetalle.ventasMostrador.length === 0
+        ? '<p class="mensaje-vacio">Sin ventas de mostrador en este turno.</p>'
+        : `<table class="tabla-simple"><thead><tr><th>Fecha</th><th>Producto</th><th>Cant.</th><th>Monto</th><th>Método</th><th>Cliente</th></tr></thead><tbody>${datosDetalle.ventasMostrador
+            .map(
+              (v) =>
+                `<tr><td>${formatFechaHora(v.creado_en)}</td><td>${v.minibar_productos ? escaparHTML(v.minibar_productos.nombre) : '—'}</td><td>${v.cantidad}</td><td>${formatCOP(v.monto)}</td><td>${v.metodo_pago}</td><td>${escaparHTML(v.cliente_nombre || '—')}</td></tr>`
             )
             .join('')}</tbody></table>`
     }
@@ -992,6 +1268,12 @@ function exportarCierreCSV(d) {
     ...(d.movimientos.length
       ? d.movimientos.map((m) => [formatFechaHora(m.creado_en), m.tipo, m.categoria || '', m.monto, m.metodo_pago || '', m.descripcion || ''])
       : [['Sin movimientos en este turno.', '', '', '', '', '']]),
+    [],
+    ['Ventas por mostrador'],
+    ['Fecha', 'Producto', 'Cantidad', 'Monto', 'Método', 'Cliente'],
+    ...(d.ventasMostrador.length
+      ? d.ventasMostrador.map((v) => [formatFechaHora(v.creado_en), v.minibar_productos ? v.minibar_productos.nombre : '', v.cantidad, v.monto, v.metodo_pago, v.cliente_nombre || ''])
+      : [['Sin ventas de mostrador en este turno.', '', '', '', '', '']]),
     [],
     ['Transferencias entre cuentas'],
     ['Fecha', 'De', 'Hacia', 'Monto', 'Motivo'],
@@ -1051,6 +1333,29 @@ function exportarCierrePDF(d) {
                 )
                 .join('')
             : filaTablaSimple(['Sin movimientos en este turno.', '', '', '', '', ''])
+        }
+      </tbody>
+    </table>
+
+    <h2>Ventas por mostrador (${d.ventasMostrador.length})</h2>
+    <table>
+      <thead><tr><th>Fecha</th><th>Producto</th><th>Cant.</th><th>Monto</th><th>Método</th><th>Cliente</th></tr></thead>
+      <tbody>
+        ${
+          d.ventasMostrador.length
+            ? d.ventasMostrador
+                .map((v) =>
+                  filaTablaSimple([
+                    formatFechaHora(v.creado_en),
+                    v.minibar_productos ? escaparHTML(v.minibar_productos.nombre) : '—',
+                    v.cantidad,
+                    formatCOP(v.monto),
+                    v.metodo_pago,
+                    escaparHTML(v.cliente_nombre || '—'),
+                  ])
+                )
+                .join('')
+            : filaTablaSimple(['Sin ventas de mostrador en este turno.', '', '', '', '', ''])
         }
       </tbody>
     </table>
@@ -1307,7 +1612,7 @@ async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglos
 
 registerModule({
   id: 'caja',
-  label: 'Caja',
+  label: 'Registro diario de ventas',
   icono: '💰',
   roles: ['propietario', 'administrador', 'recepcionista', 'contador', 'auditor'],
   render,
