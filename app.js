@@ -9,6 +9,14 @@
 // pantalla de inicio para el día a día. El archivo dashboard.js se deja en
 // el repo sin usar por si se quiere recuperar algo de ahí más adelante.
 //
+// Nota: 'huespedes.js' se importa junto con el resto de módulos de
+// "Análisis" (después de estadisticas.js) porque ahora vive ahí como
+// subpestaña (parentId: grupo-analisis, ver huespedes.js) — antes era
+// pestaña principal propia. Su posición en este bloque de imports define
+// en qué orden aparece dentro de las subpestañas de Análisis, así que se
+// puso después de Indicadores/Reportes/Estadísticas a propósito, para que
+// Análisis abra por defecto en Indicadores y no en el listado de huéspedes.
+//
 // Nota: 'config-habitaciones.js' (+ config-tipos.js + config-tarifas.js,
 // que son sus subpestañas) se importan AL FINAL a propósito, después de
 // 'placeholders.js' — así "Configuración" queda como la última pestaña
@@ -19,11 +27,8 @@ import { iniciarSesion, cerrarSesion, restaurarSesion } from './auth.js';
 import { initRouter, renderPrimerModuloDisponible } from './router.js';
 import { initTabs } from './ui.js';
 
-// --- Módulos registrados (agregar una línea por módulo nuevo, en el
-// orden en que deben aparecer las pestañas) ---
 import './recepcion.js';
 import './reservas.js';
-import './huespedes.js';
 import './housekeeping.js';
 import './caja.js';
 import './indicadores.js';
@@ -36,6 +41,7 @@ import './facturacion.js';
 import './contabilidad.js';
 import './reportes.js';
 import './estadisticas.js';
+import './huespedes.js';
 import './crm.js';
 
 // Pestañas "próximamente" para el resto del alcance (demo al cliente).
