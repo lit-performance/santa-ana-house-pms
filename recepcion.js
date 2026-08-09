@@ -165,6 +165,7 @@ import { formatCOP } from './currency.js';
 import { calcularHabitacionesEnUso } from './cuentas.js';
 import { getUsuarioActual } from './auth.js';
 import { ajustarInventarioHabitacion } from './inventario.js';
+import { mostrarResumenCheckout } from './resumen-checkout.js';
 
 const TIPOS_DOCUMENTO = ['Cédula de ciudadanía', 'Cédula de extranjería', 'Pasaporte', 'Tarjeta de identidad', 'PEP', 'Otro'];
 const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
@@ -683,8 +684,16 @@ async function abrirModalLiquidacion(container, item) {
       }
     }
 
-    await ejecutarCheckout(container, item, comentarioCheckout);
+    const checkoutOk = await ejecutarCheckout(container, item, comentarioCheckout);
     overlay.remove();
+
+    // Apenas se confirma el check-out, se abre la tarjeta-resumen con
+    // todo el detalle del servicio (habitación, minibar, historial
+    // completo de pagos) — visual, descargable y también consultable
+    // luego desde el listado de Checkouts en Indicadores.
+    if (checkoutOk) {
+      await mostrarResumenCheckout(item.checkinId);
+    }
   });
 }
 
@@ -696,7 +705,7 @@ async function ejecutarCheckout(container, item, comentarioCheckout) {
 
   if (errCheckin) {
     mostrarToast(`Error en check-out: ${errCheckin.message}`, 'error');
-    return;
+    return false;
   }
 
   const { error: errEstado } = await supabase.rpc('cambiar_estado_habitacion', {
@@ -713,6 +722,7 @@ async function ejecutarCheckout(container, item, comentarioCheckout) {
 
   mostrarToast('Check-out registrado. La habitación quedó en limpieza.', 'exito');
   await vistaLista(container);
+  return true;
 }
 
 // --- "✏️ Editar" un check-in ya registrado ---
