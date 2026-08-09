@@ -10,17 +10,24 @@
 // solo guarda lo que no nace de una reserva (gastos operativos, propinas,
 // ingresos varios, etc).
 //
+// Medios de pago: cada método (Efectivo, Nequi, Daviplata, QR,
+// Transferencia Bancaria, Datáfono, Llave — ver METODOS_PAGO) se consolida
+// como si fuera una cuenta aparte. El desglose se calcula sumando
+// reservas_pagos + caja_movimientos agrupados por metodo_pago, y se ve en
+// la tarjeta "Desglose por medio de pago" mientras el turno está abierto.
+// Solo Efectivo necesita arqueo físico (contar el cajón); los demás son
+// electrónicos, así que su "saldo" es simplemente lo que entró menos lo
+// que salió por ese medio durante el turno.
+//
 // Además, sin importar si hay turno abierto o no, se muestra siempre una
 // tabla de "Habitaciones en uso" con el saldo pendiente de cada una (mismo
 // cálculo que usa Recepción al liquidar en el check-out — ver cuentas.js).
 //
-// Entrega de turno: mientras hay un turno abierto se muestra un desglose de
-// cuánto entró en efectivo (físico) y cuánto en medios digitales
-// (transferencia/tarjeta/otro) — eso es lo que el recepcionista saliente le
-// reporta al que entra. Al cerrar la caja ese desglose se guarda en
-// caja_turnos (total_ingresos_efectivo/digital, total_egresos_efectivo/
-// digital — ver sql/011_caja_desglose.sql) y queda visible después en
-// "Cierres anteriores", así sirve de bitácora de entregas de turno.
+// Entrega de turno: al cerrar la caja, el desglose completo por medio de
+// pago se guarda en caja_turnos.desglose_metodos (jsonb) — ver
+// sql/020_caja_metodos_pago.sql — y queda visible después en "Cierres
+// anteriores" (botón "Ver detalle" por cierre), así sirve de bitácora de
+// entregas de turno con el saldo de cada cuenta.
 //
 // Regla de negocio: solo puede haber UN turno de caja abierto a la vez
 // (impuesto por un índice único parcial en la base de datos — ver
@@ -35,6 +42,7 @@ import { getUsuarioActual } from './auth.js';
 import { calcularHabitacionesEnUso } from './cuentas.js';
 
 const ROLES_OPERAN_CAJA = ['propietario', 'administrador', 'recepcionista'];
+const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
 
 function puedeOperar() {
   const usuario = getUsuarioActual();
@@ -45,6 +53,35 @@ function escaparHTML(texto) {
   const div = document.createElement('div');
   div.textContent = texto || '';
   return div.innerHTML;
+}
+
+// Suma ingresos/egresos por método de pago, combinando reservas_pagos
+// (siempre ingreso) y caja_movimientos (ingreso o egreso). Devuelve un
+// objeto { [metodo]: { ingresos, egresos } } con TODOS los métodos de
+// METODOS_PAGO presentes (aunque estén en cero), más una clave "Otro" por
+// si algún registro viejo trae un método que ya no está en la lista.
+function calcularDesglosePorMetodo(pagos, movimientos) {
+  const desglose = {};
+  METODOS_PAGO.forEach((m) => {
+    desglose[m] = { ingresos: 0, egresos: 0 };
+  });
+
+  const bucket = (metodo) => {
+    if (!desglose[metodo]) desglose[metodo] = { ingresos: 0, egresos: 0 };
+    return desglose[metodo];
+  };
+
+  (pagos || []).forEach((p) => {
+    bucket(p.metodo_pago || 'Efectivo').ingresos += Number(p.monto);
+  });
+
+  (movimientos || []).forEach((m) => {
+    const b = bucket(m.metodo_pago || 'Efectivo');
+    if (m.tipo === 'ingreso') b.ingresos += Number(m.monto);
+    else b.egresos += Number(m.monto);
+  });
+
+  return desglose;
 }
 
 async function render(container) {
@@ -146,7 +183,7 @@ async function pintarSinTurno(container, wrap) {
         permitido
           ? `
         <form id="form-abrir-caja" class="form-grid" style="margin-top:1rem;">
-          <label>Base inicial
+          <label>Base inicial (efectivo)
             <input type="number" name="saldo_inicial" step="1000" min="0" required />
           </label>
           <label>Observaciones
@@ -196,66 +233,52 @@ async function pintarTurnoAbierto(container, wrap, turno) {
     return;
   }
 
+  const desglose = calcularDesglosePorMetodo(pagos, movimientos);
+  const metodosPresentes = Array.from(new Set([...METODOS_PAGO, ...Object.keys(desglose)]));
+
+  const totalIngresos = Object.values(desglose).reduce((sum, m) => sum + m.ingresos, 0);
+  const totalEgresos = Object.values(desglose).reduce((sum, m) => sum + m.egresos, 0);
   const ingresosReservas = (pagos || []).reduce((sum, p) => sum + Number(p.monto), 0);
-  const ingresosReservasEfectivo = (pagos || [])
-    .filter((p) => p.metodo_pago === 'Efectivo')
-    .reduce((sum, p) => sum + Number(p.monto), 0);
-  const ingresosReservasDigital = ingresosReservas - ingresosReservasEfectivo;
+  const ingresosManuales = (movimientos || []).filter((m) => m.tipo === 'ingreso').reduce((sum, m) => sum + Number(m.monto), 0);
 
-  const ingresosManuales = (movimientos || []).filter((m) => m.tipo === 'ingreso');
-  const egresosManuales = (movimientos || []).filter((m) => m.tipo === 'egreso');
-
-  const ingresosManualesEfectivo = ingresosManuales
-    .filter((m) => m.metodo_pago === 'Efectivo')
-    .reduce((sum, m) => sum + Number(m.monto), 0);
-  const egresosManualesEfectivo = egresosManuales
-    .filter((m) => m.metodo_pago === 'Efectivo')
-    .reduce((sum, m) => sum + Number(m.monto), 0);
-  const totalIngresosManuales = ingresosManuales.reduce((sum, m) => sum + Number(m.monto), 0);
-  const totalEgresosManuales = egresosManuales.reduce((sum, m) => sum + Number(m.monto), 0);
-  const ingresosManualesDigital = totalIngresosManuales - ingresosManualesEfectivo;
-  const egresosManualesDigital = totalEgresosManuales - egresosManualesEfectivo;
-
-  // --- Desglose para entrega de turno: efectivo (físico) vs digital ---
-  const desglose = {
-    ingresosEfectivo: ingresosReservasEfectivo + ingresosManualesEfectivo,
-    ingresosDigital: ingresosReservasDigital + ingresosManualesDigital,
-    egresosEfectivo: egresosManualesEfectivo,
-    egresosDigital: egresosManualesDigital,
-  };
-
-  const saldoEsperadoEfectivo = Number(turno.saldo_inicial) + desglose.ingresosEfectivo - desglose.egresosEfectivo;
+  const efectivo = desglose['Efectivo'] || { ingresos: 0, egresos: 0 };
+  const saldoEsperadoEfectivo = Number(turno.saldo_inicial) + efectivo.ingresos - efectivo.egresos;
 
   wrap.innerHTML = `
     <div class="grid-tres-columnas">
       <div class="stat-card stat-card-azul">
-        <div class="stat-card-label">Base inicial</div>
+        <div class="stat-card-label">Base inicial (efectivo)</div>
         <div class="stat-card-valor">${formatCOP(turno.saldo_inicial)}</div>
         <div class="stat-card-subtitulo">Abierta ${formatFechaHora(turno.abierto_en)}</div>
       </div>
       <div class="stat-card stat-card-verde">
-        <div class="stat-card-label">Ingresos del turno</div>
-        <div class="stat-card-valor">${formatCOP(desglose.ingresosEfectivo + desglose.ingresosDigital)}</div>
-        <div class="stat-card-subtitulo">Reservas: ${formatCOP(ingresosReservas)} · Manuales: ${formatCOP(totalIngresosManuales)}</div>
+        <div class="stat-card-label">Ingresos del turno (todos los medios)</div>
+        <div class="stat-card-valor">${formatCOP(totalIngresos)}</div>
+        <div class="stat-card-subtitulo">Reservas: ${formatCOP(ingresosReservas)} · Manuales: ${formatCOP(ingresosManuales)}</div>
       </div>
       <div class="stat-card stat-card-naranja">
-        <div class="stat-card-label">Esperado en efectivo</div>
+        <div class="stat-card-label">Esperado en efectivo (para arqueo)</div>
         <div class="stat-card-valor">${formatCOP(saldoEsperadoEfectivo)}</div>
-        <div class="stat-card-subtitulo">Egresos: ${formatCOP(desglose.egresosEfectivo + desglose.egresosDigital)}</div>
+        <div class="stat-card-subtitulo">Egresos totales: ${formatCOP(totalEgresos)}</div>
       </div>
     </div>
 
     <div class="tarjeta">
-      <h3>💱 Desglose para entrega de turno</h3>
+      <h3>💱 Desglose por medio de pago</h3>
       <table class="tabla-simple">
-        <thead><tr><th>Medio</th><th>Ingresos</th><th>Egresos</th></tr></thead>
+        <thead><tr><th>Medio</th><th>Ingresos</th><th>Egresos</th><th>Neto</th></tr></thead>
         <tbody>
-          <tr><td>💵 Efectivo (físico)</td><td>${formatCOP(desglose.ingresosEfectivo)}</td><td>${formatCOP(desglose.egresosEfectivo)}</td></tr>
-          <tr><td>💳 Digital (transferencia/tarjeta/otro)</td><td>${formatCOP(desglose.ingresosDigital)}</td><td>${formatCOP(desglose.egresosDigital)}</td></tr>
-          <tr style="font-weight:700;"><td>Total</td><td>${formatCOP(desglose.ingresosEfectivo + desglose.ingresosDigital)}</td><td>${formatCOP(desglose.egresosEfectivo + desglose.egresosDigital)}</td></tr>
+          ${metodosPresentes
+            .map((m) => {
+              const d = desglose[m] || { ingresos: 0, egresos: 0 };
+              const neto = d.ingresos - d.egresos;
+              return `<tr><td>${escaparHTML(m)}${m === 'Efectivo' ? ' 💵' : ''}</td><td>${formatCOP(d.ingresos)}</td><td>${formatCOP(d.egresos)}</td><td style="font-weight:700;">${formatCOP(neto)}</td></tr>`;
+            })
+            .join('')}
+          <tr style="font-weight:700;"><td>Total</td><td>${formatCOP(totalIngresos)}</td><td>${formatCOP(totalEgresos)}</td><td>${formatCOP(totalIngresos - totalEgresos)}</td></tr>
         </tbody>
       </table>
-      <p class="mensaje-vacio" style="margin-top:0.5rem;">Esto es lo que el recepcionista saliente le reporta al que entra: cuánto hay en efectivo físico y cuánto entró por medios digitales.</p>
+      <p class="mensaje-vacio" style="margin-top:0.5rem;">Solo Efectivo necesita conteo físico al cerrar caja — los demás medios son electrónicos, su saldo es lo que marca esta tabla.</p>
     </div>
 
     ${
@@ -339,15 +362,16 @@ async function cargarHistorialCierres(elemento) {
 
   elemento.innerHTML = `
     <h3>Cierres anteriores</h3>
-    <p class="mensaje-vacio">Bitácora de entregas de turno: quién cerró, cuánto entró en efectivo vs digital, y la diferencia del arqueo.</p>
+    <p class="mensaje-vacio">Bitácora de entregas de turno: quién cerró, cuánto entró en efectivo vs otros medios, y la diferencia del arqueo. "Ver detalle" muestra el desglose completo por medio de pago (Nequi, Daviplata, QR, etc).</p>
     <div class="tabla-scroll">
       <table class="tabla-simple">
-        <thead><tr><th>Cerrada</th><th>Base inicial</th><th>Ingresos efectivo</th><th>Ingresos digital</th><th>Esperado</th><th>Contado</th><th>Diferencia</th></tr></thead>
+        <thead><tr><th>Cerrada</th><th>Base inicial</th><th>Ingresos efectivo</th><th>Ingresos otros medios</th><th>Esperado efectivo</th><th>Contado</th><th>Diferencia</th><th></th></tr></thead>
         <tbody>
           ${
             (data || [])
               .map(
-                (t) => `<tr>
+                (t, idx) => `
+                <tr>
                   <td>${formatFechaHora(t.cerrado_en)}</td>
                   <td>${formatCOP(t.saldo_inicial)}</td>
                   <td>${formatCOP(t.total_ingresos_efectivo)}</td>
@@ -355,14 +379,44 @@ async function cargarHistorialCierres(elemento) {
                   <td>${formatCOP(t.saldo_esperado)}</td>
                   <td>${formatCOP(t.saldo_contado)}</td>
                   <td style="color:${Number(t.diferencia) === 0 ? 'var(--color-verde-oscuro)' : 'var(--color-rojo-oscuro)'}; font-weight:700;">${formatCOP(t.diferencia)}</td>
-                </tr>`
+                  <td>${t.desglose_metodos ? `<button type="button" class="btn-editar btn-ver-detalle-cierre" data-idx="${idx}">Ver detalle</button>` : '—'}</td>
+                </tr>
+                <tr class="fila-detalle-cierre oculto" data-detalle-idx="${idx}">
+                  <td colspan="8">
+                    ${
+                      t.desglose_metodos
+                        ? `
+                      <table class="tabla-simple">
+                        <thead><tr><th>Medio</th><th>Ingresos</th><th>Egresos</th><th>Neto</th></tr></thead>
+                        <tbody>
+                          ${Object.entries(t.desglose_metodos)
+                            .map(
+                              ([medio, d]) =>
+                                `<tr><td>${escaparHTML(medio)}</td><td>${formatCOP(d.ingresos)}</td><td>${formatCOP(d.egresos)}</td><td>${formatCOP(d.ingresos - d.egresos)}</td></tr>`
+                            )
+                            .join('')}
+                        </tbody>
+                      </table>
+                    `
+                        : ''
+                    }
+                  </td>
+                </tr>
+              `
               )
-              .join('') || '<tr><td colspan="7" class="mensaje-vacio">Sin cierres registrados todavía.</td></tr>'
+              .join('') || '<tr><td colspan="8" class="mensaje-vacio">Sin cierres registrados todavía.</td></tr>'
           }
         </tbody>
       </table>
     </div>
   `;
+
+  elemento.querySelectorAll('.btn-ver-detalle-cierre').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const fila = elemento.querySelector(`.fila-detalle-cierre[data-detalle-idx="${btn.dataset.idx}"]`);
+      if (fila) fila.classList.toggle('oculto');
+    });
+  });
 }
 
 async function abrirModalMovimiento(container, turnoId) {
@@ -387,10 +441,7 @@ async function abrirModalMovimiento(container, turnoId) {
           </label>
           <label>Método de pago
             <select name="metodo_pago">
-              <option value="Efectivo">Efectivo</option>
-              <option value="Transferencia">Transferencia</option>
-              <option value="Tarjeta">Tarjeta</option>
-              <option value="Otro">Otro</option>
+              ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
             </select>
           </label>
         </div>
@@ -436,6 +487,11 @@ async function abrirModalMovimiento(container, turnoId) {
 }
 
 async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglose) {
+  const efectivo = desglose['Efectivo'] || { ingresos: 0, egresos: 0 };
+  const otrosMedios = Object.entries(desglose).filter(([medio]) => medio !== 'Efectivo');
+  const totalOtrosIngresos = otrosMedios.reduce((sum, [, d]) => sum + d.ingresos, 0);
+  const totalOtrosEgresos = otrosMedios.reduce((sum, [, d]) => sum + d.egresos, 0);
+
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
@@ -444,13 +500,14 @@ async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglos
       <form id="form-cierre-caja">
         <div class="modal-contenido">
           <table class="tabla-simple" style="margin-bottom:0.75rem;">
+            <thead><tr><th>Medio</th><th>Ingresos</th><th>Egresos</th></tr></thead>
             <tbody>
-              <tr><td>Ingresos efectivo</td><td class="monto">${formatCOP(desglose.ingresosEfectivo)}</td></tr>
-              <tr><td>Ingresos digital</td><td class="monto">${formatCOP(desglose.ingresosDigital)}</td></tr>
-              <tr><td>Egresos efectivo</td><td class="monto">${formatCOP(desglose.egresosEfectivo)}</td></tr>
+              ${Object.entries(desglose)
+                .map(([medio, d]) => `<tr><td>${escaparHTML(medio)}</td><td class="monto">${formatCOP(d.ingresos)}</td><td class="monto">${formatCOP(d.egresos)}</td></tr>`)
+                .join('')}
             </tbody>
           </table>
-          <p class="mensaje-vacio">Esperado en efectivo: <strong class="monto">${formatCOP(saldoEsperadoEfectivo)}</strong></p>
+          <p class="mensaje-vacio">Esperado en efectivo: <strong class="monto">${formatCOP(saldoEsperadoEfectivo)}</strong> (esto es lo único que hay que contar físicamente — los demás medios ya son electrónicos).</p>
           <div class="form-grid" style="margin-top:0.75rem;">
             <label>Efectivo contado
               <input type="number" name="saldo_contado" step="1000" min="0" required />
@@ -482,7 +539,7 @@ async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglos
 
     const ok = await mostrarConfirmacion({
       titulo: 'Confirmar cierre de caja',
-      contenidoHTML: `Diferencia: <strong>${formatCOP(diferencia)}</strong>${diferencia !== 0 ? ' — revisa el conteo antes de confirmar.' : ''} ¿Cerrar la caja?`,
+      contenidoHTML: `Diferencia en efectivo: <strong>${formatCOP(diferencia)}</strong>${diferencia !== 0 ? ' — revisa el conteo antes de confirmar.' : ''} ¿Cerrar la caja?`,
       textoConfirmar: 'Cerrar caja',
     });
     if (!ok) return;
@@ -495,10 +552,11 @@ async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglos
         saldo_esperado: saldoEsperadoEfectivo,
         saldo_contado: saldoContado,
         diferencia,
-        total_ingresos_efectivo: desglose.ingresosEfectivo,
-        total_ingresos_digital: desglose.ingresosDigital,
-        total_egresos_efectivo: desglose.egresosEfectivo,
-        total_egresos_digital: desglose.egresosDigital,
+        total_ingresos_efectivo: efectivo.ingresos,
+        total_ingresos_digital: totalOtrosIngresos,
+        total_egresos_efectivo: efectivo.egresos,
+        total_egresos_digital: totalOtrosEgresos,
+        desglose_metodos: desglose,
         observaciones_cierre: form.get('observaciones_cierre').trim() || null,
         cerrado_por: usuario.id,
         cerrado_en: new Date().toISOString(),
