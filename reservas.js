@@ -34,6 +34,14 @@
 // Datáfono, Llave. Caja consolida cada uno como si fuera una cuenta
 // aparte (ver caja.js), así que agregar/quitar un método aquí también
 // cambia lo que se ve ahí.
+//
+// Nota sobre "Eliminar" una reserva: solo se puede borrar de verdad una
+// reserva que NO tenga abonos (reservas_pagos) ni check-in
+// (recepcion_checkins) vinculados — la base de datos lo bloquea a
+// propósito (error 23503, choque de llave foránea) para no perder
+// historial de pagos ni datos del huésped. Si la reserva ya tiene algo de
+// eso, lo correcto es cambiar su Estado a "Cancelada" en vez de
+// eliminarla; el formulario ya lo explica si el borrado falla por esto.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -338,7 +346,20 @@ async function abrirModalReserva(container, reserva, prellenado) {
       if (!ok) return;
       const { error } = await supabase.from('reservas').delete().eq('id', reserva.id);
       if (error) {
-        mostrarToast(`Error eliminando: ${error.message}`, 'error');
+        // Código 23503 = choque de llave foránea: esta reserva ya tiene
+        // abonos (reservas_pagos) y/o un check-in (recepcion_checkins)
+        // vinculados. La base de datos protege ese historial a propósito
+        // (no se puede borrar la reserva y dejar esos registros
+        // huérfanos). En ese caso, lo correcto es cambiar el campo Estado
+        // arriba a "Cancelada" en vez de eliminar.
+        if (error.code === '23503') {
+          mostrarToast(
+            'No se puede eliminar: esta reserva ya tiene abonos y/o un check-in registrado. Usa el campo "Estado" y cámbiala a "Cancelada" en vez de eliminarla.',
+            'error'
+          );
+        } else {
+          mostrarToast(`Error eliminando: ${error.message}`, 'error');
+        }
         return;
       }
       mostrarToast('Reserva eliminada.', 'exito');
