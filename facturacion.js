@@ -14,6 +14,10 @@
 // Estructura de datos plana a propósito para poder integrar más adelante
 // facturación electrónica DIAN (CUFE, resolución, etc.) sin romper nada de
 // lo que ya existe.
+//
+// Oculto temporalmente (roles: []) porque por ahora el hotel no factura —
+// ver nota de cabecera en placeholders.js. El código y los datos siguen
+// intactos; reactivar es solo devolverle su lista de roles.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -309,7 +313,7 @@ registerModule({
   id: 'facturacion',
   label: 'Facturación',
   icono: '🧾',
-  roles: ['propietario', 'administrador', 'contador'],
+  roles: [],
   parentId: 'grupo-finanzas',
   render,
 });
