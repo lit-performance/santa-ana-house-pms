@@ -4,9 +4,11 @@
 // el contador, por rango de fechas.
 //
 // Ingresos = pagos de reservas (reservas_pagos, habitación + minibar
-// liquidados) + movimientos manuales de ingreso en Caja (ventas varias,
-// etc.). No se duplica nada: reservas_pagos y caja_movimientos ya son
-// mutuamente excluyentes por diseño (ver caja.js).
+// liquidados) + ventas por mostrador (ventas_mostrador — clientes que no
+// se hospedan, ver caja.js) + movimientos manuales de ingreso en Caja
+// (ventas varias, etc.). No se duplica nada: reservas_pagos,
+// ventas_mostrador y caja_movimientos son mutuamente excluyentes por
+// diseño (ver caja.js).
 //
 // Egresos = movimientos manuales de egreso en Caja + el costo de las
 // órdenes de compra ya recibidas en el rango (ver compras.js). Todavía no
@@ -68,10 +70,11 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
   const desde = `${fechaInicio}T00:00:00`;
   const hasta = `${fechaFin}T23:59:59`;
 
-  const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: ordenes, error: errOrdenes }, { data: facturas, error: errFacturas }] =
+  const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: ventasMostrador, error: errVentas }, { data: ordenes, error: errOrdenes }, { data: facturas, error: errFacturas }] =
     await Promise.all([
       supabase.from('reservas_pagos').select('monto, fecha').gte('fecha', desde).lte('fecha', hasta),
       supabase.from('caja_movimientos').select('tipo, monto, creado_en').gte('creado_en', desde).lte('creado_en', hasta),
+      supabase.from('ventas_mostrador').select('monto, creado_en').gte('creado_en', desde).lte('creado_en', hasta),
       supabase
         .from('ordenes_compra')
         .select('id, fecha_recibido, ordenes_compra_items(cantidad, precio_costo_unitario)')
@@ -81,13 +84,14 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
       supabase.from('facturas').select('total').eq('estado', 'emitida').gte('fecha_emision', fechaInicio).lte('fecha_emision', fechaFin),
     ]);
 
-  const error = errPagos || errMov || errOrdenes || errFacturas;
+  const error = errPagos || errMov || errVentas || errOrdenes || errFacturas;
   if (error) {
     elemento.innerHTML = `<p class="mensaje-vacio">Error calculando el consolidado: ${error.message}</p>`;
     return;
   }
 
   const ingresosPagos = (pagos || []).reduce((acc, p) => acc + Number(p.monto), 0);
+  const ingresosMostrador = (ventasMostrador || []).reduce((acc, v) => acc + Number(v.monto), 0);
   const ingresosCaja = (movimientos || []).filter((m) => m.tipo === 'ingreso').reduce((acc, m) => acc + Number(m.monto), 0);
   const egresosCaja = (movimientos || []).filter((m) => m.tipo === 'egreso').reduce((acc, m) => acc + Number(m.monto), 0);
   const egresosCompras = (ordenes || []).reduce((acc, o) => {
@@ -96,7 +100,7 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
   }, 0);
   const totalFacturado = (facturas || []).reduce((acc, f) => acc + Number(f.total), 0);
 
-  const ingresosTotales = ingresosPagos + ingresosCaja;
+  const ingresosTotales = ingresosPagos + ingresosMostrador + ingresosCaja;
   const egresosTotales = egresosCaja + egresosCompras;
   const neto = ingresosTotales - egresosTotales;
 
@@ -127,6 +131,7 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
           <thead><tr><th>Concepto</th><th>Valor</th></tr></thead>
           <tbody>
             <tr><td>Ingresos por reservas (habitación + minibar liquidado)</td><td>${formatCOP(ingresosPagos)}</td></tr>
+            <tr><td>Ventas por mostrador</td><td>${formatCOP(ingresosMostrador)}</td></tr>
             <tr><td>Ingresos varios registrados en Caja</td><td>${formatCOP(ingresosCaja)}</td></tr>
             <tr><td><strong>Total ingresos</strong></td><td><strong>${formatCOP(ingresosTotales)}</strong></td></tr>
             <tr><td>Egresos registrados en Caja</td><td>${formatCOP(egresosCaja)}</td></tr>
@@ -148,6 +153,7 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
       ['Concepto', 'Valor'],
       ['Rango', `${fechaInicio} a ${fechaFin}`],
       ['Ingresos por reservas', ingresosPagos],
+      ['Ventas por mostrador', ingresosMostrador],
       ['Ingresos varios en Caja', ingresosCaja],
       ['Total ingresos', ingresosTotales],
       ['Egresos en Caja', egresosCaja],
