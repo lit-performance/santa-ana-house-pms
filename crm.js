@@ -8,6 +8,10 @@
 // Se apoya en la ficha de Huéspedes ya construida: una oportunidad puede
 // enlazarse a un huésped existente (por número de documento), pero también
 // admite contactos que todavía no son huéspedes (agencias, prospectos).
+//
+// Oculto temporalmente (roles: []) durante la capacitación del equipo —
+// ver nota de cabecera en placeholders.js. El código y los datos siguen
+// intactos; reactivar es solo devolverle su lista de roles.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -316,7 +320,7 @@ registerModule({
   id: 'crm',
   label: 'CRM',
   icono: '🤝',
-  roles: ['propietario', 'administrador'],
+  roles: [],
   parentId: 'grupo-administracion',
   render,
 });
