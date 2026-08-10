@@ -6,16 +6,28 @@
 //   solo muestra las subpestañas de ESE módulo, nunca las de otro. Si una
 //   sección no tiene subpestañas propias, esta fila se oculta.
 //
-// Nota: el módulo principal (el grupo en sí, ej. "Administración") YA NO
-// aparece como una subpestaña más — antes salía duplicado ("Administración"
-// como pestaña Y como primera subpestaña de sí misma) y su contenido
-// propio era solo un resumen genérico que quedaba obsoleto en cuanto sus
-// hijos se terminaban de construir. Ahora, al entrar a un grupo, se
-// renderiza directo la PRIMERA subpestaña real (ej. entrar a
-// "Administración" muestra "Usuarios" de una), y la fila de subpestañas
-// solo lista los módulos reales. Los grupos sin subpestañas para el rol
-// actual (ej. Recepción, Reservas, Caja) siguen funcionando igual que
-// siempre: se renderizan a sí mismos y no muestran fila de subpestañas.
+// Nota: el módulo principal de un GRUPO GENÉRICO (ej. "Administración",
+// "Inventario", "Análisis" — los definidos con vistaGrupo() en
+// placeholders.js) YA NO aparece como una subpestaña más ni se muestra su
+// resumen genérico — antes salía duplicado ("Administración" como pestaña
+// Y como primera subpestaña de sí misma) y su contenido propio era solo
+// un resumen genérico que quedaba obsoleto en cuanto sus hijos se
+// terminaban de construir. Ahora, al entrar a un grupo genérico, se
+// renderiza directo la PRIMERA subpestaña real (ej. entrar a "Análisis"
+// muestra "Indicadores" de una).
+//
+// IMPORTANTE — esto NO aplica a módulos con contenido propio real (ej.
+// "Configuración", cuyo módulo principal es la tabla de Habitaciones, no
+// un resumen genérico): esos se distinguen con la propiedad
+// `esGrupoGenerico: true` en su registerModule() (ver placeholders.js).
+// Si un módulo no trae esa propiedad, aunque tenga subpestañas, se
+// renderiza SIEMPRE su propio contenido al entrar por la pestaña
+// principal — las subpestañas quedan disponibles abajo para navegar a
+// ellas, pero no reemplazan la pantalla principal del módulo.
+//
+// Los grupos sin subpestañas para el rol actual (ej. Recepción, Reservas,
+// Caja) siguen funcionando igual que siempre: se renderizan a sí mismos y
+// no muestran fila de subpestañas.
 
 import { getModulesForRole, getSubModulesForRole } from './modules-registry.js';
 import { renderModulo } from './router.js';
@@ -49,10 +61,11 @@ export function initTabs({ rol, nombreUsuario, onLogout }) {
 
 function seleccionarSeccion(modulo) {
   const subs = getSubModulesForRole(modulo.id, rolActual);
-  // Si el grupo tiene subpestañas reales para este rol, se entra directo a
-  // la primera (ver nota de cabecera) — si no tiene ninguna, se renderiza
-  // el propio módulo como siempre (caso de Recepción, Reservas, Caja, etc).
-  const moduloParaMostrar = subs.length > 0 ? subs[0] : modulo;
+  // Solo los grupos genéricos (vistaGrupo, ver nota de cabecera) saltan
+  // directo a su primera subpestaña real. Un módulo con contenido propio
+  // (ej. Configuración) siempre muestra su propio contenido aquí, aunque
+  // tenga subpestañas.
+  const moduloParaMostrar = modulo.esGrupoGenerico && subs.length > 0 ? subs[0] : modulo;
   renderModulo(moduloParaMostrar.id, rolActual);
   marcarActivoEnFila(navPrincipal, modulo.id);
   pintarSubNav(modulo, moduloParaMostrar.id);
