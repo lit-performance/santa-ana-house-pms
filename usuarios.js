@@ -28,6 +28,10 @@
 // de forma segura desde aquí (mismo motivo: requiere service_role). Para
 // eso, usa el correo de recuperación de contraseña (ya configurado) o el
 // truco de SQL Editor con crypt()/gen_salt('bf') sobre auth.users.
+//
+// Nota de reorganización: este módulo ahora es subpestaña de
+// Configuración (antes vivía en la pestaña "Administración", que quedó
+// oculta durante la capacitación — ver placeholders.js).
 
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { registerModule } from './modules-registry.js';
@@ -226,6 +230,6 @@ registerModule({
   label: 'Usuarios',
   icono: '👤',
   roles: ['propietario', 'administrador'],
-  parentId: 'grupo-administracion',
+  parentId: 'configuracion',
   render,
 });
