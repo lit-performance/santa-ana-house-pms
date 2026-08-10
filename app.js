@@ -23,6 +23,15 @@
 // puso después de Indicadores/Reportes/Estadísticas a propósito, para que
 // Análisis abra por defecto en Indicadores y no en el listado de huéspedes.
 //
+// Nota: 'auditoria.js' se importa justo después de 'contabilidad.js' —
+// ambos son subpestañas de Análisis orientadas al dinero, y como
+// 'indicadores.js' sigue siendo el primer módulo de Análisis importado,
+// Análisis se sigue abriendo por defecto en Indicadores.
+//
+// Nota: 'usuarios.js' se movió de la antigua "Administración" a
+// subpestaña de Configuración (ver usuarios.js) — por eso ahora se
+// importa junto al bloque de Configuración, no junto a Inventario.
+//
 // Nota: 'config-habitaciones.js' (+ config-tipos.js + config-tarifas.js,
 // que son sus subpestañas) se importan AL FINAL a propósito, después de
 // 'placeholders.js' — así "Configuración" queda como la última pestaña
@@ -41,10 +50,10 @@ import './indicadores.js';
 import './minibar.js';
 import './inventario.js';
 import './proveedores.js';
-import './usuarios.js';
 import './compras.js';
 import './facturacion.js';
 import './contabilidad.js';
+import './auditoria.js';
 import './reportes.js';
 import './estadisticas.js';
 import './huespedes.js';
@@ -56,6 +65,7 @@ import './crm.js';
 import './placeholders.js';
 
 // Configuración va al final del todo (ver nota arriba).
+import './usuarios.js';
 import './config-habitaciones.js';
 import './config-tipos.js';
 import './config-tarifas.js';
