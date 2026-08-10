@@ -180,6 +180,6 @@ registerModule({
   label: 'Contabilidad',
   icono: '📊',
   roles: ['propietario', 'administrador', 'contador'],
-  parentId: 'grupo-finanzas',
+  parentId: 'grupo-analisis',
   render,
 });
