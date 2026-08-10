@@ -131,7 +131,7 @@ function calcularDesglosePorMetodo(pagos, movimientos, ventasMostrador) {
 
 // --- Saldos por cuenta: acumulado de TODO el tiempo, no solo el turno
 // abierto — reservas_pagos + caja_movimientos + caja_transferencias. ---
-async function calcularSaldosPorCuenta() {
+export async function calcularSaldosPorCuenta() {
   const [
     { data: pagos, error: errPagos },
     { data: movimientos, error: errMov },
