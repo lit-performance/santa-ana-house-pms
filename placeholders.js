@@ -7,29 +7,40 @@
 // propio archivo dedicado (housekeeping.js, caja.js, indicadores.js,
 // minibar.js, inventario.js, proveedores.js, usuarios.js, compras.js,
 // facturacion.js, contabilidad.js, reportes.js, estadisticas.js, crm.js,
-// etc.), igual que los módulos que ya están listos (Dashboard,
-// Configuración, Reservas, Recepción, Huéspedes, Housekeeping, Caja,
-// Indicadores, Minibar, Inventario, Proveedores, Usuarios, Compras,
-// Facturación, Contabilidad, Reportes, Estadísticas, CRM).
+// auditoria.js, etc.), igual que los módulos que ya están listos.
 //
-// Los módulos pendientes que no se usan a diario están agrupados en 4
-// pestañas contenedoras (Inventario, Finanzas, Análisis, Administración)
-// usando el mismo mecanismo parentId que ya usa Configuración con sus
-// subpestañas — así el menú principal no crece sin control. Housekeeping y
-// Caja ya tienen su propio archivo y quedan sueltas arriba porque el staff
-// las usa todos los días. Indicadores, Minibar, Inventario, Proveedores,
-// Usuarios, Compras, Facturación, Contabilidad, Reportes, Estadísticas,
-// Huéspedes y CRM también tienen su propio archivo, pero siguen viviendo
-// como subpestañas de "Análisis", "Inventario", "Finanzas" y
-// "Administración" respectivamente.
+// Los módulos pendientes que no se usan a diario están agrupados en 3
+// pestañas contenedoras (Inventario, Análisis, Administración) usando el
+// mismo mecanismo parentId que ya usa Configuración con sus subpestañas
+// — así el menú principal no crece sin control. Housekeeping y Caja ya
+// tienen su propio archivo y quedan sueltas arriba porque el staff las
+// usa todos los días.
 //
-// Nota sobre el render de cada grupo (vistaGrupo): ya NO se usa como
-// contenido por defecto al entrar al grupo (ver ui.js — ahora se entra
-// directo a la primera subpestaña real), pero se deja registrado por si
-// alguna vez se necesita un resumen del grupo; hoy no es alcanzable desde
-// la navegación normal.
+// Nota sobre `esGrupoGenerico: true`: marca a estos 3 grupos como
+// "contenedores sin contenido propio" (su render es el resumen genérico
+// vistaGrupo de abajo) — es lo que le dice a ui.js que, al entrar por la
+// pestaña principal, debe saltar directo a la primera subpestaña real en
+// vez de mostrar el resumen genérico. Un módulo con contenido propio de
+// verdad (como Configuración) NO debe llevar esta propiedad — ver la
+// nota en ui.js.
 //
-// No tocan la base de datos — son solo vista, sin tablas ni RLS propias.
+// Cambios de reorganización (capacitación / demo al cliente):
+//   - "Finanzas" se eliminó como pestaña: Facturación queda oculta (no se
+//     va a facturar por ahora) y Contabilidad se movió como subpestaña de
+//     Análisis (ver contabilidad.js).
+//   - "Administración" queda oculta (roles: []) — sus únicos módulos
+//     reales que seguían activos (IA, Mantenimiento, CRM) se ocultaron
+//     también, y Usuarios/Documentos se movieron como subpestañas de
+//     Configuración. Se deja registrada (no se borra) para poder
+//     reactivarla fácil si se necesita más adelante.
+//   - IA, Mantenimiento, CRM, Gastos y Facturación quedan ocultos con
+//     `roles: []` (nadie los ve, pero el código/los datos siguen intactos
+//     — reversible con solo devolverles roles).
+//   - Auditoría ya no es un placeholder: se construyó de verdad (ver
+//     auditoria.js), así que se quitó de MODULOS_PENDIENTES.
+//
+// No tocan la base de datos — son solo vista, sin tablas ni RLS propias
+// (excepto lo que ya haya hecho el módulo real correspondiente).
 
 import { registerModule } from './modules-registry.js';
 
@@ -78,6 +89,7 @@ const GRUPOS = [
     label: 'Inventario',
     icono: '📦',
     roles: ['propietario', 'administrador', 'recepcionista', 'bodega', 'contador'],
+    esGrupoGenerico: true,
     titulo: 'Inventario',
     descripcion: 'Minibar, existencias en bodega y por habitación, órdenes de compra y el directorio de proveedores del hotel.',
     hijos: [
@@ -88,47 +100,37 @@ const GRUPOS = [
     ],
   },
   {
-    id: 'grupo-finanzas',
-    label: 'Finanzas',
-    icono: '🏦',
-    roles: ['propietario', 'administrador', 'contador'],
-    titulo: 'Finanzas',
-    descripcion: 'Facturación, contabilidad y gastos operativos. Caja queda aparte porque Recepción la usa todos los días.',
-    hijos: [
-      { icono: '🧾', label: 'Facturación', resumen: 'Documento equivalente por estadía, generado desde el check-out, con impuesto editable por factura.' },
-      { icono: '📊', label: 'Contabilidad', resumen: 'Consolidado de ingresos y egresos por rango de fechas, exportable a CSV para el contador.' },
-      { icono: '💸', label: 'Gastos', resumen: 'Registro y categorización de gastos operativos.' },
-    ],
-  },
-  {
     id: 'grupo-analisis',
     label: 'Análisis',
     icono: '📈',
     // 'recepcionista' se agregó para que siga viendo Huéspedes (el resto
-    // de subpestañas de este grupo — Reportes, Indicadores, Estadísticas,
-    // Auditoría — tienen su propio rol y no incluyen recepcionista, así
-    // que a ella solo le aparece Huéspedes dentro de Análisis).
-    roles: ['propietario', 'administrador', 'auditor', 'recepcionista'],
+    // de subpestañas de este grupo tienen su propio rol y no incluyen
+    // recepcionista, así que a ella solo le aparece Huéspedes aquí).
+    roles: ['propietario', 'administrador', 'auditor', 'recepcionista', 'contador'],
+    esGrupoGenerico: true,
     titulo: 'Análisis',
-    descripcion: 'Huéspedes, reportes, indicadores, estadísticas históricas y auditoría del sistema.',
+    descripcion: 'Huéspedes, reportes, indicadores, contabilidad, estadísticas históricas y auditoría del sistema.',
     hijos: [
       { icono: '🧳', label: 'Huéspedes', resumen: 'Ficha por huésped con historial de estadías, preferencias, alergias y observaciones.' },
       { icono: '📈', label: 'Reportes', resumen: 'Listados de Reservas, Ocupación por habitación y Huéspedes, exportables a CSV/Excel.' },
       { icono: '📌', label: 'Indicadores', resumen: 'Ocupación, ingresos efectivo/digital y comparativos por período.' },
+      { icono: '📊', label: 'Contabilidad', resumen: 'Consolidado de ingresos y egresos por rango de fechas, exportable a CSV para el contador.' },
       { icono: '📉', label: 'Estadísticas', resumen: 'Tendencias mensuales de ingresos y ocupación, más ranking de habitaciones más rentables.' },
-      { icono: '🔍', label: 'Auditoría', resumen: 'Bitácora de quién hizo qué y cuándo.' },
+      { icono: '🔍', label: 'Auditoría', resumen: 'Bitácora de aperturas/cierres de caja, movimientos, transferencias, ventas de mostrador y pagos — con quién y cuándo.' },
     ],
   },
   {
     id: 'grupo-administracion',
     label: 'Administración',
     icono: '⚙️',
-    roles: ['propietario', 'administrador', 'housekeeping'],
+    // Oculta temporalmente (ver nota de cabecera): sus módulos reales
+    // (IA, Mantenimiento, CRM) están ocultos y Usuarios/Documentos se
+    // movieron a Configuración, así que hoy no tendría nada que mostrar.
+    roles: [],
+    esGrupoGenerico: true,
     titulo: 'Administración',
-    descripcion: 'Usuarios, documentos legales, mantenimiento, CRM e inteligencia artificial.',
+    descripcion: 'Mantenimiento, CRM e inteligencia artificial.',
     hijos: [
-      { icono: '👤', label: 'Usuarios', resumen: 'Alta/baja de cuentas del staff y su rol, desde la app.' },
-      { icono: '📁', label: 'Documentos', resumen: 'RNT, pólizas, contratos, permisos.' },
       { icono: '🔧', label: 'Mantenimiento', resumen: 'Órdenes de mantenimiento preventivo y correctivo.' },
       { icono: '🤝', label: 'CRM', resumen: 'Oportunidades comerciales con etapa, valor estimado, próximo seguimiento y bitácora de interacciones.' },
       { icono: '🤖', label: 'IA', resumen: 'Recomendaciones y automatización de tareas repetitivas.' },
@@ -142,22 +144,21 @@ GRUPOS.forEach((grupo) => {
     label: grupo.label,
     icono: grupo.icono,
     roles: grupo.roles,
+    esGrupoGenerico: grupo.esGrupoGenerico,
     render: vistaGrupo(grupo),
   });
 });
 
-// --- Módulos "próximamente" (Caja, Indicadores, Minibar, Inventario,
-// Proveedores, Usuarios, Compras, Facturación, Contabilidad, Reportes,
-// Estadísticas, Huéspedes y CRM ya se construyeron — ver caja.js,
-// indicadores.js, minibar.js, inventario.js, proveedores.js, usuarios.js,
-// compras.js, facturacion.js, contabilidad.js, reportes.js,
-// estadisticas.js, huespedes.js y crm.js) ---
+// --- Módulos "próximamente" ---
+// IA, Mantenimiento y Gastos quedan con roles: [] (ocultos temporalmente,
+// ver nota de cabecera) en vez de borrarse — así es trivial reactivarlos
+// más adelante devolviéndoles su lista de roles.
 const MODULOS_PENDIENTES = [
   {
     id: 'gastos',
     label: 'Gastos',
     icono: '💸',
-    roles: ['propietario', 'administrador', 'contador'],
+    roles: [],
     parentId: 'grupo-finanzas',
     titulo: 'Gastos',
     descripcion: 'Registro de los gastos operativos del hotel, categorizados para reportes y contabilidad.',
@@ -168,23 +169,10 @@ const MODULOS_PENDIENTES = [
     ],
   },
   {
-    id: 'auditoria',
-    label: 'Auditoría',
-    icono: '🔍',
-    roles: ['propietario', 'administrador', 'auditor'],
-    parentId: 'grupo-analisis',
-    titulo: 'Auditoría',
-    descripcion: 'Registro de quién hizo qué y cuándo sobre las acciones sensibles del sistema (cambios de estado, ediciones, eliminaciones).',
-    features: [
-      'Bitácora de acciones por usuario',
-      'Filtro por módulo, usuario y fecha',
-    ],
-  },
-  {
     id: 'mantenimiento',
     label: 'Mantenimiento',
     icono: '🔧',
-    roles: ['propietario', 'administrador', 'housekeeping'],
+    roles: [],
     parentId: 'grupo-administracion',
     titulo: 'Mantenimiento',
     descripcion: 'Órdenes de mantenimiento preventivo y correctivo por habitación o área común.',
@@ -198,7 +186,7 @@ const MODULOS_PENDIENTES = [
     label: 'Documentos',
     icono: '📁',
     roles: ['propietario', 'administrador'],
-    parentId: 'grupo-administracion',
+    parentId: 'configuracion',
     titulo: 'Documentos',
     descripcion: 'Almacenamiento de documentos legales y operativos del hotel.',
     features: [
@@ -210,7 +198,7 @@ const MODULOS_PENDIENTES = [
     id: 'ia',
     label: 'IA',
     icono: '🤖',
-    roles: ['propietario', 'administrador'],
+    roles: [],
     parentId: 'grupo-administracion',
     titulo: 'Inteligencia Artificial',
     descripcion: 'Asistente para recomendaciones y automatización de tareas repetitivas dentro del sistema.',
