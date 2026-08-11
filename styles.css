@@ -566,6 +566,16 @@ h3 {
 
 .grid-tres-columnas .stat-card { margin-bottom: 0; height: 100%; }
 
+/* Sin esto, una tabla ancha adentro de una columna de grid puede forzar
+   esa columna a crecer más allá del ancho disponible (comportamiento por
+   defecto de CSS grid: min-width:auto en los hijos) — eso es lo que
+   causaba el espacio muerto a la izquierda y la barra de desplazamiento
+   horizontal en pantallas de dos/tres columnas. Con min-width:0 la
+   columna se ajusta al ancho real de la pantalla, y cualquier tabla
+   ancha adentro usa su propio scroll (.tabla-scroll) en vez de estirar
+   toda la página. */
+.grid-tres-columnas > * { min-width: 0; }
+
 .grid-dos-columnas {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -573,6 +583,8 @@ h3 {
   align-items: start;
   margin-bottom: 1.25rem;
 }
+
+.grid-dos-columnas > * { min-width: 0; }
 
 @media (max-width: 768px) {
   .grid-dos-columnas { grid-template-columns: 1fr; }
