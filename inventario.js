@@ -11,31 +11,39 @@
 // Toda entrada/salida de stock queda registrada en inventario_movimientos
 // para trazabilidad.
 //
-// Nota sobre "🔴 Pendientes de reponer en minibares" (nueva, punto 12 de
-// la lista de capacitación): antes, para saber qué le faltaba a cada
-// habitación había que abrir "Inventario por habitación" y revisarlas una
-// por una. Esta sección nueva compara TODAS las habitaciones contra el
-// catálogo completo de productos con cantidad estándar definida — no solo
-// lo que ya tenga fila en inventario_habitacion, así una habitación que
-// nunca se ha inventariado también aparece con su pendiente completo — y
-// arma una sola tabla con habitación + producto + cuánto falta, con un
-// botón "Reponer ahora" que hace el traslado bodega → habitación al
-// instante (reutiliza la misma lógica de "Reabastecer habitación" de
-// abajo, incluida la advertencia si en bodega no alcanza).
+// Nota sobre "🔴 Pendientes de reponer en minibares": compara TODAS las
+// habitaciones contra el catálogo completo de productos con cantidad
+// estándar definida — no solo lo que ya tenga fila en
+// inventario_habitacion, así una habitación que nunca se ha inventariado
+// también aparece con su pendiente completo — y arma una sola tabla con
+// habitación + producto + cuánto falta.
 //
-// Nota sobre "📤 Reposiciones de hoy" (nueva, también punto 12): resumen
-// del día de todo lo que salió de la bodega principal hacia los minibares
-// de las habitaciones (inventario_movimientos con tipo
-// 'reabastecimiento', filtrado a hoy), con un total por producto y el
-// detalle de qué fue a cada habitación — para el cierre del día, sin tener
-// que rebuscar en "Movimientos recientes" (que mezcla todos los tipos y
-// solo trae los últimos 25).
+// Nota sobre "⬇ Excel" y "✅ Reponer todo" en Pendientes de reponer
+// (nuevas): "⬇ Excel" exporta la tabla completa a un CSV (habitación,
+// producto, actual, estándar, falta) para que quien va a hacer la
+// reposición física la lleve impresa y no tenga que ir mirando la
+// pantalla habitación por habitación. "✅ Reponer todo" hace el traslado
+// bodega → habitación de TODOS los pendientes de la lista de una sola
+// vez (después de confirmar cuántas unidades/habitaciones va a mover) —
+// pensado para usarse DESPUÉS de hacer la reposición física real, para
+// que el sistema quede al día con un solo clic en vez de una por una. Si
+// a algún producto no le alcanza el stock de bodega, ese ítem se repone
+// parcial (lo que haya disponible) y al final se avisa cuáles quedaron
+// incompletos, sin interrumpir el resto del proceso con una ventana de
+// confirmación por cada uno.
+//
+// Nota sobre "📤 Reposiciones de hoy": resumen del día de todo lo que
+// salió de la bodega principal hacia los minibares de las habitaciones
+// (inventario_movimientos con tipo 'reabastecimiento', filtrado a hoy),
+// con un total por producto y el detalle de qué fue a cada habitación —
+// para el cierre del día, sin tener que rebuscar en "Movimientos
+// recientes" (que mezcla todos los tipos y solo trae los últimos 25).
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
-import { formatFechaHora } from './dates.js';
+import { formatFechaHora, toISODate } from './dates.js';
 import { getUsuarioActual } from './auth.js';
 
 const ROLES_GESTIONAN = ['propietario', 'administrador', 'bodega'];
@@ -49,6 +57,19 @@ function escaparHTML(texto) {
   const div = document.createElement('div');
   div.textContent = texto || '';
   return div.innerHTML;
+}
+
+function descargarCSV(nombreArchivo, filas) {
+  const csv = filas.map((fila) => fila.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const enlace = document.createElement('a');
+  enlace.href = url;
+  enlace.download = nombreArchivo;
+  document.body.appendChild(enlace);
+  enlace.click();
+  enlace.remove();
+  URL.revokeObjectURL(url);
 }
 
 async function render(container) {
@@ -342,6 +363,37 @@ async function ejecutarReabastecimiento(habitacionId, productoId, cantidad) {
   return true;
 }
 
+// Traslado bodega → habitación SIN preguntar por confirmación cuando el
+// stock no alcanza — en vez de eso, traslada lo que haya disponible (o
+// nada, si no hay) y deja que quien llamó a esta función decida cómo
+// avisar. Se usa desde "Reponer todo" para no interrumpir con una
+// ventana de confirmación por cada producto pendiente.
+async function trasladarSinConfirmar(habitacionId, productoId, cantidadDeseada) {
+  const usuario = getUsuarioActual();
+
+  const { data: filaBodega, error } = await supabase
+    .from('inventario_bodega')
+    .select('id, cantidad_actual')
+    .eq('producto_id', productoId)
+    .maybeSingle();
+  if (error) return { trasladado: 0 };
+
+  const stockBodega = filaBodega?.cantidad_actual || 0;
+  const aTrasladar = Math.min(cantidadDeseada, stockBodega);
+  if (aTrasladar <= 0) return { trasladado: 0 };
+
+  if (filaBodega) {
+    await supabase
+      .from('inventario_bodega')
+      .update({ cantidad_actual: stockBodega - aTrasladar, actualizado_en: new Date().toISOString() })
+      .eq('id', filaBodega.id);
+  }
+
+  await ajustarInventarioHabitacion(habitacionId, productoId, aTrasladar, usuario?.id || null, 'reabastecimiento');
+
+  return { trasladado: aTrasladar };
+}
+
 // Refresca todas las secciones que dependen del stock (bodega, pendientes
 // de reponer, inventario por habitación, reposiciones de hoy y el log de
 // movimientos) después de cualquier traslado bodega → habitación.
@@ -456,7 +508,7 @@ export async function ajustarInventarioHabitacion(habitacionId, productoId, delt
 
 // =========================================================
 // Pendientes de reponer — vista consolidada de TODAS las habitaciones
-// (ver nota al inicio del archivo).
+// (ver nota al inicio del archivo), con exportar a Excel y "Reponer todo".
 // =========================================================
 async function cargarPendientesReponer(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Calculando pendientes de reponer…</p>';
@@ -503,9 +555,13 @@ async function cargarPendientesReponer(elemento) {
 
   elemento.innerHTML = `
     <div class="tarjeta" style="${pendientes.length > 0 ? 'border:1.5px solid #f0a8a0; background:var(--color-alerta-fondo, #fdecea);' : ''}">
-      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.25rem;">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.25rem; flex-wrap:wrap;">
         <h3 style="margin:0;">🔴 Pendientes de reponer en minibares</h3>
-        ${pendientes.length > 0 ? `<span class="stat-card-valor" style="font-size:1.3rem; color:var(--color-rojo-oscuro);">${totalUnidadesFaltantes} unidad(es)</span>` : ''}
+        <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+          ${pendientes.length > 0 ? `<span class="stat-card-valor" style="font-size:1.3rem; color:var(--color-rojo-oscuro);">${totalUnidadesFaltantes} unidad(es)</span>` : ''}
+          ${pendientes.length > 0 ? '<button type="button" id="btn-exportar-pendientes" class="btn btn-secundario btn-chico">⬇ Excel</button>' : ''}
+          ${permitido && pendientes.length > 0 ? '<button type="button" id="btn-reponer-todo" class="btn btn-primario btn-chico">✅ Reponer todo</button>' : ''}
+        </div>
       </div>
       <p class="mensaje-vacio" style="margin-top:-0.2rem;">Compara el stock actual de cada habitación contra su cantidad estándar de minibar — incluye habitaciones que todavía no se han inventariado. ${pendientes.length > 0 ? `Afecta a ${habitacionesConFaltantes} habitación(es).` : ''}</p>
       ${
@@ -545,6 +601,21 @@ async function cargarPendientesReponer(elemento) {
     </div>
   `;
 
+  const btnExportar = elemento.querySelector('#btn-exportar-pendientes');
+  if (btnExportar) {
+    btnExportar.addEventListener('click', () => {
+      descargarCSV(`pendientes_reponer_${toISODate(new Date())}.csv`, [
+        ['Pendientes de reponer en minibares — Santa Ana House 21'],
+        ['Generado', formatFechaHora(new Date().toISOString())],
+        ['Total unidades faltantes', totalUnidadesFaltantes],
+        ['Habitaciones afectadas', habitacionesConFaltantes],
+        [],
+        ['Habitación', 'Producto', 'Categoría', 'Actual', 'Estándar', 'Falta'],
+        ...pendientes.map((x) => [x.habitacionLabel, x.productoNombre, x.categoria, x.actual, x.estandar, x.falta]),
+      ]);
+    });
+  }
+
   if (!permitido) return;
 
   elemento.querySelectorAll('.btn-reponer-ahora').forEach((btn) => {
@@ -557,6 +628,43 @@ async function cargarPendientesReponer(elemento) {
       if (ok) await refrescarTrasReabastecer();
     });
   });
+
+  const btnReponerTodo = elemento.querySelector('#btn-reponer-todo');
+  if (btnReponerTodo) {
+    btnReponerTodo.addEventListener('click', async () => {
+      const ok = await mostrarConfirmacion({
+        titulo: 'Reponer todo',
+        contenidoHTML: `Vas a trasladar de bodega a habitación <strong>${totalUnidadesFaltantes} unidad(es)</strong> repartidas en <strong>${habitacionesConFaltantes} habitación(es)</strong>, cubriendo todos los pendientes de la lista. Usa esto después de haber hecho la reposición física — ¿confirmas que ya se hizo y quieres actualizar el sistema?`,
+        textoConfirmar: 'Sí, reponer todo',
+      });
+      if (!ok) return;
+
+      btnReponerTodo.disabled = true;
+      btnReponerTodo.textContent = 'Reponiendo…';
+
+      let totalTrasladado = 0;
+      const incompletos = [];
+
+      for (const item of pendientes) {
+        const resultado = await trasladarSinConfirmar(item.habitacionId, item.productoId, item.falta);
+        totalTrasladado += resultado.trasladado;
+        if (resultado.trasladado < item.falta) {
+          incompletos.push(`${item.productoNombre} (${item.habitacionLabel}): faltó ${item.falta - resultado.trasladado}`);
+        }
+      }
+
+      if (incompletos.length > 0) {
+        mostrarToast(
+          `Se repusieron ${totalTrasladado} unidad(es). Sin stock suficiente en bodega para: ${incompletos.slice(0, 5).join('; ')}${incompletos.length > 5 ? '…' : ''}`,
+          'error'
+        );
+      } else {
+        mostrarToast(`Reposición completa: ${totalTrasladado} unidad(es) trasladadas a los minibares.`, 'exito');
+      }
+
+      await refrescarTrasReabastecer();
+    });
+  }
 }
 
 // =========================================================
