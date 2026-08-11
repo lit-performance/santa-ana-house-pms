@@ -4,6 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Santa Ana House 21</title>
+  <!-- Favicon explícito: sin esto, el navegador igual pide /favicon.ico
+       pero en la RAÍZ del dominio (lit-performance.github.io), no en la
+       carpeta del repo — por eso siempre daba 404 aunque subiéramos un
+       favicon.ico aquí. Apuntar directo al logo.png que ya existe evita
+       esa petición fallida. -->
+  <link rel="icon" href="logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
