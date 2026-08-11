@@ -1,36 +1,46 @@
 // caja.js
 //
-// Módulo: "Registro diario de ventas" (antes "Caja", el id interno y el
-// nombre del archivo se quedan igual para no romper nada). Apertura y
-// cierre de turno de caja con arqueo, registro de movimientos manuales
-// (ingresos/egresos) y ventas por mostrador del turno abierto, saldos por
-// cuenta (medio de pago) acumulados de todo el tiempo, transferencias
-// entre cuentas, y exportables (Excel/PDF) para auditoría del propietario.
+// Módulo: "Registro diario" (antes "Registro diario de ventas" — se
+// acortó el nombre visible; el id interno y el nombre del archivo se
+// quedan igual para no romper nada).
 //
-// Pensada para ser LA pestaña de mayor uso del día (junto con Recepción):
-// arriba de todo va el pulso del día (resumen de ventas + estado de caja),
-// luego lo que falta por cobrar (huéspedes alojados), luego el turno en
-// curso con las ventas de mostrador — clientes que compran algo del
-// inventario sin hospedarse, no vale la pena crearles ficha de huésped —
-// y al final lo que se consulta con menos frecuencia (saldos por cuenta,
-// minibar informativo, historial de cierres).
+// REDISEÑO IMPORTANTE — ya NO hay apertura/cierre manual de caja ni
+// conteo de efectivo por denominación. El hotel lo atiende una sola
+// persona, así que el "cambio de turno" (entrega de caja de un
+// recepcionista a otro) no aplica — pedir contar billete por billete cada
+// vez era innecesariamente complejo para ese caso de uso.
 //
-// Se investigó cómo lo resuelven otros PMS de hotel (night audit / entrega
-// de turno entre recepcionistas) para que esta pantalla sea coherente con
-// esa práctica:
-//   - El arqueo de un turno solo pide contar EFECTIVO físico (los demás
-//     medios son electrónicos, su saldo ya lo dice el sistema).
-//   - El conteo se hace por denominación (billetes + monedas), no un solo
-//     número — es el error más común en cierres de caja mal hechos.
-//   - Si el conteo no cuadra con lo esperado, hay que explicar por qué
-//     (campo obligatorio en ese caso).
-//   - La base inicial de un turno nuevo se sugiere sola con lo que quedó
-//     contado en el cierre anterior (continuidad entre turnos).
-//   - Queda registrado (con nombre, no solo un ID interno) quién abrió y
-//     quién cerró cada turno — es la bitácora de entrega de turno.
-//   - Todo cierre se puede descargar (Excel/PDF) con el detalle completo,
-//     no solo los totales, para que el propietario audite sin tener que
-//     pedir explicaciones.
+// En su lugar, TODO en esta pantalla está organizado por DÍA CALENDARIO
+// (hoy, ayer, antier…), no por turno: apenas cambia la fecha (a
+// medianoche), "hoy" pasa a ser el día siguiente solo, porque cada
+// consulta filtra por fecha — no hace falta que nadie presione un botón
+// de "cerrar" para que el día quede liquidado. El dinero recibido y
+// pagado de cada día queda siempre disponible completo en "Historial por
+// día" (más abajo), se haya abierto la app ese día o no. Puede haber
+// huéspedes hospedados en ese momento sin ningún problema: lo que se
+// liquida por día es el DINERO que entró y salió, no la ocupación de las
+// habitaciones (eso lo sigue mostrando "Huéspedes alojados", en vivo).
+//
+// Por dentro, cada movimiento (venta de mostrador, movimiento manual,
+// gasto) SIGUE guardándose ligado a un `caja_turnos` (turno_id), por
+// compatibilidad con los datos históricos y porque así lo exige la base
+// de datos — pero eso ahora lo administra el sistema solo, de forma
+// invisible (ver `obtenerOCrearTurnoDeHoy` más abajo): si ya hay un turno
+// abierto de HOY lo reutiliza, si el que estaba abierto quedó de un día
+// anterior lo cierra solo (sin pedir contar efectivo) y abre uno nuevo, y
+// si no hay ninguno simplemente crea uno. Nadie tiene que pensar en
+// "turnos" nunca más.
+//
+// Diseño en DOS COLUMNAS para que la pantalla no quede tan larga:
+//   - Columna izquierda ("Operación de hoy"): lo que se usa y se toca
+//     constantemente durante el día — huéspedes alojados, ventas de
+//     mostrador, movimientos manuales, ingresos por reservas.
+//   - Columna derecha ("Información y consulta"): lo que se revisa con
+//     menos frecuencia — desglose por medio de pago, saldos acumulados
+//     por cuenta + transferencias, consumo de minibar del día, y el
+//     historial por día (con exportables).
+// Dentro de cada columna, lo más urgente/operativo va arriba y lo
+// meramente informativo va abajo.
 //
 // Los abonos de reservas (reservas_pagos, ya registrados desde Reservas y
 // Recepción, incluyendo los pagos de liquidación al check-out) NO se
@@ -42,26 +52,17 @@
 // Transferencia Bancaria, Datáfono, Llave — ver METODOS_PAGO) se consolida
 // como si fuera una cuenta aparte.
 //
-//   - "Desglose por medio de pago" (dentro de un turno abierto) es del
-//     TURNO actual: cuánto entró/salió por cada medio desde que se abrió.
-//   - "Saldos por cuenta" (siempre visible, con o sin turno abierto) es de
-//     TODO el tiempo: el saldo acumulado histórico de cada medio, sumando
-//     reservas_pagos + caja_movimientos + caja_transferencias — ver
-//     `calcularSaldosPorCuenta`. Es lo que permite, por ejemplo, ver que
-//     Nequi acumuló $800.000 sin retirar y transferirlos (registrar el
-//     movimiento) hacia Efectivo o hacia la cuenta bancaria del negocio.
+//   - "Desglose por medio de pago — hoy" es del día calendario de hoy.
+//   - "Saldos por cuenta" (siempre visible) es de TODO el tiempo: el saldo
+//     acumulado histórico de cada medio, sumando reservas_pagos +
+//     caja_movimientos + caja_transferencias — ver `calcularSaldosPorCuenta`.
+//     Sigue incluyendo el ajuste de los cierres reales que ya existían
+//     antes de este rediseño (los últimos conteos físicos de efectivo
+//     quedan como base para siempre, aunque ya no se vuelva a contar).
 //
-// Transferencias entre cuentas (caja_transferencias, ver
-// 041_caja_transferencias.sql): mueven saldo de una cuenta a otra sin que
-// cuente como ingreso/egreso real del negocio (por eso no viven en
-// caja_movimientos). Son independientes del turno de caja — excepto que,
-// si una transferencia involucra Efectivo y ocurre mientras hay un turno
-// abierto, sí se sube/baja el "esperado en efectivo" de ese turno (ver
-// `saldoEsperadoEfectivo` en pintarTurnoAbierto), porque eso sí cambia lo
-// que debería contarse físicamente en el cajón.
-//
-// Regla de negocio: solo puede haber UN turno de caja abierto a la vez
-// (impuesto por un índice único parcial en la base de datos).
+// Transferencias entre cuentas (caja_transferencias): mueven saldo de una
+// cuenta a otra sin que cuente como ingreso/egreso real del negocio (por
+// eso no viven en caja_movimientos).
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -73,7 +74,6 @@ import { calcularHabitacionesEnUso } from './cuentas.js';
 
 const ROLES_OPERAN_CAJA = ['propietario', 'administrador', 'recepcionista'];
 const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
-const DENOMINACIONES_BILLETES = [100000, 50000, 20000, 10000, 5000, 2000, 1000];
 
 function puedeOperar() {
   const usuario = getUsuarioActual();
@@ -86,36 +86,74 @@ function escaparHTML(texto) {
   return div.innerHTML;
 }
 
-// --- Resolver nombres reales a partir de IDs de usuario (para mostrar
-// quién abrió/cerró un turno o registró algo, en vez de un uuid interno) ---
-async function obtenerNombresUsuarios(ids) {
-  const idsUnicos = [...new Set((ids || []).filter(Boolean))];
-  if (idsUnicos.length === 0) return new Map();
-  const { data } = await supabase.from('usuarios').select('id, nombre').in('id', idsUnicos);
-  return new Map((data || []).map((u) => [u.id, u.nombre]));
+// =========================================================
+// Turno automático — invisible para quien usa el sistema (ver nota de
+// cabecera). Se llama justo antes de insertar cualquier venta de
+// mostrador / movimiento manual / gasto (ver también gastos.js y
+// compras.js, que la importan de aquí).
+// =========================================================
+export async function obtenerOCrearTurnoDeHoy() {
+  const hoyISO = toISODate(new Date());
+  const usuario = getUsuarioActual();
+
+  const { data: turnoAbierto, error } = await supabase
+    .from('caja_turnos')
+    .select('id, abierto_en')
+    .eq('estado', 'abierta')
+    .order('abierto_en', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+
+  if (turnoAbierto) {
+    if (toISODate(new Date(turnoAbierto.abierto_en)) === hoyISO) {
+      return turnoAbierto;
+    }
+    // Quedó abierto de un día anterior (nadie usó el sistema hasta
+    // después de medianoche) — se cierra solo, sin pedir conteo físico.
+    await supabase
+      .from('caja_turnos')
+      .update({
+        estado: 'cerrada',
+        cerrado_en: new Date().toISOString(),
+        cerrado_por: usuario?.id || null,
+        observaciones_cierre: 'Cierre automático de día (Registro diario) — sin conteo físico, ya no aplica.',
+      })
+      .eq('id', turnoAbierto.id);
+  }
+
+  // Continuidad: la base del turno nuevo retoma el último efectivo
+  // realmente contado (si alguna vez se contó) para que "Saldos por
+  // cuenta" no se descuadre — ver cálculo en calcularSaldosPorCuenta.
+  const { data: ultimoCerrado } = await supabase
+    .from('caja_turnos')
+    .select('saldo_contado')
+    .eq('estado', 'cerrada')
+    .order('cerrado_en', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const baseContinuidad = ultimoCerrado && ultimoCerrado.saldo_contado !== null ? Number(ultimoCerrado.saldo_contado) : 0;
+
+  const { data: turnoNuevo, error: errNuevo } = await supabase
+    .from('caja_turnos')
+    .insert({
+      saldo_inicial: baseContinuidad,
+      abierto_por: usuario?.id || null,
+      observaciones_apertura: 'Apertura automática de día (Registro diario).',
+    })
+    .select('id, abierto_en')
+    .single();
+
+  if (errNuevo) throw errNuevo;
+  return turnoNuevo;
 }
 
-// --- Guarda de seguridad: vuelve a confirmar contra la base de datos que
-// el turno SIGUE abierto justo antes de insertar/cerrar algo. Sin esto,
-// si dos personas tienen Caja abierta en pestañas distintas y una cierra
-// el turno mientras la otra todavía tiene un formulario abierto, esa
-// segunda persona podía guardar un movimiento/venta que quedaba pegado a
-// un turno ya cerrado — invisible desde ese momento en la pestaña de
-// Caja (aunque sí seguía contando en Indicadores/Contabilidad/Auditoría,
-// que consultan por fecha y no por turno). Ahora, si el turno ya no está
-// abierto, se bloquea la operación y se pide refrescar la página.
-async function turnoSigueAbierto(turnoId) {
-  const { data, error } = await supabase.from('caja_turnos').select('estado').eq('id', turnoId).maybeSingle();
-  if (error || !data) return false;
-  return data.estado === 'abierta';
-}
-
-// Suma ingresos/egresos por método de pago DENTRO DE UN TURNO, combinando
-// reservas_pagos (siempre ingreso) y caja_movimientos (ingreso o egreso).
-// Devuelve un objeto { [metodo]: { ingresos, egresos } } con TODOS los
-// métodos de METODOS_PAGO presentes (aunque estén en cero), más una clave
-// extra por si algún registro viejo trae un método que ya no está en la
-// lista.
+// Suma ingresos/egresos por método de pago, combinando reservas_pagos
+// (siempre ingreso), ventas_mostrador (siempre ingreso) y caja_movimientos
+// (ingreso o egreso). Devuelve un objeto { [metodo]: { ingresos, egresos } }
+// con TODOS los métodos de METODOS_PAGO presentes (aunque estén en cero).
 function calcularDesglosePorMetodo(pagos, movimientos, ventasMostrador) {
   const desglose = {};
   METODOS_PAGO.forEach((m) => {
@@ -144,8 +182,8 @@ function calcularDesglosePorMetodo(pagos, movimientos, ventasMostrador) {
   return desglose;
 }
 
-// --- Saldos por cuenta: acumulado de TODO el tiempo, no solo el turno
-// abierto — reservas_pagos + caja_movimientos + caja_transferencias. ---
+// --- Saldos por cuenta: acumulado de TODO el tiempo — reservas_pagos +
+// caja_movimientos + caja_transferencias. ---
 export async function calcularSaldosPorCuenta() {
   const [
     { data: pagos, error: errPagos },
@@ -195,19 +233,16 @@ export async function calcularSaldosPorCuenta() {
     saldos[destino] += Number(t.monto);
   });
 
-  // --- Ajuste por bases iniciales de apertura de caja ---
-  // Cada apertura sugiere como base lo que quedó CONTADO en el cierre
-  // anterior (continuidad entre turnos) — ese dinero ya está explicado por
-  // los ingresos/egresos ya sumados arriba, así que no se vuelve a sumar.
-  // Pero la base de la PRIMERA apertura de la historia (no hay cierre
-  // anterior que la explique) es efectivo físico que ya existía ANTES de
-  // que el sistema empezara a llevar la cuenta — y cualquier ajuste manual
-  // que alguien haga a la base sugerida en aperturas posteriores (ej. un
-  // recuento físico distinto al sugerido) tampoco está explicado por el
-  // ledger. Ambos casos se detectan comparando cada base con el
-  // saldo_contado del cierre inmediatamente anterior, y esa diferencia se
-  // suma a Efectivo — así "Saldos por cuenta" sí incluye el efectivo real
-  // desde la primera apertura en adelante.
+  // --- Ajuste por bases iniciales de los turnos (ver nota de cabecera) ---
+  // Cada turno nuevo retoma como base lo que quedó contado en el cierre
+  // anterior (continuidad) — ese dinero ya está explicado por los
+  // ingresos/egresos ya sumados arriba, así que no se vuelve a sumar. Pero
+  // la base del PRIMER turno de la historia (no hay cierre anterior que la
+  // explique) es efectivo físico que ya existía ANTES de que el sistema
+  // empezara a llevar la cuenta, y cualquier diferencia real detectada en
+  // los cierres manuales de antes de este rediseño tampoco está explicada
+  // por el ledger. Ambos casos se detectan comparando cada base con el
+  // saldo_contado del cierre inmediatamente anterior.
   const { data: turnos, error: errTurnos } = await supabase
     .from('caja_turnos')
     .select('saldo_inicial, saldo_contado, estado, abierto_en')
@@ -218,17 +253,15 @@ export async function calcularSaldosPorCuenta() {
   (turnos || []).forEach((t) => {
     const base = Number(t.saldo_inicial || 0);
     saldos['Efectivo'] += saldoContadoAnterior === null ? base : base - saldoContadoAnterior;
-    if (t.estado === 'cerrada') saldoContadoAnterior = Number(t.saldo_contado || 0);
+    if (t.estado === 'cerrada') saldoContadoAnterior = t.saldo_contado !== null ? Number(t.saldo_contado) : saldoContadoAnterior;
   });
 
   return saldos;
 }
 
 // =========================================================
-// Exportables genéricos (Excel/PDF) — mismo mecanismo seguro ya usado en
-// el resumen de checkout: CSV con BOM (Excel lo abre con doble clic) y
-// vista de impresión del navegador para "Guardar como PDF". Cero
-// librerías externas nuevas.
+// Exportables genéricos (Excel/PDF): CSV con BOM (Excel lo abre con doble
+// clic) y vista de impresión del navegador para "Guardar como PDF".
 // =========================================================
 function descargarCSV(nombreArchivo, filas) {
   const csv = filas.map((fila) => fila.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -285,65 +318,74 @@ function filaTablaSimple(cols) {
 
 // =========================================================
 async function render(container) {
-  // Orden pensado para ser la pestaña de más uso del día: primero el
-  // pulso del día (cuánto se ha vendido, cuánto hay en caja), luego lo
-  // que queda pendiente por cobrar (huéspedes alojados), luego el turno
-  // en curso (ventas de mostrador + arqueo + cierre), y al final lo que
-  // se consulta con menos frecuencia (saldos por cuenta, minibar
-  // informativo, historial de cierres).
   container.innerHTML = `
-    <h2>Registro diario de ventas</h2>
+    <h2>Registro diario</h2>
     <div id="resumen-dia-wrap" style="margin-bottom:1.5rem;">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
-    <div id="habitaciones-uso-wrap" style="margin-bottom:1.5rem;">
-      <p class="mensaje-vacio">Cargando…</p>
-    </div>
-    <div id="caja-wrap" style="margin-bottom:1.5rem;">
-      <p class="mensaje-vacio">Cargando…</p>
-    </div>
-    <div id="saldos-cuenta-wrap" style="margin-bottom:1.5rem;">
-      <p class="mensaje-vacio">Cargando…</p>
-    </div>
-    <div id="minibar-hoy-wrap">
-      <p class="mensaje-vacio">Cargando…</p>
+    <div class="grid-dos-columnas">
+      <div>
+        <p class="kicker-columna">🟢 Operación de hoy</p>
+        <div id="habitaciones-uso-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
+        <div id="ventas-mostrador-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
+        <div id="movimientos-manuales-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
+        <div id="ingresos-reservas-wrap"><p class="mensaje-vacio">Cargando…</p></div>
+      </div>
+      <div>
+        <p class="kicker-columna">📘 Información y consulta</p>
+        <div id="desglose-hoy-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
+        <div id="saldos-cuenta-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
+        <div id="minibar-hoy-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
+        <div id="historial-dia-wrap"><p class="mensaje-vacio">Cargando…</p></div>
+      </div>
     </div>
   `;
+
   await Promise.all([
     cargarResumenDelDia(container.querySelector('#resumen-dia-wrap')),
     cargarHabitacionesEnUso(container.querySelector('#habitaciones-uso-wrap')),
+    cargarVentasMostradorHoy(container, container.querySelector('#ventas-mostrador-wrap')),
+    cargarMovimientosManualesHoy(container, container.querySelector('#movimientos-manuales-wrap')),
+    cargarIngresosReservasHoy(container.querySelector('#ingresos-reservas-wrap')),
+    cargarDesgloseHoy(container.querySelector('#desglose-hoy-wrap')),
     cargarSaldosPorCuenta(container, container.querySelector('#saldos-cuenta-wrap')),
     cargarResumenMinibarHoy(container.querySelector('#minibar-hoy-wrap')),
-    cargarEstado(container),
+    cargarHistorialPorDia(container, container.querySelector('#historial-dia-wrap')),
   ]);
 }
 
+// Refresca las tarjetas cuya cifra cambia después de registrar una venta
+// de mostrador o un movimiento manual — evita repetir la misma lista de
+// refrescos en cada formulario.
+async function refrescarTrasMovimiento(container) {
+  const wrapResumen = container.querySelector('#resumen-dia-wrap');
+  if (wrapResumen) await cargarResumenDelDia(wrapResumen);
+  const wrapDesglose = container.querySelector('#desglose-hoy-wrap');
+  if (wrapDesglose) await cargarDesgloseHoy(wrapDesglose);
+  const wrapIngresos = container.querySelector('#ingresos-reservas-wrap');
+  if (wrapIngresos) await cargarIngresosReservasHoy(wrapIngresos);
+  const wrapSaldos = container.querySelector('#saldos-cuenta-wrap');
+  if (wrapSaldos) await cargarSaldosPorCuenta(container, wrapSaldos);
+}
+
 // =========================================================
-// Resumen del día — el pulso del negocio hoy, independiente de si el
-// turno de caja está abierto o cerrado: cuánto se ha vendido en total (
-// reservas liquidadas + ventas de mostrador + ingresos manuales) y cuánto
-// efectivo hay en este momento.
+// Resumen del día — lo primero que se ve, arriba de las dos columnas.
 // =========================================================
 async function cargarResumenDelDia(elemento) {
   if (!elemento) return;
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando el resumen del día…</p>';
 
-  const hoyISO = toISODate(new Date());
-  const mananaISO = toISODate(addDays(new Date(), 1));
+  const hoy = new Date();
+  const hoyISO = toISODate(hoy);
+  const mananaISO = toISODate(addDays(hoy, 1));
 
-  const [
-    { data: pagosHoy, error: errPagos },
-    { data: movimientosHoy, error: errMov },
-    { data: ventasHoy, error: errVentas },
-    { data: turnoAbierto, error: errTurno },
-  ] = await Promise.all([
+  const [{ data: pagosHoy, error: errPagos }, { data: movimientosHoy, error: errMov }, { data: ventasHoy, error: errVentas }] = await Promise.all([
     supabase.from('reservas_pagos').select('monto').gte('fecha', hoyISO).lt('fecha', mananaISO),
     supabase.from('caja_movimientos').select('monto, tipo').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
     supabase.from('ventas_mostrador').select('monto').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
-    supabase.from('caja_turnos').select('id, abierto_en, saldo_inicial').eq('estado', 'abierta').limit(1).maybeSingle(),
   ]);
 
-  const error = errPagos || errMov || errVentas || errTurno;
+  const error = errPagos || errMov || errVentas;
   if (error) {
     elemento.innerHTML = `<p class="mensaje-vacio">Error cargando el resumen del día: ${error.message}</p>`;
     return;
@@ -354,9 +396,14 @@ async function cargarResumenDelDia(elemento) {
   const ventasMostradorHoy = (ventasHoy || []).reduce((sum, v) => sum + Number(v.monto), 0);
   const egresosHoy = (movimientosHoy || []).filter((m) => m.tipo === 'egreso').reduce((sum, m) => sum + Number(m.monto), 0);
   const totalVentasHoy = ventasReservasHoy + ventasManualesHoy + ventasMostradorHoy;
+  const netoHoy = totalVentasHoy - egresosHoy;
+
+  const fechaBonita = hoy.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' });
+  const fechaCapitalizada = fechaBonita.charAt(0).toUpperCase() + fechaBonita.slice(1);
 
   elemento.innerHTML = `
-    <div class="acciones-tarjeta" style="justify-content:flex-end; margin-bottom:0.4rem;">
+    <div class="acciones-tarjeta" style="justify-content:space-between; margin-bottom:0.6rem; align-items:center;">
+      <h2 style="margin:0;">📊 Hoy — ${fechaCapitalizada}</h2>
       <button type="button" id="btn-refrescar-resumen-dia" class="btn btn-secundario btn-chico">🔄 Actualizar</button>
     </div>
     <div class="grid-tres-columnas">
@@ -365,25 +412,492 @@ async function cargarResumenDelDia(elemento) {
         <div class="stat-card-valor">${formatCOP(totalVentasHoy)}</div>
         <div class="stat-card-subtitulo">Estadías: ${formatCOP(ventasReservasHoy)} · Mostrador: ${formatCOP(ventasMostradorHoy)} · Otras: ${formatCOP(ventasManualesHoy)}</div>
       </div>
-      <div class="stat-card stat-card-naranja">
+      <div class="stat-card stat-card-rojo">
         <div class="stat-card-label">↘️ Egresos de hoy</div>
         <div class="stat-card-valor">${formatCOP(egresosHoy)}</div>
         <div class="stat-card-subtitulo">Gastos y salidas manuales registradas hoy</div>
       </div>
-      <div class="stat-card ${turnoAbierto ? 'stat-card-azul' : 'stat-card-naranja'}">
-        <div class="stat-card-label">🗝 Estado de la caja</div>
-        <div class="stat-card-valor" style="font-size:1.3rem;">${turnoAbierto ? 'Abierta' : 'Cerrada'}</div>
-        <div class="stat-card-subtitulo">${turnoAbierto ? `Desde ${formatFechaHora(turnoAbierto.abierto_en)}` : 'Ábrela para empezar a vender'}</div>
+      <div class="stat-card ${netoHoy >= 0 ? 'stat-card-azul' : 'stat-card-naranja'}">
+        <div class="stat-card-label">⚖️ Neto del día</div>
+        <div class="stat-card-valor">${formatCOP(netoHoy)}</div>
+        <div class="stat-card-subtitulo">Ventas menos egresos de hoy</div>
       </div>
     </div>
-    <p class="mensaje-vacio" style="margin-top:0.6rem;">Este resumen es del día calendario de hoy (no del turno) — incluye cualquier pago de check-in o check-out ya registrado hoy, aunque la habitación siga ocupada. Para el detalle exacto del turno en curso, revisa "Desglose por medio de pago" más abajo.</p>
   `;
 
   elemento.querySelector('#btn-refrescar-resumen-dia').addEventListener('click', () => cargarResumenDelDia(elemento));
 }
 
 // =========================================================
-// Saldos por cuenta + transferencias
+// Huéspedes alojados (columna izquierda, arriba de todo — lo más
+// operativo y urgente: quién debe qué).
+// =========================================================
+async function cargarHabitacionesEnUso(elemento) {
+  if (!elemento) return;
+  elemento.innerHTML = `<p class="mensaje-vacio">Cargando habitaciones en uso…</p>`;
+
+  let items = [];
+  try {
+    items = await calcularHabitacionesEnUso();
+  } catch (error) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando habitaciones en uso: ${error.message}</p>`;
+    return;
+  }
+
+  const conSaldo = items.filter((i) => i.saldoPendiente > 0).length;
+
+  elemento.innerHTML = `
+    <div class="tarjeta tarjeta-acento tarjeta-acento-azul">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.75rem;">
+        <h3 style="margin:0;">🧳 Huéspedes alojados ${items.length ? `(${items.length})` : ''}</h3>
+        <button type="button" id="btn-refrescar-habitaciones-uso" class="btn btn-secundario btn-chico">🔄 Actualizar</button>
+      </div>
+      ${
+        conSaldo > 0
+          ? `<p class="mensaje-vacio" style="color:var(--color-rojo-oscuro); font-weight:600;">${conSaldo} habitación(es) con saldo pendiente por liquidar.</p>`
+          : ''
+      }
+      <div class="tabla-scroll">
+        <table class="tabla-simple">
+          <thead><tr><th>Habitación</th><th>Huésped</th><th>Ingreso</th><th>Monto total</th><th>Abonado</th><th>Saldo pendiente</th></tr></thead>
+          <tbody>
+            ${
+              items
+                .map(
+                  (i) => `<tr>
+                    <td>${escaparHTML(i.habitacionLabel)}</td>
+                    <td>${escaparHTML(i.huespedNombre)}</td>
+                    <td>${formatFechaHora(i.horaIngreso)}</td>
+                    <td>${formatCOP(i.montoTotal)}</td>
+                    <td>${formatCOP(i.totalAbonado)}</td>
+                    <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(i.saldoPendiente)}</td>
+                  </tr>`
+                )
+                .join('') || '<tr><td colspan="6" class="mensaje-vacio">No hay habitaciones ocupadas ahora mismo.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="mensaje-vacio" style="margin-top:0.75rem;">El saldo se liquida desde Recepción al hacer check-out.</p>
+    </div>
+  `;
+
+  elemento.querySelector('#btn-refrescar-habitaciones-uso').addEventListener('click', () => cargarHabitacionesEnUso(elemento));
+}
+
+// =========================================================
+// Ventas por mostrador — hoy (columna izquierda). Productos de bodega
+// vendidos directo en Recepción a un cliente que no se hospeda. Ya no
+// depende de que haya "caja abierta": siempre se puede registrar, el
+// turno del día se resuelve solo por dentro (obtenerOCrearTurnoDeHoy).
+// =========================================================
+async function cargarVentasMostradorHoy(container, elemento) {
+  if (!elemento) return;
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+  const permitido = puedeOperar();
+
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+
+  const [{ data: bodega, error: errBodega }, { data: productos, error: errProductos }, { data: ventasHoy, error: errVentas }] = await Promise.all([
+    supabase.from('inventario_bodega').select('producto_id, cantidad_actual'),
+    supabase.from('minibar_productos').select('*').eq('activo', true).order('categoria').order('nombre'),
+    supabase
+      .from('ventas_mostrador')
+      .select('*, minibar_productos(nombre)')
+      .gte('creado_en', hoyISO)
+      .lt('creado_en', mananaISO)
+      .order('creado_en', { ascending: false }),
+  ]);
+
+  if (errBodega || errProductos || errVentas) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando ventas de mostrador: ${(errBodega || errProductos || errVentas).message}</p>`;
+    return;
+  }
+
+  const stockPorProducto = new Map((bodega || []).map((b) => [b.producto_id, b.cantidad_actual]));
+  const categorias = [...new Set((productos || []).map((p) => p.categoria))];
+  const totalVentas = (ventasHoy || []).reduce((sum, v) => sum + Number(v.monto), 0);
+
+  elemento.innerHTML = `
+    <div class="tarjeta tarjeta-acento tarjeta-acento-verde">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.5rem;">
+        <h3 style="margin:0;">🛒 Ventas por mostrador — hoy</h3>
+        <strong style="font-size:1.1rem;">${formatCOP(totalVentas)}</strong>
+      </div>
+      <p class="mensaje-vacio" style="margin-bottom:0.75rem;">Para un cliente que compra algo del inventario sin hospedarse — no queda ligado a ninguna habitación ni huésped, solo descuenta bodega y suma a la venta del día.</p>
+      ${
+        permitido
+          ? `
+        <form id="form-venta-mostrador" class="form-grid">
+          <label>Producto
+            <select name="producto_id" required>
+              ${categorias
+                .map(
+                  (cat) => `
+                <optgroup label="${escaparHTML(cat)}">
+                  ${(productos || [])
+                    .filter((p) => p.categoria === cat)
+                    .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)} — ${formatCOP(p.precio)} (${stockPorProducto.get(p.id) || 0} en bodega)</option>`)
+                    .join('')}
+                </optgroup>
+              `
+                )
+                .join('')}
+            </select>
+          </label>
+          <label>Cantidad
+            <input type="number" name="cantidad" min="1" value="1" required />
+          </label>
+          <label>Método de pago
+            <select name="metodo_pago">
+              ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
+            </select>
+          </label>
+          <label>Cliente <span class="mensaje-vacio" style="font-size:0.7rem;">(opcional)</span>
+            <input type="text" name="cliente_nombre" placeholder="Opcional" />
+          </label>
+          <button type="submit" class="btn btn-secundario btn-chico">+ Registrar venta</button>
+        </form>
+      `
+          : ''
+      }
+      <div class="tabla-scroll" style="margin-top:0.75rem;">
+        <table class="tabla-simple">
+          <thead><tr><th>Hora</th><th>Producto</th><th>Cant.</th><th>Monto</th><th>Método</th><th>Cliente</th></tr></thead>
+          <tbody>
+            ${
+              (ventasHoy || [])
+                .map(
+                  (v) =>
+                    `<tr><td>${formatFechaHora(v.creado_en)}</td><td>${v.minibar_productos ? escaparHTML(v.minibar_productos.nombre) : '—'}</td><td>${v.cantidad}</td><td>${formatCOP(v.monto)}</td><td>${v.metodo_pago}</td><td>${escaparHTML(v.cliente_nombre || '—')}</td></tr>`
+                )
+                .join('') || '<tr><td colspan="6" class="mensaje-vacio">Sin ventas de mostrador hoy.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  if (!permitido) return;
+
+  elemento.querySelector('#form-venta-mostrador').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const form = new FormData(e.target);
+    const productoId = Number(form.get('producto_id'));
+    const cantidad = Number(form.get('cantidad'));
+    const producto = (productos || []).find((p) => p.id === productoId);
+    if (!producto) return;
+
+    const stockDisponible = stockPorProducto.get(productoId) || 0;
+    if (cantidad > stockDisponible) {
+      const seguir = await mostrarConfirmacion({
+        titulo: 'Stock insuficiente en bodega',
+        contenidoHTML: `En bodega solo hay ${stockDisponible} unidad(es) registradas de ${escaparHTML(producto.nombre)}. ¿Continuar de todas formas?`,
+        textoConfirmar: 'Continuar',
+      });
+      if (!seguir) return;
+    }
+
+    let turno;
+    try {
+      turno = await obtenerOCrearTurnoDeHoy();
+    } catch (errTurno) {
+      mostrarToast(`No se pudo registrar la venta: ${errTurno.message}`, 'error');
+      return;
+    }
+
+    const monto = producto.precio * cantidad;
+    const usuario = getUsuarioActual();
+
+    const { error: errVenta } = await supabase.from('ventas_mostrador').insert({
+      turno_id: turno.id,
+      producto_id: productoId,
+      cantidad,
+      precio_unitario: producto.precio,
+      monto,
+      metodo_pago: form.get('metodo_pago'),
+      cliente_nombre: form.get('cliente_nombre').trim() || null,
+      registrado_por: usuario?.id || null,
+    });
+
+    if (errVenta) {
+      mostrarToast(`Error registrando la venta: ${errVenta.message}`, 'error');
+      return;
+    }
+
+    const { data: filaBodega } = await supabase
+      .from('inventario_bodega')
+      .select('id, cantidad_actual')
+      .eq('producto_id', productoId)
+      .maybeSingle();
+
+    if (filaBodega) {
+      await supabase
+        .from('inventario_bodega')
+        .update({ cantidad_actual: filaBodega.cantidad_actual - cantidad, actualizado_en: new Date().toISOString() })
+        .eq('id', filaBodega.id);
+    }
+
+    await supabase.from('inventario_movimientos').insert({
+      tipo: 'venta_mostrador',
+      producto_id: productoId,
+      cantidad,
+      notas: 'Venta directa por mostrador.',
+      registrado_por: usuario?.id || null,
+    });
+
+    mostrarToast('Venta registrada.', 'exito');
+    document.dispatchEvent(new CustomEvent('inventario:actualizado'));
+    await cargarVentasMostradorHoy(container, elemento);
+    await refrescarTrasMovimiento(container);
+  });
+}
+
+// =========================================================
+// Movimientos manuales — hoy (columna izquierda). Ingresos o egresos que
+// no son ni una venta de mostrador ni un gasto operativo (ver Gastos) —
+// ej. propinas, ajustes puntuales, o cargue retroactivo de un día
+// anterior con "Fecha y hora".
+// =========================================================
+async function cargarMovimientosManualesHoy(container, elemento) {
+  if (!elemento) return;
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+  const permitido = puedeOperar();
+
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+
+  const { data: movimientos, error } = await supabase
+    .from('caja_movimientos')
+    .select('*')
+    .gte('creado_en', hoyISO)
+    .lt('creado_en', mananaISO)
+    .order('creado_en', { ascending: false });
+
+  if (error) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando movimientos: ${error.message}</p>`;
+    return;
+  }
+
+  elemento.innerHTML = `
+    <div class="tarjeta tarjeta-acento tarjeta-acento-naranja">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.5rem;">
+        <h3 style="margin:0;">➕➖ Movimientos manuales — hoy</h3>
+        ${permitido ? '<button type="button" id="btn-nuevo-movimiento" class="btn btn-secundario btn-chico">+ Movimiento</button>' : ''}
+      </div>
+      <p class="mensaje-vacio" style="margin-bottom:0.5rem;">Ingresos o egresos que no son ni una venta de mostrador ni un gasto operativo (ver Gastos) — ej. propinas, ajustes puntuales.</p>
+      <div class="tabla-scroll">
+        <table class="tabla-simple">
+          <thead><tr><th>Hora</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Método</th><th>Descripción</th></tr></thead>
+          <tbody>
+            ${
+              (movimientos || [])
+                .map(
+                  (m) =>
+                    `<tr><td>${formatFechaHora(m.creado_en)}</td><td>${m.tipo === 'ingreso' ? '⬆️ Ingreso' : '⬇️ Egreso'}</td><td>${escaparHTML(m.categoria || '—')}</td><td>${formatCOP(m.monto)}</td><td>${escaparHTML(m.metodo_pago || '—')}</td><td>${escaparHTML(m.descripcion || '—')}</td></tr>`
+                )
+                .join('') || '<tr><td colspan="6" class="mensaje-vacio">Sin movimientos manuales hoy.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  if (!permitido) return;
+
+  elemento.querySelector('#btn-nuevo-movimiento').addEventListener('click', () => abrirModalMovimiento(container));
+}
+
+async function abrirModalMovimiento(container) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja">
+      <h3>Nuevo movimiento</h3>
+      <form id="form-movimiento" class="modal-contenido">
+        <div class="form-grid">
+          <label>Tipo
+            <select name="tipo" required>
+              <option value="ingreso">Ingreso</option>
+              <option value="egreso">Egreso</option>
+            </select>
+          </label>
+          <label>Categoría
+            <input type="text" name="categoria" placeholder="Ej: Insumos, Propina, Otro" />
+          </label>
+          <label>Monto
+            <input type="number" name="monto" step="1000" min="1" required />
+          </label>
+          <label>Método de pago
+            <select name="metodo_pago">
+              ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
+            </select>
+          </label>
+          <label>Fecha y hora <span class="mensaje-vacio" style="font-size:0.7rem;">(opcional — para cargue retroactivo)</span>
+            <input type="datetime-local" name="fecha_manual" />
+          </label>
+        </div>
+        <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
+          Descripción
+          <textarea name="descripcion" rows="2" style="padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit;"></textarea>
+        </label>
+        <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">Deja "Fecha y hora" vacío para usar el momento actual. Solo cámbialo para cargar a mano un movimiento de un día anterior.</p>
+        <div class="modal-acciones" style="margin-top:1.25rem;">
+          <button type="button" class="btn btn-secundario" id="btn-cancelar-movimiento">Cancelar</button>
+          <button type="submit" class="btn btn-primario">Guardar</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#btn-cancelar-movimiento').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  overlay.querySelector('#form-movimiento').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    let turno;
+    try {
+      turno = await obtenerOCrearTurnoDeHoy();
+    } catch (errTurno) {
+      mostrarToast(`Error: ${errTurno.message}`, 'error');
+      return;
+    }
+
+    const form = new FormData(e.target);
+    const usuario = getUsuarioActual();
+    const fechaManual = form.get('fecha_manual');
+    const payload = {
+      turno_id: turno.id,
+      tipo: form.get('tipo'),
+      categoria: form.get('categoria').trim() || null,
+      monto: Number(form.get('monto')),
+      metodo_pago: form.get('metodo_pago'),
+      descripcion: form.get('descripcion').trim() || null,
+      registrado_por: usuario.id,
+    };
+    if (fechaManual) payload.creado_en = new Date(fechaManual).toISOString();
+
+    const { error } = await supabase.from('caja_movimientos').insert(payload);
+    if (error) {
+      mostrarToast(`Error: ${error.message}`, 'error');
+      return;
+    }
+    mostrarToast('Movimiento registrado.', 'exito');
+    overlay.remove();
+
+    const wrapMov = container.querySelector('#movimientos-manuales-wrap');
+    if (wrapMov) await cargarMovimientosManualesHoy(container, wrapMov);
+    await refrescarTrasMovimiento(container);
+  });
+}
+
+// =========================================================
+// Ingresos por reservas — hoy (columna izquierda, automáticos).
+// =========================================================
+async function cargarIngresosReservasHoy(elemento) {
+  if (!elemento) return;
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+
+  const { data: pagos, error } = await supabase
+    .from('reservas_pagos')
+    .select('*')
+    .gte('fecha', hoyISO)
+    .lt('fecha', mananaISO)
+    .order('fecha', { ascending: false });
+
+  if (error) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando ingresos por reservas: ${error.message}</p>`;
+    return;
+  }
+
+  const total = (pagos || []).reduce((sum, p) => sum + Number(p.monto), 0);
+
+  elemento.innerHTML = `
+    <div class="tarjeta tarjeta-acento tarjeta-acento-verde">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.5rem;">
+        <h3 style="margin:0;">🧾 Ingresos por reservas — hoy</h3>
+        <strong style="font-size:1.1rem;">${formatCOP(total)}</strong>
+      </div>
+      <p class="mensaje-vacio" style="margin-bottom:0.5rem;">Automáticos — abonos y pagos de check-in/check-out ya registrados hoy desde Reservas y Recepción.</p>
+      <div class="tabla-scroll">
+        <table class="tabla-simple">
+          <thead><tr><th>Hora</th><th>Monto</th><th>Método</th><th>Comentario</th></tr></thead>
+          <tbody>
+            ${
+              (pagos || [])
+                .map(
+                  (p) =>
+                    `<tr><td>${formatFechaHora(p.fecha)}</td><td>${formatCOP(p.monto)}</td><td>${escaparHTML(p.metodo_pago || '—')}</td><td>${escaparHTML(p.comentarios || '—')}</td></tr>`
+                )
+                .join('') || '<tr><td colspan="4" class="mensaje-vacio">Sin pagos de reservas hoy.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// =========================================================
+// Desglose por medio de pago — hoy (columna derecha, arriba).
+// =========================================================
+async function cargarDesgloseHoy(elemento) {
+  if (!elemento) return;
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+
+  const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: ventasMostrador, error: errVentas }] = await Promise.all([
+    supabase.from('reservas_pagos').select('monto, metodo_pago').gte('fecha', hoyISO).lt('fecha', mananaISO),
+    supabase.from('caja_movimientos').select('monto, metodo_pago, tipo').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
+    supabase.from('ventas_mostrador').select('monto, metodo_pago').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
+  ]);
+
+  if (errPagos || errMov || errVentas) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando el desglose: ${(errPagos || errMov || errVentas).message}</p>`;
+    return;
+  }
+
+  const desglose = calcularDesglosePorMetodo(pagos, movimientos, ventasMostrador);
+  const metodosPresentes = Array.from(new Set([...METODOS_PAGO, ...Object.keys(desglose)]));
+  const totalIngresos = Object.values(desglose).reduce((sum, m) => sum + m.ingresos, 0);
+  const totalEgresos = Object.values(desglose).reduce((sum, m) => sum + m.egresos, 0);
+
+  elemento.innerHTML = `
+    <div class="tarjeta tarjeta-acento tarjeta-acento-azul">
+      <h3>💱 Desglose por medio de pago — hoy</h3>
+      <table class="tabla-simple">
+        <thead><tr><th>Medio</th><th>Ingresos</th><th>Egresos</th><th>Neto</th></tr></thead>
+        <tbody>
+          ${metodosPresentes
+            .map((m) => {
+              const d = desglose[m] || { ingresos: 0, egresos: 0 };
+              const neto = d.ingresos - d.egresos;
+              return `<tr><td>${escaparHTML(m)}${m === 'Efectivo' ? ' 💵' : ''}</td><td>${formatCOP(d.ingresos)}</td><td>${formatCOP(d.egresos)}</td><td style="font-weight:700;">${formatCOP(neto)}</td></tr>`;
+            })
+            .join('')}
+          <tr style="font-weight:700;"><td>Total</td><td>${formatCOP(totalIngresos)}</td><td>${formatCOP(totalEgresos)}</td><td>${formatCOP(totalIngresos - totalEgresos)}</td></tr>
+        </tbody>
+      </table>
+      <p class="mensaje-vacio" style="margin-top:0.5rem;">Todo lo que entró y salió hoy, agrupado por medio de pago — incluye estadías, mostrador y movimientos manuales.</p>
+    </div>
+  `;
+}
+
+// =========================================================
+// Saldos por cuenta + transferencias (columna derecha).
 // =========================================================
 async function cargarSaldosPorCuenta(container, elemento) {
   if (!elemento) return;
@@ -401,7 +915,7 @@ async function cargarSaldosPorCuenta(container, elemento) {
   const permitido = puedeOperar();
 
   elemento.innerHTML = `
-    <div class="tarjeta">
+    <div class="tarjeta tarjeta-acento tarjeta-acento-morado">
       <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.75rem; flex-wrap:wrap;">
         <h3 style="margin:0;">💼 Saldos por cuenta <span class="mensaje-vacio" style="font-weight:400;">(acumulado histórico)</span></h3>
         <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
@@ -421,7 +935,7 @@ async function cargarSaldosPorCuenta(container, elemento) {
           </tbody>
         </table>
       </div>
-      <p class="mensaje-vacio" style="margin-top:0.6rem;">Es el saldo acumulado de siempre por cada medio de pago (no se reinicia con cada turno). Usa "Transferir entre cuentas" para mover saldo de un medio a otro — por ejemplo, consolidar lo acumulado en Nequi hacia Efectivo o hacia una cuenta bancaria.</p>
+      <p class="mensaje-vacio" style="margin-top:0.6rem;">Es el saldo acumulado de siempre por cada medio de pago. Usa "Transferir entre cuentas" para mover saldo de un medio a otro — por ejemplo, consolidar lo acumulado en Nequi hacia Efectivo o hacia una cuenta bancaria.</p>
     </div>
   `;
 
@@ -537,19 +1051,14 @@ async function abrirModalTransferencia(container, saldosActuales) {
     mostrarToast(`Transferidos ${formatCOP(monto)} de ${cuentaOrigen} a ${cuentaDestino}.`, 'exito');
     overlay.remove();
     await cargarSaldosPorCuenta(container, container.querySelector('#saldos-cuenta-wrap'));
-    await cargarEstado(container);
   });
 }
 
 // =========================================================
-// Consumo de minibar del día calendario de hoy (no del turno de caja — el
-// turno puede abrirse/cerrarse en cualquier momento, pero "cuánto se
-// consumió hoy" siempre se refiere al día calendario, igual que Recepción).
-// Es un valor INFORMATIVO de movimiento de inventario: no se suma aparte
-// al desglose por método de pago porque ese dinero ya entra ahí solo, en
-// el momento en que el huésped liquida el minibar al hacer check-out (ver
-// recepcion.js). Este bloque es visible siempre, con caja abierta o
-// cerrada, porque el consumo de minibar no depende del turno.
+// Consumo de minibar del día calendario de hoy (columna derecha,
+// informativo). No se suma aparte al desglose por método de pago porque
+// ese dinero ya entra ahí solo, cuando el huésped liquida el minibar al
+// hacer check-out (ver recepcion.js).
 // =========================================================
 async function cargarResumenMinibarHoy(elemento) {
   if (!elemento) return;
@@ -583,7 +1092,7 @@ async function cargarResumenMinibarHoy(elemento) {
   });
 
   elemento.innerHTML = `
-    <div class="tarjeta">
+    <div class="tarjeta tarjeta-acento tarjeta-acento-naranja">
       <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.5rem;">
         <h3 style="margin:0;">🥤 Consumo de minibar — hoy</h3>
         <strong style="font-size:1.2rem;">${formatCOP(totalMonto)}</strong>
@@ -608,614 +1117,114 @@ async function cargarResumenMinibarHoy(elemento) {
   `;
 }
 
-async function cargarHabitacionesEnUso(elemento) {
+// =========================================================
+// Historial por día (columna derecha, hasta abajo) — reemplaza la antigua
+// bitácora de "cierres de turno". Muestra los últimos días con sus
+// totales, y "Ver detalle" abre el desglose completo con exportar.
+// =========================================================
+async function cargarHistorialPorDia(container, elemento) {
   if (!elemento) return;
-  elemento.innerHTML = `<p class="mensaje-vacio">Cargando habitaciones en uso…</p>`;
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando historial…</p>';
 
-  let items = [];
-  try {
-    items = await calcularHabitacionesEnUso();
-  } catch (error) {
-    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando habitaciones en uso: ${error.message}</p>`;
-    return;
-  }
+  const DIAS_A_MOSTRAR = 10;
+  const hoy = new Date();
+  const desdeISO = toISODate(addDays(hoy, -(DIAS_A_MOSTRAR - 1)));
+  const hastaISO = toISODate(addDays(hoy, 1));
 
-  const conSaldo = items.filter((i) => i.saldoPendiente > 0).length;
-
-  elemento.innerHTML = `
-    <div class="tarjeta">
-      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.75rem;">
-        <h3 style="margin:0;">🧳 Huéspedes alojados ${items.length ? `(${items.length})` : ''}</h3>
-        <button type="button" id="btn-refrescar-habitaciones-uso" class="btn btn-secundario btn-chico">🔄 Actualizar</button>
-      </div>
-      ${
-        conSaldo > 0
-          ? `<p class="mensaje-vacio" style="color:var(--color-rojo-oscuro); font-weight:600;">${conSaldo} habitación(es) con saldo pendiente por liquidar.</p>`
-          : ''
-      }
-      <div class="tabla-scroll">
-        <table class="tabla-simple">
-          <thead><tr><th>Habitación</th><th>Huésped</th><th>Ingreso</th><th>Monto total</th><th>Abonado</th><th>Saldo pendiente</th></tr></thead>
-          <tbody>
-            ${
-              items
-                .map(
-                  (i) => `<tr>
-                    <td>${escaparHTML(i.habitacionLabel)}</td>
-                    <td>${escaparHTML(i.huespedNombre)}</td>
-                    <td>${formatFechaHora(i.horaIngreso)}</td>
-                    <td>${formatCOP(i.montoTotal)}</td>
-                    <td>${formatCOP(i.totalAbonado)}</td>
-                    <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(i.saldoPendiente)}</td>
-                  </tr>`
-                )
-                .join('') || '<tr><td colspan="6" class="mensaje-vacio">No hay habitaciones ocupadas ahora mismo.</td></tr>'
-            }
-          </tbody>
-        </table>
-      </div>
-      <p class="mensaje-vacio" style="margin-top:0.75rem;">El saldo se liquida desde Recepción al hacer check-out.</p>
-    </div>
-  `;
-
-  elemento.querySelector('#btn-refrescar-habitaciones-uso').addEventListener('click', () => cargarHabitacionesEnUso(elemento));
-}
-
-async function cargarEstado(container) {
-  const wrap = container.querySelector('#caja-wrap');
-
-  const { data: turno, error } = await supabase
-    .from('caja_turnos')
-    .select('*')
-    .eq('estado', 'abierta')
-    .order('abierto_en', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) {
-    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando caja: ${error.message}</p>`;
-    return;
-  }
-
-  if (!turno) {
-    await pintarSinTurno(container, wrap);
-  } else {
-    await pintarTurnoAbierto(container, wrap, turno);
-  }
-}
-
-async function pintarSinTurno(container, wrap) {
-  const permitido = puedeOperar();
-
-  // Continuidad entre turnos: se sugiere la base inicial con lo que quedó
-  // contado en el cierre anterior, para no digitarlo a mano cada vez ni
-  // arrancar un turno nuevo con un número que no coincide con lo que de
-  // verdad hay en la caja/caja fuerte.
-  const { data: ultimoCierre } = await supabase
-    .from('caja_turnos')
-    .select('saldo_contado, cerrado_en')
-    .eq('estado', 'cerrada')
-    .order('cerrado_en', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  const baseSugerida = ultimoCierre ? Number(ultimoCierre.saldo_contado) : null;
-
-  wrap.innerHTML = `
-    <div class="tarjeta">
-      <h3>No hay una caja abierta</h3>
-      <p class="mensaje-vacio">Abre la caja al iniciar el turno para empezar a registrar ingresos, egresos y ventas por mostrador.</p>
-      ${
-        permitido
-          ? `
-        <form id="form-abrir-caja" class="form-grid" style="margin-top:1rem;">
-          <label>Base inicial (efectivo)
-            <input type="number" name="saldo_inicial" step="1000" min="0" required value="${baseSugerida !== null ? baseSugerida : ''}" />
-          </label>
-          <label>Observaciones
-            <input type="text" name="observaciones_apertura" placeholder="Opcional" />
-          </label>
-          <button type="submit" class="btn btn-primario">Abrir caja</button>
-        </form>
-        <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">
-          ${
-            baseSugerida !== null
-              ? `Sugerido: lo que quedó contado en el último cierre (${formatCOP(baseSugerida)}, ${formatFechaHora(ultimoCierre.cerrado_en)}). Ajústalo si el conteo físico de hoy es distinto.`
-              : 'No hay cierres anteriores todavía — digita el efectivo real que hay en caja para empezar.'
-          }
-        </p>
-      `
-          : `<p class="mensaje-vacio">Tu rol no tiene permiso para abrir caja.</p>`
-      }
-    </div>
-    <div id="historial-cierres-wrap" style="margin-top:1.5rem;"></div>
-  `;
-
-  if (permitido) {
-    wrap.querySelector('#form-abrir-caja').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const form = new FormData(e.target);
-      const usuario = getUsuarioActual();
-      const { error } = await supabase.from('caja_turnos').insert({
-        saldo_inicial: Number(form.get('saldo_inicial')),
-        observaciones_apertura: form.get('observaciones_apertura').trim() || null,
-        abierto_por: usuario.id,
-      });
-      if (error) {
-        mostrarToast(`Error abriendo caja: ${error.message}`, 'error');
-        return;
-      }
-      mostrarToast('Caja abierta.', 'exito');
-      await cargarEstado(container);
-    });
-  }
-
-  await cargarHistorialCierres(container, wrap.querySelector('#historial-cierres-wrap'));
-}
-
-async function pintarTurnoAbierto(container, wrap, turno) {
-  const permitido = puedeOperar();
-
-  const [
-    { data: pagos, error: errPagos },
-    { data: movimientos, error: errMov },
-    { data: transferenciasTurno, error: errTrans },
-    { data: ventasMostradorTurno, error: errVentas },
-  ] = await Promise.all([
-    supabase.from('reservas_pagos').select('*').gte('fecha', turno.abierto_en),
-    supabase.from('caja_movimientos').select('*').eq('turno_id', turno.id).order('creado_en', { ascending: false }),
-    supabase.from('caja_transferencias').select('*').gte('creado_en', turno.abierto_en).order('creado_en', { ascending: false }),
-    supabase
-      .from('ventas_mostrador')
-      .select('*, minibar_productos(nombre)')
-      .eq('turno_id', turno.id)
-      .order('creado_en', { ascending: false }),
+  const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: ventasMostrador, error: errVentas }] = await Promise.all([
+    supabase.from('reservas_pagos').select('monto, fecha').gte('fecha', desdeISO).lt('fecha', hastaISO),
+    supabase.from('caja_movimientos').select('monto, tipo, creado_en').gte('creado_en', desdeISO).lt('creado_en', hastaISO),
+    supabase.from('ventas_mostrador').select('monto, creado_en').gte('creado_en', desdeISO).lt('creado_en', hastaISO),
   ]);
 
-  if (errPagos || errMov || errTrans || errVentas) {
-    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando movimientos: ${(errPagos || errMov || errTrans || errVentas).message}</p>`;
+  if (errPagos || errMov || errVentas) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando el historial: ${(errPagos || errMov || errVentas).message}</p>`;
     return;
   }
 
-  const desglose = calcularDesglosePorMetodo(pagos, movimientos, ventasMostradorTurno);
-  const metodosPresentes = Array.from(new Set([...METODOS_PAGO, ...Object.keys(desglose)]));
+  const hoyISO = toISODate(hoy);
+  const dias = [];
+  for (let i = 0; i < DIAS_A_MOSTRAR; i++) {
+    dias.push(toISODate(addDays(hoy, -i)));
+  }
 
-  const totalIngresos = Object.values(desglose).reduce((sum, m) => sum + m.ingresos, 0);
-  const totalEgresos = Object.values(desglose).reduce((sum, m) => sum + m.egresos, 0);
-  const ingresosReservas = (pagos || []).reduce((sum, p) => sum + Number(p.monto), 0);
-  const ingresosManuales = (movimientos || []).filter((m) => m.tipo === 'ingreso').reduce((sum, m) => sum + Number(m.monto), 0);
-  const ingresosMostrador = (ventasMostradorTurno || []).reduce((sum, v) => sum + Number(v.monto), 0);
+  function totalesDelDia(fechaISO) {
+    const ingresosReservas = (pagos || []).filter((p) => toISODate(new Date(p.fecha)) === fechaISO).reduce((sum, p) => sum + Number(p.monto), 0);
+    const ventasHoy = (ventasMostrador || []).filter((v) => toISODate(new Date(v.creado_en)) === fechaISO).reduce((sum, v) => sum + Number(v.monto), 0);
+    const movDia = (movimientos || []).filter((m) => toISODate(new Date(m.creado_en)) === fechaISO);
+    const ingresosManuales = movDia.filter((m) => m.tipo === 'ingreso').reduce((sum, m) => sum + Number(m.monto), 0);
+    const egresos = movDia.filter((m) => m.tipo === 'egreso').reduce((sum, m) => sum + Number(m.monto), 0);
+    const ingresos = ingresosReservas + ventasHoy + ingresosManuales;
+    return { ingresos, egresos, neto: ingresos - egresos };
+  }
 
-  const efectivo = desglose['Efectivo'] || { ingresos: 0, egresos: 0 };
-
-  // Las transferencias no son ingreso/egreso real (no se suman a
-  // totalIngresos/totalEgresos, para no inflar esos totales), pero sí
-  // mueven cuánto debería haber físicamente en el cajón si involucran
-  // Efectivo.
-  const efectivoTransferenciasNeto = (transferenciasTurno || []).reduce((sum, t) => {
-    if (t.cuenta_destino === 'Efectivo') return sum + Number(t.monto);
-    if (t.cuenta_origen === 'Efectivo') return sum - Number(t.monto);
-    return sum;
-  }, 0);
-
-  const saldoEsperadoEfectivo = Number(turno.saldo_inicial) + efectivo.ingresos - efectivo.egresos + efectivoTransferenciasNeto;
-
-  const nombresUsuarios = await obtenerNombresUsuarios([turno.abierto_por, getUsuarioActual()?.id]);
-  const nombreAbrio = nombresUsuarios.get(turno.abierto_por) || '—';
-  const nombreActual = nombresUsuarios.get(getUsuarioActual()?.id) || getUsuarioActual()?.nombre || '—';
-
-  wrap.innerHTML = `
-    <div class="tarjeta" style="background:var(--color-fondo-suave, #f8f9fb); margin-bottom:1rem;">
-      <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:0.5rem; align-items:center;">
-        <div>
-          <strong>🤝 Entrega de turno</strong>
-          <p class="mensaje-vacio" style="margin:0.2rem 0 0;">Abierta por <strong>${escaparHTML(nombreAbrio)}</strong> el ${formatFechaHora(turno.abierto_en)}</p>
-        </div>
-        <div style="text-align:right;">
-          <span class="mensaje-vacio">Sesión actual:</span> <strong>${escaparHTML(nombreActual)}</strong>
-        </div>
-      </div>
-    </div>
-
-    <div class="grid-tres-columnas">
-      <div class="stat-card stat-card-azul">
-        <div class="stat-card-label">Base inicial (efectivo)</div>
-        <div class="stat-card-valor">${formatCOP(turno.saldo_inicial)}</div>
-        <div class="stat-card-subtitulo">Abierta ${formatFechaHora(turno.abierto_en)}</div>
-      </div>
-      <div class="stat-card stat-card-verde">
-        <div class="stat-card-label">Ingresos del turno (todos los medios)</div>
-        <div class="stat-card-valor">${formatCOP(totalIngresos)}</div>
-        <div class="stat-card-subtitulo">Reservas: ${formatCOP(ingresosReservas)} · Mostrador: ${formatCOP(ingresosMostrador)} · Manuales: ${formatCOP(ingresosManuales)}</div>
-      </div>
-      <div class="stat-card stat-card-naranja">
-        <div class="stat-card-label">Esperado en efectivo (para arqueo)</div>
-        <div class="stat-card-valor">${formatCOP(saldoEsperadoEfectivo)}</div>
-        <div class="stat-card-subtitulo">Egresos totales: ${formatCOP(totalEgresos)}</div>
-      </div>
-    </div>
-
-    <div class="tarjeta">
-      <h3>💱 Desglose por medio de pago (este turno)</h3>
-      <table class="tabla-simple">
-        <thead><tr><th>Medio</th><th>Ingresos</th><th>Egresos</th><th>Neto</th></tr></thead>
-        <tbody>
-          ${metodosPresentes
-            .map((m) => {
-              const d = desglose[m] || { ingresos: 0, egresos: 0 };
-              const neto = d.ingresos - d.egresos;
-              return `<tr><td>${escaparHTML(m)}${m === 'Efectivo' ? ' 💵' : ''}</td><td>${formatCOP(d.ingresos)}</td><td>${formatCOP(d.egresos)}</td><td style="font-weight:700;">${formatCOP(neto)}</td></tr>`;
-            })
-            .join('')}
-          <tr style="font-weight:700;"><td>Total</td><td>${formatCOP(totalIngresos)}</td><td>${formatCOP(totalEgresos)}</td><td>${formatCOP(totalIngresos - totalEgresos)}</td></tr>
-        </tbody>
-      </table>
-      <p class="mensaje-vacio" style="margin-top:0.5rem;">Solo Efectivo necesita conteo físico al cerrar caja — los demás medios son electrónicos, su saldo es lo que marca esta tabla. Las transferencias entre cuentas no están incluidas aquí (no son ingreso/egreso real) — se ven abajo.</p>
-    </div>
-
-    <div id="ventas-mostrador-wrap"></div>
-
-    ${
-      (transferenciasTurno || []).length > 0
-        ? `
-      <div class="tarjeta">
-        <h3>🔁 Transferencias entre cuentas (este turno)</h3>
+  elemento.innerHTML = `
+    <div class="tarjeta tarjeta-acento tarjeta-acento-morado">
+      <h3>📅 Historial por día</h3>
+      <p class="mensaje-vacio" style="margin-bottom:0.6rem;">Últimos ${DIAS_A_MOSTRAR} días — "Ver detalle" muestra el desglose completo, con exportar a Excel/PDF.</p>
+      <div class="tabla-scroll">
         <table class="tabla-simple">
-          <thead><tr><th>Fecha</th><th>De</th><th>Hacia</th><th>Monto</th><th>Motivo</th></tr></thead>
+          <thead><tr><th>Día</th><th>Ingresos</th><th>Egresos</th><th>Neto</th><th></th></tr></thead>
           <tbody>
-            ${transferenciasTurno
-              .map(
-                (t) =>
-                  `<tr><td>${formatFechaHora(t.creado_en)}</td><td>${escaparHTML(t.cuenta_origen)}</td><td>${escaparHTML(t.cuenta_destino)}</td><td class="monto">${formatCOP(t.monto)}</td><td>${escaparHTML(t.motivo || '—')}</td></tr>`
-              )
+            ${dias
+              .map((fechaISO, idx) => {
+                const t = totalesDelDia(fechaISO);
+                const esHoy = fechaISO === hoyISO;
+                return `
+                  <tr ${esHoy ? 'style="background:rgba(30,78,140,0.06);"' : ''}>
+                    <td>${fechaISO}${esHoy ? ' <span class="mensaje-vacio">(hoy)</span>' : ''}</td>
+                    <td>${formatCOP(t.ingresos)}</td>
+                    <td>${formatCOP(t.egresos)}</td>
+                    <td style="font-weight:700; color:${t.neto >= 0 ? 'var(--color-verde-oscuro)' : 'var(--color-rojo-oscuro)'};">${formatCOP(t.neto)}</td>
+                    <td><button type="button" class="btn-editar btn-ver-detalle-dia" data-fecha="${fechaISO}" data-idx="${idx}">Ver detalle</button></td>
+                  </tr>
+                  <tr class="fila-detalle-dia oculto" data-detalle-idx="${idx}">
+                    <td colspan="5"><div class="detalle-dia-contenido"><p class="mensaje-vacio">Cargando…</p></div></td>
+                  </tr>
+                `;
+              })
               .join('')}
           </tbody>
         </table>
       </div>
-    `
-        : ''
-    }
-
-    ${
-      permitido
-        ? `
-      <div class="acciones-tarjeta" style="justify-content:flex-start; margin-bottom:1.25rem;">
-        <button type="button" id="btn-nuevo-movimiento" class="btn btn-secundario">+ Movimiento</button>
-        <button type="button" id="btn-cerrar-caja" class="btn btn-peligro">Cerrar caja</button>
-      </div>
-    `
-        : ''
-    }
-
-    <div class="tarjeta">
-      <h3>Ingresos por reservas (automáticos)</h3>
-      <div class="tabla-scroll">
-        <table class="tabla-simple">
-          <thead><tr><th>Fecha</th><th>Monto</th><th>Método</th><th>Comentario</th></tr></thead>
-          <tbody>
-            ${
-              (pagos || [])
-                .slice()
-                .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
-                .map(
-                  (p) =>
-                    `<tr><td>${formatFechaHora(p.fecha)}</td><td>${formatCOP(p.monto)}</td><td>${p.metodo_pago || '—'}</td><td>${p.comentarios || '—'}</td></tr>`
-                )
-                .join('') || '<tr><td colspan="4" class="mensaje-vacio">Sin pagos de reservas en este turno.</td></tr>'
-            }
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="tarjeta">
-      <h3>Movimientos manuales</h3>
-      <div class="tabla-scroll">
-        <table class="tabla-simple">
-          <thead><tr><th>Fecha</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Método</th><th>Descripción</th></tr></thead>
-          <tbody>
-            ${
-              (movimientos || [])
-                .map(
-                  (m) =>
-                    `<tr><td>${formatFechaHora(m.creado_en)}</td><td>${m.tipo === 'ingreso' ? '⬆️ Ingreso' : '⬇️ Egreso'}</td><td>${m.categoria || '—'}</td><td>${formatCOP(m.monto)}</td><td>${m.metodo_pago || '—'}</td><td>${m.descripcion || '—'}</td></tr>`
-                )
-                .join('') || '<tr><td colspan="6" class="mensaje-vacio">Sin movimientos manuales todavía.</td></tr>'
-            }
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div id="historial-cierres-wrap"></div>
-  `;
-
-  if (permitido) {
-    wrap.querySelector('#btn-nuevo-movimiento').addEventListener('click', () => abrirModalMovimiento(container, turno.id));
-    wrap.querySelector('#btn-cerrar-caja').addEventListener('click', () =>
-      abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglose)
-    );
-  }
-
-  await cargarVentasMostrador(container, wrap.querySelector('#ventas-mostrador-wrap'), turno.id, ventasMostradorTurno);
-  await cargarHistorialCierres(container, wrap.querySelector('#historial-cierres-wrap'));
-}
-
-// =========================================================
-// Ventas por mostrador: productos de bodega vendidos directo en
-// Recepción a un cliente que no se hospeda (no vale la pena crearle
-// ficha de huésped) — no se cargan a ninguna habitación. Descuenta
-// inventario_bodega y deja su propio movimiento en
-// inventario_movimientos, igual que cualquier otra salida de bodega.
-// Requiere un turno abierto (igual que un movimiento manual).
-// =========================================================
-async function cargarVentasMostrador(container, elemento, turnoId, ventasIniciales) {
-  if (!elemento) return;
-  const permitido = puedeOperar();
-
-  const [{ data: bodega, error: errBodega }, { data: productos, error: errProductos }] = await Promise.all([
-    supabase.from('inventario_bodega').select('producto_id, cantidad_actual'),
-    supabase.from('minibar_productos').select('*').eq('activo', true).order('categoria').order('nombre'),
-  ]);
-
-  if (errBodega || errProductos) {
-    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando productos de bodega: ${(errBodega || errProductos).message}</p>`;
-    return;
-  }
-
-  const stockPorProducto = new Map((bodega || []).map((b) => [b.producto_id, b.cantidad_actual]));
-  const categorias = [...new Set((productos || []).map((p) => p.categoria))];
-  const totalVentas = (ventasIniciales || []).reduce((sum, v) => sum + Number(v.monto), 0);
-
-  elemento.innerHTML = `
-    <div class="tarjeta">
-      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.5rem;">
-        <h3 style="margin:0;">🛒 Ventas por mostrador (este turno)</h3>
-        <strong style="font-size:1.1rem;">${formatCOP(totalVentas)}</strong>
-      </div>
-      <p class="mensaje-vacio" style="margin-bottom:0.75rem;">Para un cliente que compra algo del inventario sin hospedarse — no queda ligado a ninguna habitación ni huésped, solo descuenta bodega y suma a la venta del día.</p>
-      ${
-        permitido
-          ? `
-        <form id="form-venta-mostrador" class="form-grid">
-          <label>Producto
-            <select name="producto_id" required>
-              ${categorias
-                .map(
-                  (cat) => `
-                <optgroup label="${escaparHTML(cat)}">
-                  ${(productos || [])
-                    .filter((p) => p.categoria === cat)
-                    .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)} — ${formatCOP(p.precio)} (${stockPorProducto.get(p.id) || 0} en bodega)</option>`)
-                    .join('')}
-                </optgroup>
-              `
-                )
-                .join('')}
-            </select>
-          </label>
-          <label>Cantidad
-            <input type="number" name="cantidad" min="1" value="1" required />
-          </label>
-          <label>Método de pago
-            <select name="metodo_pago">
-              ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
-            </select>
-          </label>
-          <label>Cliente <span class="mensaje-vacio" style="font-size:0.7rem;">(opcional)</span>
-            <input type="text" name="cliente_nombre" placeholder="Opcional" />
-          </label>
-          <button type="submit" class="btn btn-secundario btn-chico">+ Registrar venta</button>
-        </form>
-      `
-          : ''
-      }
-      <div class="tabla-scroll" style="margin-top:0.75rem;">
-        <table class="tabla-simple">
-          <thead><tr><th>Hora</th><th>Producto</th><th>Cant.</th><th>Monto</th><th>Método</th><th>Cliente</th></tr></thead>
-          <tbody>
-            ${
-              (ventasIniciales || [])
-                .map(
-                  (v) =>
-                    `<tr><td>${formatFechaHora(v.creado_en)}</td><td>${v.minibar_productos ? escaparHTML(v.minibar_productos.nombre) : '—'}</td><td>${v.cantidad}</td><td>${formatCOP(v.monto)}</td><td>${v.metodo_pago}</td><td>${escaparHTML(v.cliente_nombre || '—')}</td></tr>`
-                )
-                .join('') || '<tr><td colspan="6" class="mensaje-vacio">Sin ventas de mostrador en este turno.</td></tr>'
-            }
-          </tbody>
-        </table>
-      </div>
     </div>
   `;
 
-  if (!permitido) return;
-
-  elemento.querySelector('#form-venta-mostrador').addEventListener('submit', async (e) => {
-    e.preventDefault();
-
-    if (!(await turnoSigueAbierto(turnoId))) {
-      mostrarToast('La caja ya no está abierta (se cerró mientras completabas este formulario). Refresca la página — esta venta NO se guardó.', 'error');
-      await cargarEstado(container);
-      return;
-    }
-
-    const form = new FormData(e.target);
-    const productoId = Number(form.get('producto_id'));
-    const cantidad = Number(form.get('cantidad'));
-    const producto = (productos || []).find((p) => p.id === productoId);
-    if (!producto) return;
-
-    const stockDisponible = stockPorProducto.get(productoId) || 0;
-    if (cantidad > stockDisponible) {
-      const seguir = await mostrarConfirmacion({
-        titulo: 'Stock insuficiente en bodega',
-        contenidoHTML: `En bodega solo hay ${stockDisponible} unidad(es) registradas de ${escaparHTML(producto.nombre)}. ¿Continuar de todas formas?`,
-        textoConfirmar: 'Continuar',
-      });
-      if (!seguir) return;
-    }
-
-    const monto = producto.precio * cantidad;
-    const usuario = getUsuarioActual();
-
-    const { error: errVenta } = await supabase.from('ventas_mostrador').insert({
-      turno_id: turnoId,
-      producto_id: productoId,
-      cantidad,
-      precio_unitario: producto.precio,
-      monto,
-      metodo_pago: form.get('metodo_pago'),
-      cliente_nombre: form.get('cliente_nombre').trim() || null,
-      registrado_por: usuario?.id || null,
-    });
-
-    if (errVenta) {
-      mostrarToast(`Error registrando la venta: ${errVenta.message}`, 'error');
-      return;
-    }
-
-    const { data: filaBodega } = await supabase
-      .from('inventario_bodega')
-      .select('id, cantidad_actual')
-      .eq('producto_id', productoId)
-      .maybeSingle();
-
-    if (filaBodega) {
-      await supabase
-        .from('inventario_bodega')
-        .update({ cantidad_actual: filaBodega.cantidad_actual - cantidad, actualizado_en: new Date().toISOString() })
-        .eq('id', filaBodega.id);
-    }
-
-    await supabase.from('inventario_movimientos').insert({
-      tipo: 'venta_mostrador',
-      producto_id: productoId,
-      cantidad,
-      notas: 'Venta directa por mostrador.',
-      registrado_por: usuario?.id || null,
-    });
-
-    mostrarToast('Venta registrada.', 'exito');
-    document.dispatchEvent(new CustomEvent('inventario:actualizado'));
-    await cargarEstado(container);
-    const wrapSaldos = container.querySelector('#saldos-cuenta-wrap');
-    if (wrapSaldos) await cargarSaldosPorCuenta(container, wrapSaldos);
-    const wrapResumen = container.querySelector('#resumen-dia-wrap');
-    if (wrapResumen) await cargarResumenDelDia(wrapResumen);
-  });
-}
-
-// =========================================================
-// Cierres anteriores — bitácora de entrega de turno, con detalle
-// itemizado y exportable por cierre (para auditoría del propietario).
-// =========================================================
-async function cargarHistorialCierres(container, elemento) {
-  if (!elemento) return;
-  elemento.innerHTML = `<h3>Cierres anteriores</h3><p class="mensaje-vacio">Cargando…</p>`;
-  const { data, error } = await supabase
-    .from('caja_turnos')
-    .select('*')
-    .eq('estado', 'cerrada')
-    .order('cerrado_en', { ascending: false })
-    .limit(10);
-
-  if (error) {
-    elemento.innerHTML = `<h3>Cierres anteriores</h3><p class="mensaje-vacio">Error: ${error.message}</p>`;
-    return;
-  }
-
-  const idsUsuarios = [];
-  (data || []).forEach((t) => {
-    idsUsuarios.push(t.abierto_por, t.cerrado_por);
-  });
-  const nombresUsuarios = await obtenerNombresUsuarios(idsUsuarios);
-
-  elemento.innerHTML = `
-    <h3>Cierres anteriores</h3>
-    <p class="mensaje-vacio">Bitácora de entregas de turno: quién abrió, quién cerró, cuánto entró en efectivo vs otros medios, y la diferencia del arqueo. "Ver detalle" muestra el desglose completo y el detalle transacción por transacción, descargable en Excel/PDF.</p>
-    <div class="tabla-scroll">
-      <table class="tabla-simple">
-        <thead><tr><th>Cerrada</th><th>Abrió</th><th>Cerró</th><th>Base inicial</th><th>Ingresos efectivo</th><th>Ingresos otros medios</th><th>Esperado efectivo</th><th>Contado</th><th>Diferencia</th><th></th></tr></thead>
-        <tbody>
-          ${
-            (data || [])
-              .map(
-                (t, idx) => `
-                <tr>
-                  <td>${formatFechaHora(t.cerrado_en)}</td>
-                  <td>${escaparHTML(nombresUsuarios.get(t.abierto_por) || '—')}</td>
-                  <td>${escaparHTML(nombresUsuarios.get(t.cerrado_por) || '—')}</td>
-                  <td>${formatCOP(t.saldo_inicial)}</td>
-                  <td>${formatCOP(t.total_ingresos_efectivo)}</td>
-                  <td>${formatCOP(t.total_ingresos_digital)}</td>
-                  <td>${formatCOP(t.saldo_esperado)}</td>
-                  <td>${formatCOP(t.saldo_contado)}</td>
-                  <td style="color:${Number(t.diferencia) === 0 ? 'var(--color-verde-oscuro)' : 'var(--color-rojo-oscuro)'}; font-weight:700;">${formatCOP(t.diferencia)}</td>
-                  <td><button type="button" class="btn-editar btn-ver-detalle-cierre" data-idx="${idx}" data-turno-id="${t.id}">Ver detalle</button></td>
-                </tr>
-                <tr class="fila-detalle-cierre oculto" data-detalle-idx="${idx}">
-                  <td colspan="10"><div class="detalle-cierre-contenido"><p class="mensaje-vacio">Cargando detalle…</p></div></td>
-                </tr>
-              `
-              )
-              .join('') || '<tr><td colspan="10" class="mensaje-vacio">Sin cierres registrados todavía.</td></tr>'
-          }
-        </tbody>
-      </table>
-    </div>
-  `;
-
-  elemento.querySelectorAll('.btn-ver-detalle-cierre').forEach((btn) => {
+  elemento.querySelectorAll('.btn-ver-detalle-dia').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      const fila = elemento.querySelector(`.fila-detalle-cierre[data-detalle-idx="${btn.dataset.idx}"]`);
+      const fila = elemento.querySelector(`.fila-detalle-dia[data-detalle-idx="${btn.dataset.idx}"]`);
       if (!fila) return;
       const yaAbierta = !fila.classList.contains('oculto');
       fila.classList.toggle('oculto');
       if (yaAbierta) return;
 
-      const turno = (data || []).find((t) => t.id === Number(btn.dataset.turnoId));
-      if (!turno) return;
-      const contenedorDetalle = fila.querySelector('.detalle-cierre-contenido');
-      if (contenedorDetalle.dataset.cargado === '1') return; // ya se cargó una vez, no repetir la consulta
-
-      await pintarDetalleCierre(contenedorDetalle, turno, nombresUsuarios);
-      contenedorDetalle.dataset.cargado = '1';
+      const contenedor = fila.querySelector('.detalle-dia-contenido');
+      if (contenedor.dataset.cargado === '1') return;
+      await pintarDetalleDia(contenedor, btn.dataset.fecha);
+      contenedor.dataset.cargado = '1';
     });
   });
 }
 
-async function pintarDetalleCierre(contenedor, turno, nombresUsuarios) {
+async function pintarDetalleDia(contenedor, fechaISO) {
   contenedor.innerHTML = '<p class="mensaje-vacio">Cargando detalle…</p>';
+  const mananaISO = toISODate(addDays(new Date(`${fechaISO}T00:00:00`), 1));
 
-  const desde = turno.abierto_en;
-  const hasta = turno.cerrado_en;
-
-  const [
-    { data: pagos, error: errPagos },
-    { data: movimientos, error: errMov },
-    { data: transferencias, error: errTrans },
-    { data: ventasMostrador, error: errVentas },
-  ] = await Promise.all([
-    supabase.from('reservas_pagos').select('*').gte('fecha', desde).lt('fecha', hasta).order('fecha', { ascending: true }),
-    supabase.from('caja_movimientos').select('*').eq('turno_id', turno.id).order('creado_en', { ascending: true }),
-    supabase
-      .from('caja_transferencias')
-      .select('*')
-      .gte('creado_en', desde)
-      .lt('creado_en', hasta)
-      .order('creado_en', { ascending: true }),
-    supabase.from('ventas_mostrador').select('*, minibar_productos(nombre)').eq('turno_id', turno.id).order('creado_en', { ascending: true }),
-  ]);
+  const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: transferencias, error: errTrans }, { data: ventasMostrador, error: errVentas }] =
+    await Promise.all([
+      supabase.from('reservas_pagos').select('*').gte('fecha', fechaISO).lt('fecha', mananaISO).order('fecha', { ascending: true }),
+      supabase.from('caja_movimientos').select('*').gte('creado_en', fechaISO).lt('creado_en', mananaISO).order('creado_en', { ascending: true }),
+      supabase.from('caja_transferencias').select('*').gte('creado_en', fechaISO).lt('creado_en', mananaISO).order('creado_en', { ascending: true }),
+      supabase.from('ventas_mostrador').select('*, minibar_productos(nombre)').gte('creado_en', fechaISO).lt('creado_en', mananaISO).order('creado_en', { ascending: true }),
+    ]);
 
   if (errPagos || errMov || errTrans || errVentas) {
     contenedor.innerHTML = `<p class="mensaje-vacio">Error cargando el detalle: ${(errPagos || errMov || errTrans || errVentas).message}</p>`;
     return;
   }
 
-  const datosDetalle = {
-    turno,
-    nombreAbrio: nombresUsuarios.get(turno.abierto_por) || '—',
-    nombreCerro: nombresUsuarios.get(turno.cerrado_por) || '—',
+  const datosDia = {
+    fechaISO,
     pagos: pagos || [],
     movimientos: movimientos || [],
     transferencias: transferencias || [],
@@ -1223,39 +1232,20 @@ async function pintarDetalleCierre(contenedor, turno, nombresUsuarios) {
   };
 
   contenedor.innerHTML = `
+    <p style="font-weight:600; margin-bottom:0.3rem;">Pagos de reservas (${datosDia.pagos.length})</p>
     ${
-      turno.desglose_metodos
-        ? `
-      <p style="font-weight:600; margin-bottom:0.3rem;">Desglose por medio de pago</p>
-      <table class="tabla-simple">
-        <thead><tr><th>Medio</th><th>Ingresos</th><th>Egresos</th><th>Neto</th></tr></thead>
-        <tbody>
-          ${Object.entries(turno.desglose_metodos)
-            .map(
-              ([medio, d]) =>
-                `<tr><td>${escaparHTML(medio)}</td><td>${formatCOP(d.ingresos)}</td><td>${formatCOP(d.egresos)}</td><td>${formatCOP(d.ingresos - d.egresos)}</td></tr>`
-            )
-            .join('')}
-        </tbody>
-      </table>
-    `
-        : ''
-    }
-
-    <p style="font-weight:600; margin:0.85rem 0 0.3rem;">Pagos de reservas (${datosDetalle.pagos.length})</p>
-    ${
-      datosDetalle.pagos.length === 0
-        ? '<p class="mensaje-vacio">Sin pagos de reservas en este turno.</p>'
-        : `<table class="tabla-simple"><thead><tr><th>Fecha</th><th>Monto</th><th>Método</th><th>Comentario</th></tr></thead><tbody>${datosDetalle.pagos
+      datosDia.pagos.length === 0
+        ? '<p class="mensaje-vacio">Sin pagos de reservas este día.</p>'
+        : `<table class="tabla-simple"><thead><tr><th>Fecha</th><th>Monto</th><th>Método</th><th>Comentario</th></tr></thead><tbody>${datosDia.pagos
             .map((p) => `<tr><td>${formatFechaHora(p.fecha)}</td><td>${formatCOP(p.monto)}</td><td>${p.metodo_pago || '—'}</td><td>${escaparHTML(p.comentarios || '—')}</td></tr>`)
             .join('')}</tbody></table>`
     }
 
-    <p style="font-weight:600; margin:0.85rem 0 0.3rem;">Movimientos manuales (${datosDetalle.movimientos.length})</p>
+    <p style="font-weight:600; margin:0.85rem 0 0.3rem;">Movimientos manuales (${datosDia.movimientos.length})</p>
     ${
-      datosDetalle.movimientos.length === 0
-        ? '<p class="mensaje-vacio">Sin movimientos manuales en este turno.</p>'
-        : `<table class="tabla-simple"><thead><tr><th>Fecha</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Método</th><th>Descripción</th></tr></thead><tbody>${datosDetalle.movimientos
+      datosDia.movimientos.length === 0
+        ? '<p class="mensaje-vacio">Sin movimientos manuales este día.</p>'
+        : `<table class="tabla-simple"><thead><tr><th>Fecha</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Método</th><th>Descripción</th></tr></thead><tbody>${datosDia.movimientos
             .map(
               (m) =>
                 `<tr><td>${formatFechaHora(m.creado_en)}</td><td>${m.tipo === 'ingreso' ? 'Ingreso' : 'Egreso'}</td><td>${escaparHTML(m.categoria || '—')}</td><td>${formatCOP(m.monto)}</td><td>${m.metodo_pago || '—'}</td><td>${escaparHTML(m.descripcion || '—')}</td></tr>`
@@ -1263,11 +1253,11 @@ async function pintarDetalleCierre(contenedor, turno, nombresUsuarios) {
             .join('')}</tbody></table>`
     }
 
-    <p style="font-weight:600; margin:0.85rem 0 0.3rem;">Ventas por mostrador (${datosDetalle.ventasMostrador.length})</p>
+    <p style="font-weight:600; margin:0.85rem 0 0.3rem;">Ventas por mostrador (${datosDia.ventasMostrador.length})</p>
     ${
-      datosDetalle.ventasMostrador.length === 0
-        ? '<p class="mensaje-vacio">Sin ventas de mostrador en este turno.</p>'
-        : `<table class="tabla-simple"><thead><tr><th>Fecha</th><th>Producto</th><th>Cant.</th><th>Monto</th><th>Método</th><th>Cliente</th></tr></thead><tbody>${datosDetalle.ventasMostrador
+      datosDia.ventasMostrador.length === 0
+        ? '<p class="mensaje-vacio">Sin ventas de mostrador este día.</p>'
+        : `<table class="tabla-simple"><thead><tr><th>Fecha</th><th>Producto</th><th>Cant.</th><th>Monto</th><th>Método</th><th>Cliente</th></tr></thead><tbody>${datosDia.ventasMostrador
             .map(
               (v) =>
                 `<tr><td>${formatFechaHora(v.creado_en)}</td><td>${v.minibar_productos ? escaparHTML(v.minibar_productos.nombre) : '—'}</td><td>${v.cantidad}</td><td>${formatCOP(v.monto)}</td><td>${v.metodo_pago}</td><td>${escaparHTML(v.cliente_nombre || '—')}</td></tr>`
@@ -1275,11 +1265,11 @@ async function pintarDetalleCierre(contenedor, turno, nombresUsuarios) {
             .join('')}</tbody></table>`
     }
 
-    <p style="font-weight:600; margin:0.85rem 0 0.3rem;">Transferencias entre cuentas (${datosDetalle.transferencias.length})</p>
+    <p style="font-weight:600; margin:0.85rem 0 0.3rem;">Transferencias entre cuentas (${datosDia.transferencias.length})</p>
     ${
-      datosDetalle.transferencias.length === 0
-        ? '<p class="mensaje-vacio">Sin transferencias en este turno.</p>'
-        : `<table class="tabla-simple"><thead><tr><th>Fecha</th><th>De</th><th>Hacia</th><th>Monto</th><th>Motivo</th></tr></thead><tbody>${datosDetalle.transferencias
+      datosDia.transferencias.length === 0
+        ? '<p class="mensaje-vacio">Sin transferencias este día.</p>'
+        : `<table class="tabla-simple"><thead><tr><th>Fecha</th><th>De</th><th>Hacia</th><th>Monto</th><th>Motivo</th></tr></thead><tbody>${datosDia.transferencias
             .map(
               (t) =>
                 `<tr><td>${formatFechaHora(t.creado_en)}</td><td>${escaparHTML(t.cuenta_origen)}</td><td>${escaparHTML(t.cuenta_destino)}</td><td>${formatCOP(t.monto)}</td><td>${escaparHTML(t.motivo || '—')}</td></tr>`
@@ -1287,74 +1277,47 @@ async function pintarDetalleCierre(contenedor, turno, nombresUsuarios) {
             .join('')}</tbody></table>`
     }
 
-    ${turno.observaciones_cierre ? `<p style="margin-top:0.85rem;"><strong>Observaciones del cierre:</strong> ${escaparHTML(turno.observaciones_cierre)}</p>` : ''}
-
     <div class="acciones-tarjeta" style="justify-content:flex-start; margin-top:0.85rem;">
-      <button type="button" class="btn btn-secundario btn-chico btn-exportar-csv-cierre">⬇ Excel</button>
-      <button type="button" class="btn btn-secundario btn-chico btn-exportar-pdf-cierre">⬇ PDF</button>
+      <button type="button" class="btn btn-secundario btn-chico btn-exportar-csv-dia">⬇ Excel</button>
+      <button type="button" class="btn btn-secundario btn-chico btn-exportar-pdf-dia">⬇ PDF</button>
     </div>
   `;
 
-  contenedor.querySelector('.btn-exportar-csv-cierre').addEventListener('click', () => exportarCierreCSV(datosDetalle));
-  contenedor.querySelector('.btn-exportar-pdf-cierre').addEventListener('click', () => exportarCierrePDF(datosDetalle));
+  contenedor.querySelector('.btn-exportar-csv-dia').addEventListener('click', () => exportarDiaCSV(datosDia));
+  contenedor.querySelector('.btn-exportar-pdf-dia').addEventListener('click', () => exportarDiaPDF(datosDia));
 }
 
-function exportarCierreCSV(d) {
-  const t = d.turno;
+function exportarDiaCSV(d) {
   const filas = [
-    ['Cierre de caja — Santa Ana House 21'],
-    ['Abierta por', d.nombreAbrio, formatFechaHora(t.abierto_en)],
-    ['Cerrada por', d.nombreCerro, formatFechaHora(t.cerrado_en)],
-    [],
-    ['Base inicial', t.saldo_inicial],
-    ['Esperado en efectivo', t.saldo_esperado],
-    ['Contado en efectivo', t.saldo_contado],
-    ['Diferencia', t.diferencia],
-    ['Observaciones del cierre', t.observaciones_cierre || ''],
+    [`Registro diario — ${d.fechaISO} — Santa Ana House 21`],
     [],
     ['Pagos de reservas'],
     ['Fecha', 'Monto', 'Método', 'Comentario'],
-    ...(d.pagos.length ? d.pagos.map((p) => [formatFechaHora(p.fecha), p.monto, p.metodo_pago || '', p.comentarios || '']) : [['Sin pagos en este turno.', '', '', '']]),
+    ...(d.pagos.length ? d.pagos.map((p) => [formatFechaHora(p.fecha), p.monto, p.metodo_pago || '', p.comentarios || '']) : [['Sin pagos este día.', '', '', '']]),
     [],
     ['Movimientos manuales'],
     ['Fecha', 'Tipo', 'Categoría', 'Monto', 'Método', 'Descripción'],
     ...(d.movimientos.length
       ? d.movimientos.map((m) => [formatFechaHora(m.creado_en), m.tipo, m.categoria || '', m.monto, m.metodo_pago || '', m.descripcion || ''])
-      : [['Sin movimientos en este turno.', '', '', '', '', '']]),
+      : [['Sin movimientos este día.', '', '', '', '', '']]),
     [],
     ['Ventas por mostrador'],
     ['Fecha', 'Producto', 'Cantidad', 'Monto', 'Método', 'Cliente'],
     ...(d.ventasMostrador.length
       ? d.ventasMostrador.map((v) => [formatFechaHora(v.creado_en), v.minibar_productos ? v.minibar_productos.nombre : '', v.cantidad, v.monto, v.metodo_pago, v.cliente_nombre || ''])
-      : [['Sin ventas de mostrador en este turno.', '', '', '', '', '']]),
+      : [['Sin ventas de mostrador este día.', '', '', '', '', '']]),
     [],
     ['Transferencias entre cuentas'],
     ['Fecha', 'De', 'Hacia', 'Monto', 'Motivo'],
     ...(d.transferencias.length
-      ? d.transferencias.map((t2) => [formatFechaHora(t2.creado_en), t2.cuenta_origen, t2.cuenta_destino, t2.monto, t2.motivo || ''])
-      : [['Sin transferencias en este turno.', '', '', '', '']]),
+      ? d.transferencias.map((t) => [formatFechaHora(t.creado_en), t.cuenta_origen, t.cuenta_destino, t.monto, t.motivo || ''])
+      : [['Sin transferencias este día.', '', '', '', '']]),
   ];
-  descargarCSV(`cierre-caja-${toISODate(new Date(t.cerrado_en))}-turno-${t.id}.csv`, filas);
+  descargarCSV(`registro-diario-${d.fechaISO}.csv`, filas);
 }
 
-function exportarCierrePDF(d) {
-  const t = d.turno;
+function exportarDiaPDF(d) {
   const cuerpo = `
-    <h2>Entrega de turno</h2>
-    <table>
-      <tr><td>Abierta por</td><td>${escaparHTML(d.nombreAbrio)} — ${formatFechaHora(t.abierto_en)}</td></tr>
-      <tr><td>Cerrada por</td><td>${escaparHTML(d.nombreCerro)} — ${formatFechaHora(t.cerrado_en)}</td></tr>
-    </table>
-
-    <h2>Arqueo de efectivo</h2>
-    <table>
-      <tr><td>Base inicial</td><td>${formatCOP(t.saldo_inicial)}</td></tr>
-      <tr><td>Esperado</td><td>${formatCOP(t.saldo_esperado)}</td></tr>
-      <tr><td>Contado</td><td>${formatCOP(t.saldo_contado)}</td></tr>
-      <tr><td>Diferencia</td><td>${formatCOP(t.diferencia)}</td></tr>
-    </table>
-    ${t.observaciones_cierre ? `<p><strong>Observaciones:</strong> ${escaparHTML(t.observaciones_cierre)}</p>` : ''}
-
     <h2>Pagos de reservas (${d.pagos.length})</h2>
     <table>
       <thead><tr><th>Fecha</th><th>Monto</th><th>Método</th><th>Comentario</th></tr></thead>
@@ -1362,7 +1325,7 @@ function exportarCierrePDF(d) {
         ${
           d.pagos.length
             ? d.pagos.map((p) => filaTablaSimple([formatFechaHora(p.fecha), formatCOP(p.monto), p.metodo_pago || '—', escaparHTML(p.comentarios || '—')])).join('')
-            : filaTablaSimple(['Sin pagos en este turno.', '', '', ''])
+            : filaTablaSimple(['Sin pagos este día.', '', '', ''])
         }
       </tbody>
     </table>
@@ -1385,7 +1348,7 @@ function exportarCierrePDF(d) {
                   ])
                 )
                 .join('')
-            : filaTablaSimple(['Sin movimientos en este turno.', '', '', '', '', ''])
+            : filaTablaSimple(['Sin movimientos este día.', '', '', '', '', ''])
         }
       </tbody>
     </table>
@@ -1408,7 +1371,7 @@ function exportarCierrePDF(d) {
                   ])
                 )
                 .join('')
-            : filaTablaSimple(['Sin ventas de mostrador en este turno.', '', '', '', '', ''])
+            : filaTablaSimple(['Sin ventas de mostrador este día.', '', '', '', '', ''])
         }
       </tbody>
     </table>
@@ -1420,276 +1383,19 @@ function exportarCierrePDF(d) {
         ${
           d.transferencias.length
             ? d.transferencias
-                .map((t2) => filaTablaSimple([formatFechaHora(t2.creado_en), escaparHTML(t2.cuenta_origen), escaparHTML(t2.cuenta_destino), formatCOP(t2.monto), escaparHTML(t2.motivo || '—')]))
+                .map((t) => filaTablaSimple([formatFechaHora(t.creado_en), escaparHTML(t.cuenta_origen), escaparHTML(t.cuenta_destino), formatCOP(t.monto), escaparHTML(t.motivo || '—')]))
                 .join('')
-            : filaTablaSimple(['Sin transferencias en este turno.', '', '', '', ''])
+            : filaTablaSimple(['Sin transferencias este día.', '', '', '', ''])
         }
       </tbody>
     </table>
   `;
-  abrirVistaImpresion(`Cierre de caja #${t.id} — Santa Ana House 21`, `Turno del ${formatFechaHora(t.abierto_en)} al ${formatFechaHora(t.cerrado_en)}`, cuerpo);
-}
-
-async function abrirModalMovimiento(container, turnoId) {
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal-caja">
-      <h3>Nuevo movimiento</h3>
-      <form id="form-movimiento" class="modal-contenido">
-        <div class="form-grid">
-          <label>Tipo
-            <select name="tipo" required>
-              <option value="ingreso">Ingreso</option>
-              <option value="egreso">Egreso</option>
-            </select>
-          </label>
-          <label>Categoría
-            <input type="text" name="categoria" placeholder="Ej: Insumos, Propina, Otro" />
-          </label>
-          <label>Monto
-            <input type="number" name="monto" step="1000" min="1" required />
-          </label>
-          <label>Método de pago
-            <select name="metodo_pago">
-              ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
-            </select>
-          </label>
-          <label>Fecha y hora <span class="mensaje-vacio" style="font-size:0.7rem;">(opcional — para cargue retroactivo)</span>
-            <input type="datetime-local" name="fecha_manual" />
-          </label>
-        </div>
-        <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
-          Descripción
-          <textarea name="descripcion" rows="2" style="padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit;"></textarea>
-        </label>
-        <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">Deja "Fecha y hora" vacío para usar el momento actual. Solo cámbialo para cargar a mano un movimiento de un día anterior (ej. ventas de antes de empezar a usar el sistema).</p>
-        <div class="modal-acciones" style="margin-top:1.25rem;">
-          <button type="button" class="btn btn-secundario" id="btn-cancelar-movimiento">Cancelar</button>
-          <button type="submit" class="btn btn-primario">Guardar</button>
-        </div>
-      </form>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-
-  overlay.querySelector('#btn-cancelar-movimiento').addEventListener('click', () => overlay.remove());
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-
-  overlay.querySelector('#form-movimiento').addEventListener('submit', async (e) => {
-    e.preventDefault();
-
-    if (!(await turnoSigueAbierto(turnoId))) {
-      mostrarToast('La caja ya no está abierta (se cerró mientras completabas este formulario). Refresca la página — este movimiento NO se guardó.', 'error');
-      overlay.remove();
-      await cargarEstado(container);
-      return;
-    }
-
-    const form = new FormData(e.target);
-    const usuario = getUsuarioActual();
-    const fechaManual = form.get('fecha_manual');
-    const payload = {
-      turno_id: turnoId,
-      tipo: form.get('tipo'),
-      categoria: form.get('categoria').trim() || null,
-      monto: Number(form.get('monto')),
-      metodo_pago: form.get('metodo_pago'),
-      descripcion: form.get('descripcion').trim() || null,
-      registrado_por: usuario.id,
-    };
-    if (fechaManual) payload.creado_en = new Date(fechaManual).toISOString();
-
-    const { error } = await supabase.from('caja_movimientos').insert(payload);
-    if (error) {
-      mostrarToast(`Error: ${error.message}`, 'error');
-      return;
-    }
-    mostrarToast('Movimiento registrado.', 'exito');
-    overlay.remove();
-    await cargarEstado(container);
-  });
-}
-
-// =========================================================
-// Cerrar caja: conteo de efectivo POR DENOMINACIÓN (menos errores que un
-// solo campo total) + explicación obligatoria si la diferencia no da
-// exacto.
-// =========================================================
-async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglose) {
-  const efectivo = desglose['Efectivo'] || { ingresos: 0, egresos: 0 };
-  const otrosMedios = Object.entries(desglose).filter(([medio]) => medio !== 'Efectivo');
-  const totalOtrosIngresos = otrosMedios.reduce((sum, [, d]) => sum + d.ingresos, 0);
-  const totalOtrosEgresos = otrosMedios.reduce((sum, [, d]) => sum + d.egresos, 0);
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal-caja modal-caja-ancha">
-      <h3>Cerrar caja</h3>
-      <form id="form-cierre-caja">
-        <div class="modal-contenido">
-          <table class="tabla-simple" style="margin-bottom:0.75rem;">
-            <thead><tr><th>Medio</th><th>Ingresos</th><th>Egresos</th></tr></thead>
-            <tbody>
-              ${Object.entries(desglose)
-                .map(([medio, d]) => `<tr><td>${escaparHTML(medio)}</td><td class="monto">${formatCOP(d.ingresos)}</td><td class="monto">${formatCOP(d.egresos)}</td></tr>`)
-                .join('')}
-            </tbody>
-          </table>
-          <p class="mensaje-vacio">Esperado en efectivo: <strong class="monto">${formatCOP(saldoEsperadoEfectivo)}</strong> (esto es lo único que hay que contar físicamente — los demás medios ya son electrónicos).</p>
-
-          <div class="tarjeta" style="margin-top:0.75rem; background:var(--color-fondo-suave, #f8f9fb);">
-            <h4 style="margin-top:0;">Conteo de efectivo por denominación</h4>
-            <table class="tabla-simple">
-              <thead><tr><th>Denominación</th><th>Cantidad</th><th>Subtotal</th></tr></thead>
-              <tbody>
-                ${DENOMINACIONES_BILLETES.map(
-                  (v) => `
-                  <tr>
-                    <td>${formatCOP(v)}</td>
-                    <td><input type="number" min="0" step="1" value="0" class="input-cantidad-denominacion" data-valor="${v}" style="width:90px;" /></td>
-                    <td class="monto subtotal-denominacion" data-valor="${v}">${formatCOP(0)}</td>
-                  </tr>
-                `
-                ).join('')}
-                <tr>
-                  <td>Monedas y billetes menores (efectivo directo)</td>
-                  <td><input type="number" min="0" step="100" value="0" id="input-monedas-otros" style="width:90px;" /></td>
-                  <td class="monto" id="subtotal-monedas">${formatCOP(0)}</td>
-                </tr>
-              </tbody>
-              <tfoot>
-                <tr style="font-weight:700;"><td colspan="2">Total contado</td><td class="monto" id="total-contado-denominaciones">${formatCOP(0)}</td></tr>
-              </tfoot>
-            </table>
-          </div>
-
-          <div class="form-grid" style="margin-top:0.75rem;">
-            <label>Diferencia
-              <input type="text" id="input-diferencia-display" disabled value="${formatCOP(0 - saldoEsperadoEfectivo)}" />
-            </label>
-          </div>
-          <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:0.75rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);" id="label-observaciones-cierre">
-            Observaciones
-            <textarea name="observaciones_cierre" id="input-observaciones-cierre" rows="2" placeholder="Opcional" style="text-transform:none; padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit;"></textarea>
-          </label>
-          <p class="mensaje-vacio" id="aviso-explicacion-diferencia" style="margin-top:0.3rem; font-size:0.78rem; color:var(--color-rojo-oscuro); display:none;">El conteo no cuadra con lo esperado — explica en Observaciones a qué se debe la diferencia antes de cerrar.</p>
-        </div>
-        <div class="modal-acciones">
-          <button type="button" class="btn btn-secundario" id="btn-cancelar-cierre">Cancelar</button>
-          <button type="submit" class="btn btn-peligro">Confirmar cierre</button>
-        </div>
-      </form>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-
-  let totalContadoActual = 0;
-
-  function recalcularConteo() {
-    let total = 0;
-    overlay.querySelectorAll('.input-cantidad-denominacion').forEach((input) => {
-      const valor = Number(input.dataset.valor);
-      const cantidad = Number(input.value) || 0;
-      const subtotal = valor * cantidad;
-      total += subtotal;
-      overlay.querySelector(`.subtotal-denominacion[data-valor="${valor}"]`).textContent = formatCOP(subtotal);
-    });
-    const monedas = Number(overlay.querySelector('#input-monedas-otros').value) || 0;
-    overlay.querySelector('#subtotal-monedas').textContent = formatCOP(monedas);
-    total += monedas;
-
-    totalContadoActual = total;
-    overlay.querySelector('#total-contado-denominaciones').textContent = formatCOP(total);
-
-    const diferencia = total - saldoEsperadoEfectivo;
-    overlay.querySelector('#input-diferencia-display').value = formatCOP(diferencia);
-
-    const textarea = overlay.querySelector('#input-observaciones-cierre');
-    const aviso = overlay.querySelector('#aviso-explicacion-diferencia');
-    const labelObs = overlay.querySelector('#label-observaciones-cierre');
-    if (diferencia !== 0) {
-      textarea.required = true;
-      aviso.style.display = 'block';
-      labelObs.firstChild.textContent = 'Observaciones (obligatorio — explica la diferencia)';
-    } else {
-      textarea.required = false;
-      aviso.style.display = 'none';
-      labelObs.firstChild.textContent = 'Observaciones';
-    }
-  }
-
-  overlay.querySelectorAll('.input-cantidad-denominacion, #input-monedas-otros').forEach((input) => {
-    input.addEventListener('input', recalcularConteo);
-  });
-  recalcularConteo();
-
-  overlay.querySelector('#btn-cancelar-cierre').addEventListener('click', () => overlay.remove());
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-
-  overlay.querySelector('#form-cierre-caja').addEventListener('submit', async (e) => {
-    e.preventDefault();
-
-    if (!(await turnoSigueAbierto(turno.id))) {
-      mostrarToast('Esta caja ya fue cerrada (probablemente desde otra sesión). Refresca la página.', 'error');
-      overlay.remove();
-      await cargarEstado(container);
-      return;
-    }
-
-    const form = new FormData(e.target);
-    const saldoContado = totalContadoActual;
-    const diferencia = saldoContado - saldoEsperadoEfectivo;
-
-    if (diferencia !== 0 && !form.get('observaciones_cierre').trim()) {
-      mostrarToast('El conteo no cuadra con lo esperado — explica la diferencia en Observaciones antes de cerrar.', 'error');
-      return;
-    }
-
-    const ok = await mostrarConfirmacion({
-      titulo: 'Confirmar cierre de caja',
-      contenidoHTML: `Diferencia en efectivo: <strong>${formatCOP(diferencia)}</strong>${diferencia !== 0 ? ' — revisa el conteo antes de confirmar.' : ''} ¿Cerrar la caja?`,
-      textoConfirmar: 'Cerrar caja',
-    });
-    if (!ok) return;
-
-    const usuario = getUsuarioActual();
-    const { error } = await supabase
-      .from('caja_turnos')
-      .update({
-        estado: 'cerrada',
-        saldo_esperado: saldoEsperadoEfectivo,
-        saldo_contado: saldoContado,
-        diferencia,
-        total_ingresos_efectivo: efectivo.ingresos,
-        total_ingresos_digital: totalOtrosIngresos,
-        total_egresos_efectivo: efectivo.egresos,
-        total_egresos_digital: totalOtrosEgresos,
-        desglose_metodos: desglose,
-        observaciones_cierre: form.get('observaciones_cierre').trim() || null,
-        cerrado_por: usuario.id,
-        cerrado_en: new Date().toISOString(),
-      })
-      .eq('id', turno.id);
-
-    if (error) {
-      mostrarToast(`Error cerrando caja: ${error.message}`, 'error');
-      return;
-    }
-    mostrarToast('Caja cerrada.', 'exito');
-    overlay.remove();
-    await cargarEstado(container);
-  });
+  abrirVistaImpresion(`Registro diario — ${d.fechaISO} — Santa Ana House 21`, 'Detalle del día', cuerpo);
 }
 
 registerModule({
   id: 'caja',
-  label: 'Registro diario de ventas',
+  label: 'Registro diario',
   icono: '💰',
   roles: ['propietario', 'administrador', 'recepcionista', 'contador', 'auditor'],
   render,
