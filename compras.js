@@ -10,11 +10,11 @@
 // Además, al recibir la orden se pide el método de pago y se registra el
 // costo total como un EGRESO en caja_movimientos (categoría "Compras") —
 // así cualquier compra recibida queda reflejada de inmediato en Registro
-// diario de ventas, Indicadores, Contabilidad y Auditoría, igual que un
-// gasto (ver gastos.js). Si no hay una caja/turno abierto en ese momento,
-// la orden se recibe igual (el inventario no puede quedarse sin
-// actualizar por eso) pero se avisa que el egreso no quedó registrado en
-// caja, para cargarlo luego a mano desde Gastos.
+// diario, Indicadores, Contabilidad y Auditoría, igual que un gasto (ver
+// gastos.js). El turno del día se resuelve solo por dentro (ver
+// `obtenerOCrearTurnoDeHoy` en caja.js) — ya no existe la posibilidad de
+// que "no haya caja abierta", así que la orden y el egreso siempre quedan
+// registrados juntos.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -22,6 +22,7 @@ import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
 import { formatFechaHora } from './dates.js';
 import { getUsuarioActual } from './auth.js';
+import { obtenerOCrearTurnoDeHoy } from './caja.js';
 
 const ROLES_GESTIONAN = ['propietario', 'administrador', 'bodega'];
 const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
@@ -323,8 +324,6 @@ async function cargarListaOrdenes(elemento) {
       const itemsOrden = itemsPorOrden.get(ordenId) || [];
       const totalOrden = itemsOrden.reduce((acc, it) => acc + it.cantidad * it.precio_costo_unitario, 0);
 
-      const { data: turnoAbierto } = await supabase.from('caja_turnos').select('id').eq('estado', 'abierta').limit(1).maybeSingle();
-
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
       overlay.innerHTML = `
@@ -333,20 +332,14 @@ async function cargarListaOrdenes(elemento) {
           <div class="modal-contenido">
             <p class="mensaje-vacio">Esto suma las cantidades de esta orden a las existencias de bodega y actualiza el precio de costo de cada producto.</p>
             <p><strong>Total de la orden: ${formatCOP(totalOrden)}</strong></p>
-            ${
-              turnoAbierto
-                ? `
-              <form id="form-recibir-orden" class="form-grid">
-                <label>¿Cómo se pagó?
-                  <select name="metodo_pago" required>
-                    ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
-                  </select>
-                </label>
-              </form>
-              <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">El total se registrará como egreso en Registro diario de ventas (categoría "Compras").</p>
-            `
-                : `<p class="mensaje-vacio" style="color:var(--color-rojo-oscuro);">⚠️ No hay una caja abierta ahora mismo — el inventario se actualizará igual, pero este gasto NO quedará registrado en Caja. Regístralo luego a mano desde Gastos si corresponde.</p>`
-            }
+            <form id="form-recibir-orden" class="form-grid">
+              <label>¿Cómo se pagó?
+                <select name="metodo_pago" required>
+                  ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
+                </select>
+              </label>
+            </form>
+            <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">El total se registrará como egreso en Registro diario (categoría "Compras").</p>
           </div>
           <div class="modal-acciones">
             <button type="button" class="btn btn-secundario" id="btn-cancelar-recibir">Cancelar</button>
@@ -363,7 +356,7 @@ async function cargarListaOrdenes(elemento) {
 
       overlay.querySelector('#btn-confirmar-recibir').addEventListener('click', async () => {
         const usuario = getUsuarioActual();
-        const metodoPago = turnoAbierto ? overlay.querySelector('select[name="metodo_pago"]').value : null;
+        const metodoPago = overlay.querySelector('select[name="metodo_pago"]').value;
 
         for (const it of itemsOrden) {
           const { data: filaBodega } = await supabase
@@ -400,16 +393,21 @@ async function cargarListaOrdenes(elemento) {
           });
         }
 
-        if (turnoAbierto && totalOrden > 0) {
-          await supabase.from('caja_movimientos').insert({
-            turno_id: turnoAbierto.id,
-            tipo: 'egreso',
-            categoria: 'Compras',
-            monto: totalOrden,
-            metodo_pago: metodoPago,
-            descripcion: `Orden de compra #${ordenId} recibida.`,
-            registrado_por: usuario?.id || null,
-          });
+        if (totalOrden > 0) {
+          try {
+            const turno = await obtenerOCrearTurnoDeHoy();
+            await supabase.from('caja_movimientos').insert({
+              turno_id: turno.id,
+              tipo: 'egreso',
+              categoria: 'Compras',
+              monto: totalOrden,
+              metodo_pago: metodoPago,
+              descripcion: `Orden de compra #${ordenId} recibida.`,
+              registrado_por: usuario?.id || null,
+            });
+          } catch (errTurno) {
+            mostrarToast(`Bodega actualizada, pero no se pudo registrar el egreso en Caja: ${errTurno.message}`, 'error');
+          }
         }
 
         const { error: errOrden } = await supabase
@@ -424,10 +422,7 @@ async function cargarListaOrdenes(elemento) {
           return;
         }
 
-        mostrarToast(
-          turnoAbierto ? 'Orden recibida. Bodega actualizada y gasto registrado en Caja.' : 'Orden recibida. Bodega actualizada (sin registrar en Caja — no había turno abierto).',
-          'exito'
-        );
+        mostrarToast('Orden recibida. Bodega actualizada y gasto registrado en Caja.', 'exito');
         await cargarListaOrdenes(elemento);
       });
     });
