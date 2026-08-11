@@ -17,6 +17,12 @@
 //   - "Descargar PDF": abre una vista de impresión ya formateada y
 //     dispara el diálogo de imprimir del navegador, donde se elige
 //     "Guardar como PDF".
+//
+// Nota sobre `descargarResumenCheckoutPDF` (exportada aparte): hace lo
+// mismo que el botón "Descargar PDF" del modal, pero sin necesidad de
+// abrir el modal primero — se usa desde el botón "⬇ PDF" del listado de
+// Checkouts en Indicadores, para volver a descargar un checkout ya hecho
+// con un solo clic.
 
 import { obtenerResumenLiquidacion } from './cuentas.js';
 import { formatCOP } from './currency.js';
@@ -219,6 +225,21 @@ export async function mostrarResumenCheckout(checkinId) {
     return;
   }
   pintarModalResumen(datos);
+}
+
+// Descarga directa del PDF de un checkout ya hecho, sin pasar por el
+// modal — usada desde el botón "⬇ PDF" del listado de Checkouts en
+// Indicadores (ver indicadores.js), para no obligar a abrir "Ver
+// resumen" primero solo para volver a descargarlo.
+export async function descargarResumenCheckoutPDF(checkinId) {
+  let datos;
+  try {
+    datos = await obtenerResumenLiquidacion(checkinId);
+  } catch (err) {
+    mostrarToast(`No se pudo generar el PDF: ${err.message}`, 'error');
+    return;
+  }
+  abrirVistaPDF(datos);
 }
 
 function pintarModalResumen(datos) {
