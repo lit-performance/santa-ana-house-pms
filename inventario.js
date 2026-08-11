@@ -38,6 +38,18 @@
 // con un total por producto y el detalle de qué fue a cada habitación —
 // para el cierre del día, sin tener que rebuscar en "Movimientos
 // recientes" (que mezcla todos los tipos y solo trae los últimos 25).
+//
+// Nota sobre "Inventario por habitación" (edición directa, ver 096):
+// "Actual" ahora es editable directamente ahí para quien puede gestionar
+// inventario — a diferencia de "Reabastecer habitación", que SIEMPRE
+// mueve stock real de la bodega, esta edición SOLO corrige el número de
+// la habitación (usa `ajustarInventarioHabitacion` con tipo
+// 'ajuste_habitacion', que nunca toca inventario_bodega). Es lo que se
+// usa para cargar el conteo físico real de cada minibar (por ejemplo,
+// después de poner todo en 0 con un reinicio) sin que eso se descuente
+// de la bodega principal, que ya está donde debe estar. Muestra TODOS
+// los productos activos del catálogo (no solo los que ya tengan fila en
+// inventario_habitacion), igual que "Pendientes de reponer".
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -476,6 +488,11 @@ async function cargarSeccionReabastecer(elemento) {
 
 // Ajusta (suma o resta) el stock de un producto en una habitación y deja
 // registro en inventario_movimientos. delta positivo = entra, negativo = sale.
+// A propósito NUNCA toca inventario_bodega — quien la llama decide si
+// además debe moverse stock de bodega (ver ejecutarReabastecimiento /
+// trasladarSinConfirmar más arriba) o no (ver el editor de "Actual" en
+// cargarInventarioHabitacion, que la usa sola para corregir el conteo de
+// la habitación sin afectar la bodega).
 export async function ajustarInventarioHabitacion(habitacionId, productoId, delta, usuarioId, tipoMovimiento) {
   const { data: fila } = await supabase
     .from('inventario_habitacion')
@@ -748,7 +765,8 @@ async function cargarReposicionesHoy(elemento) {
 }
 
 // =========================================================
-// Inventario por habitación
+// Inventario por habitación (ver 096: "Actual" es editable directo,
+// sin tocar bodega — ver nota al inicio del archivo).
 // =========================================================
 async function cargarInventarioHabitacion(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
@@ -778,18 +796,29 @@ async function cargarInventarioHabitacion(elemento) {
 
   async function pintarDetalle(habitacionId) {
     detalle.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
-    const { data: filas, error } = await supabase
-      .from('inventario_habitacion')
-      .select('*, minibar_productos(nombre, categoria, cantidad_estandar)')
-      .eq('habitacion_id', habitacionId)
-      .order('minibar_productos(categoria)')
-      .order('minibar_productos(nombre)');
-    if (error) {
-      detalle.innerHTML = `<p class="mensaje-vacio">Error: ${error.message}</p>`;
+
+    // A propósito trae TODO el catálogo activo (no solo lo que ya tenga
+    // fila en inventario_habitacion) para poder cargar el conteo real de
+    // un producto que esta habitación nunca había tenido inventariado.
+    const [{ data: productos, error: errProd }, { data: filas, error: errFilas }] = await Promise.all([
+      supabase.from('minibar_productos').select('id, nombre, categoria, cantidad_estandar').eq('activo', true).order('categoria').order('nombre'),
+      supabase.from('inventario_habitacion').select('producto_id, cantidad_actual').eq('habitacion_id', habitacionId),
+    ]);
+
+    if (errProd || errFilas) {
+      detalle.innerHTML = `<p class="mensaje-vacio">Error: ${(errProd || errFilas).message}</p>`;
       return;
     }
 
+    const actualPorProducto = new Map((filas || []).map((f) => [f.producto_id, f.cantidad_actual]));
+    const permitidoEditar = puedeGestionar();
+
     detalle.innerHTML = `
+      ${
+        permitidoEditar
+          ? '<p class="mensaje-vacio" style="margin-top:-0.4rem; margin-bottom:0.75rem;">Edita "Actual" y dale Guardar para dejar el conteo físico real de esta habitación — esto <strong>no saca nada de bodega</strong>, solo corrige el número de la habitación. Para trasladar stock real de bodega a la habitación, usa "Reabastecer habitación" o "Pendientes de reponer" más arriba.</p>'
+          : ''
+      }
       <div class="tabla-scroll">
         <table class="tabla-simple">
           <thead>
@@ -799,28 +828,70 @@ async function cargarInventarioHabitacion(elemento) {
               <th>Actual</th>
               <th>Estándar</th>
               <th>Estado</th>
+              ${permitidoEditar ? '<th></th>' : ''}
             </tr>
           </thead>
           <tbody>
             ${
-              (filas || [])
-                .map((f) => {
-                  const estandar = f.minibar_productos?.cantidad_estandar ?? 0;
-                  const falta = f.cantidad_actual < estandar;
-                  return `<tr>
-                    <td>${escaparHTML(f.minibar_productos?.categoria || '—')}</td>
-                    <td>${escaparHTML(f.minibar_productos?.nombre || '—')}</td>
-                    <td>${f.cantidad_actual}</td>
+              (productos || [])
+                .map((p) => {
+                  const actual = Number(actualPorProducto.get(p.id) ?? 0);
+                  const estandar = Number(p.cantidad_estandar ?? 0);
+                  const falta = actual < estandar;
+                  return `<tr data-producto-id="${p.id}" data-actual="${actual}">
+                    <td>${escaparHTML(p.categoria)}</td>
+                    <td>${escaparHTML(p.nombre)}</td>
+                    <td>${permitidoEditar ? `<input type="number" class="input-actual-habitacion" min="0" value="${actual}" style="width:70px" />` : actual}</td>
                     <td>${estandar}</td>
                     <td>${falta ? '⚠️ Reponer' : '✅'}</td>
+                    ${permitidoEditar ? `<td><button type="button" class="btn-editar btn-guardar-conteo-habitacion">Guardar</button></td>` : ''}
                   </tr>`;
                 })
-                .join('') || '<tr><td colspan="5" class="mensaje-vacio">Sin inventario cargado para esta habitación.</td></tr>'
+                .join('') || `<tr><td colspan="${permitidoEditar ? 6 : 5}" class="mensaje-vacio">Sin productos activos en el catálogo.</td></tr>`
             }
           </tbody>
         </table>
       </div>
     `;
+
+    if (!permitidoEditar) return;
+
+    detalle.querySelectorAll('.btn-guardar-conteo-habitacion').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        const fila = e.target.closest('tr');
+        const productoId = Number(fila.dataset.productoId);
+        const actualAnterior = Number(fila.dataset.actual);
+        const input = fila.querySelector('.input-actual-habitacion');
+        const nuevoValor = Math.max(0, Number(input.value) || 0);
+        const delta = nuevoValor - actualAnterior;
+
+        if (delta === 0) {
+          mostrarToast('Ese producto ya tenía esa cantidad.', 'exito');
+          return;
+        }
+
+        const usuario = getUsuarioActual();
+        btn.disabled = true;
+        try {
+          // 'ajuste_habitacion': el mismo tipo que usa minibar.js al
+          // revertir un consumo eliminado — SOLO toca
+          // inventario_habitacion, nunca inventario_bodega.
+          await ajustarInventarioHabitacion(habitacionId, productoId, delta, usuario?.id || null, 'ajuste_habitacion');
+        } catch (errAjuste) {
+          mostrarToast(`Error guardando el conteo: ${errAjuste.message}`, 'error');
+          btn.disabled = false;
+          return;
+        }
+
+        mostrarToast('Conteo de la habitación actualizado (no se tocó la bodega).', 'exito');
+        await pintarDetalle(habitacionId);
+
+        const wrapPendientes = document.querySelector('#inv-pendientes-wrap');
+        if (wrapPendientes) await cargarPendientesReponer(wrapPendientes);
+        const wrapMov = document.querySelector('#inv-movimientos-wrap');
+        if (wrapMov) await cargarMovimientos(wrapMov);
+      });
+    });
   }
 
   if (habitaciones && habitaciones.length > 0) {
