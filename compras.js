@@ -6,6 +6,15 @@
 // cantidades a inventario_bodega (mismo mecanismo que la "Registrar compra"
 // rápida de Inventario) y actualiza el precio de costo — así no toca
 // registrar la entrada dos veces.
+//
+// Además, al recibir la orden se pide el método de pago y se registra el
+// costo total como un EGRESO en caja_movimientos (categoría "Compras") —
+// así cualquier compra recibida queda reflejada de inmediato en Registro
+// diario de ventas, Indicadores, Contabilidad y Auditoría, igual que un
+// gasto (ver gastos.js). Si no hay una caja/turno abierto en ese momento,
+// la orden se recibe igual (el inventario no puede quedarse sin
+// actualizar por eso) pero se avisa que el egreso no quedó registrado en
+// caja, para cargarlo luego a mano desde Gastos.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -15,6 +24,7 @@ import { formatFechaHora } from './dates.js';
 import { getUsuarioActual } from './auth.js';
 
 const ROLES_GESTIONAN = ['propietario', 'administrador', 'bodega'];
+const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
 
 function puedeGestionar() {
   const usuario = getUsuarioActual();
@@ -310,63 +320,116 @@ async function cargarListaOrdenes(elemento) {
   elemento.querySelectorAll('.btn-recibido').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const ordenId = Number(btn.dataset.ordenId);
-      const ok = await mostrarConfirmacion({
-        titulo: 'Marcar como recibido',
-        contenidoHTML: 'Esto suma las cantidades de esta orden a las existencias de bodega y actualiza el precio de costo de cada producto. ¿Continuar?',
-        textoConfirmar: 'Sí, ya llegó',
-      });
-      if (!ok) return;
-
       const itemsOrden = itemsPorOrden.get(ordenId) || [];
-      const usuario = getUsuarioActual();
+      const totalOrden = itemsOrden.reduce((acc, it) => acc + it.cantidad * it.precio_costo_unitario, 0);
 
-      for (const it of itemsOrden) {
-        const { data: filaBodega } = await supabase
-          .from('inventario_bodega')
-          .select('id, cantidad_actual')
-          .eq('producto_id', it.producto_id)
-          .maybeSingle();
+      const { data: turnoAbierto } = await supabase.from('caja_turnos').select('id').eq('estado', 'abierta').limit(1).maybeSingle();
 
-        if (filaBodega) {
-          await supabase
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `
+        <div class="modal-caja">
+          <h3>Marcar como recibido</h3>
+          <div class="modal-contenido">
+            <p class="mensaje-vacio">Esto suma las cantidades de esta orden a las existencias de bodega y actualiza el precio de costo de cada producto.</p>
+            <p><strong>Total de la orden: ${formatCOP(totalOrden)}</strong></p>
+            ${
+              turnoAbierto
+                ? `
+              <form id="form-recibir-orden" class="form-grid">
+                <label>¿Cómo se pagó?
+                  <select name="metodo_pago" required>
+                    ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
+                  </select>
+                </label>
+              </form>
+              <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">El total se registrará como egreso en Registro diario de ventas (categoría "Compras").</p>
+            `
+                : `<p class="mensaje-vacio" style="color:var(--color-rojo-oscuro);">⚠️ No hay una caja abierta ahora mismo — el inventario se actualizará igual, pero este gasto NO quedará registrado en Caja. Regístralo luego a mano desde Gastos si corresponde.</p>`
+            }
+          </div>
+          <div class="modal-acciones">
+            <button type="button" class="btn btn-secundario" id="btn-cancelar-recibir">Cancelar</button>
+            <button type="button" class="btn btn-primario" id="btn-confirmar-recibir">Sí, ya llegó</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+
+      overlay.querySelector('#btn-cancelar-recibir').addEventListener('click', () => overlay.remove());
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) overlay.remove();
+      });
+
+      overlay.querySelector('#btn-confirmar-recibir').addEventListener('click', async () => {
+        const usuario = getUsuarioActual();
+        const metodoPago = turnoAbierto ? overlay.querySelector('select[name="metodo_pago"]').value : null;
+
+        for (const it of itemsOrden) {
+          const { data: filaBodega } = await supabase
             .from('inventario_bodega')
-            .update({
-              cantidad_actual: filaBodega.cantidad_actual + it.cantidad,
+            .select('id, cantidad_actual')
+            .eq('producto_id', it.producto_id)
+            .maybeSingle();
+
+          if (filaBodega) {
+            await supabase
+              .from('inventario_bodega')
+              .update({
+                cantidad_actual: filaBodega.cantidad_actual + it.cantidad,
+                precio_costo: it.precio_costo_unitario,
+                actualizado_en: new Date().toISOString(),
+              })
+              .eq('id', filaBodega.id);
+          } else {
+            await supabase.from('inventario_bodega').insert({
+              producto_id: it.producto_id,
+              cantidad_actual: it.cantidad,
+              cantidad_minima: 0,
               precio_costo: it.precio_costo_unitario,
-              actualizado_en: new Date().toISOString(),
-            })
-            .eq('id', filaBodega.id);
-        } else {
-          await supabase.from('inventario_bodega').insert({
+            });
+          }
+
+          await supabase.from('inventario_movimientos').insert({
+            tipo: 'compra_bodega',
             producto_id: it.producto_id,
-            cantidad_actual: it.cantidad,
-            cantidad_minima: 0,
+            cantidad: it.cantidad,
             precio_costo: it.precio_costo_unitario,
+            notas: `Recibido de orden de compra #${ordenId}.`,
+            registrado_por: usuario?.id || null,
           });
         }
 
-        await supabase.from('inventario_movimientos').insert({
-          tipo: 'compra_bodega',
-          producto_id: it.producto_id,
-          cantidad: it.cantidad,
-          precio_costo: it.precio_costo_unitario,
-          notas: `Recibido de orden de compra #${ordenId}.`,
-          registrado_por: usuario?.id || null,
-        });
-      }
+        if (turnoAbierto && totalOrden > 0) {
+          await supabase.from('caja_movimientos').insert({
+            turno_id: turnoAbierto.id,
+            tipo: 'egreso',
+            categoria: 'Compras',
+            monto: totalOrden,
+            metodo_pago: metodoPago,
+            descripcion: `Orden de compra #${ordenId} recibida.`,
+            registrado_por: usuario?.id || null,
+          });
+        }
 
-      const { error: errOrden } = await supabase
-        .from('ordenes_compra')
-        .update({ estado: 'recibido', fecha_recibido: new Date().toISOString() })
-        .eq('id', ordenId);
+        const { error: errOrden } = await supabase
+          .from('ordenes_compra')
+          .update({ estado: 'recibido', fecha_recibido: new Date().toISOString() })
+          .eq('id', ordenId);
 
-      if (errOrden) {
-        mostrarToast(`Bodega actualizada, pero no se pudo marcar la orden como recibida: ${errOrden.message}`, 'error');
-        return;
-      }
+        overlay.remove();
 
-      mostrarToast('Orden recibida. Bodega actualizada.', 'exito');
-      await cargarListaOrdenes(elemento);
+        if (errOrden) {
+          mostrarToast(`Bodega actualizada, pero no se pudo marcar la orden como recibida: ${errOrden.message}`, 'error');
+          return;
+        }
+
+        mostrarToast(
+          turnoAbierto ? 'Orden recibida. Bodega actualizada y gasto registrado en Caja.' : 'Orden recibida. Bodega actualizada (sin registrar en Caja — no había turno abierto).',
+          'exito'
+        );
+        await cargarListaOrdenes(elemento);
+      });
     });
   });
 }
