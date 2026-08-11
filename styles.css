@@ -137,6 +137,8 @@ h3 {
   font-family: var(--font-cuerpo);
 }
 
+.btn-chico { padding: 0.4rem 0.9rem; font-size: 0.82rem; border-radius: 7px; }
+
 .btn-primario { background: var(--color-azul); color: #fff; }
 .btn-primario:hover { background: var(--color-azul-oscuro); }
 
@@ -577,6 +579,31 @@ h3 {
 }
 
 .grid-dos-columnas .tarjeta { margin-bottom: 0; height: 100%; }
+
+/* ---------- Registro diario: kicker de columna + tarjetas con acento de
+   color a la izquierda (para orientar la vista de un vistazo entre lo
+   operativo del día y lo meramente informativo) ---------- */
+.kicker-columna {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-texto-suave);
+  font-weight: 700;
+  margin: 0 0 0.6rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 2px solid var(--color-borde);
+}
+
+.tarjeta-acento {
+  border-left-width: 4px;
+  border-left-style: solid;
+}
+
+.tarjeta-acento-azul { border-left-color: var(--color-azul); }
+.tarjeta-acento-verde { border-left-color: var(--color-verde); }
+.tarjeta-acento-naranja { border-left-color: var(--color-pendiente); }
+.tarjeta-acento-rojo { border-left-color: var(--color-rojo); }
+.tarjeta-acento-morado { border-left-color: #6a3fb5; }
 
 /* ---------- Badges de estado de reserva (Módulo 3: Reservas) ---------- */
 .badge-reservada { background: rgba(107, 107, 107, 0.14); color: var(--color-texto-suave); }
