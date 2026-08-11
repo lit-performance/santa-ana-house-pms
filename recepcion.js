@@ -128,7 +128,10 @@
 // inventario de la habitación (misma función que usa minibar.js), así que
 // nunca queda desincronizado. Ver también el badge "🥤" en la tabla de
 // habitaciones en uso, que avisa cuándo una habitación ya tiene consumo de
-// minibar antes de siquiera abrir el checkout.
+// minibar antes de siquiera abrir el checkout. El servicio de lavandería
+// (si se cobra al checkout) se agrega/quita exactamente igual: es un
+// producto más del catálogo de minibar (categoría "Servicios"), no
+// necesitó ningún cambio de código aquí.
 //
 // Nota sobre el resumen visual de la liquidación (tarjeta Estadía): se
 // arma en vivo con lo que la recepcionista va llenando (habitación,
@@ -156,7 +159,24 @@
 // básica de huespedes (solo contacto). Si encuentra algo, rellena los
 // campos y avisa con un toast — así un huésped recurrente no tiene que
 // volver a dictar todos sus datos.
-
+//
+// Nota IMPORTANTE sobre vincular la reserva automáticamente (corrige un
+// bug real detectado en capacitación): al salir del campo Número de
+// documento, además de autocompletar los datos, ahora también se busca
+// si ese documento tiene una reserva pendiente (reservada o confirmada,
+// la misma lista de "Vincular a una reserva" de arriba) y, si hay UNA
+// sola coincidencia y todavía no se había elegido ninguna a mano, se
+// vincula sola. Antes esto había que hacerlo a mano en el desplegable —
+// si a alguien se le olvidaba, el check-in creaba una reserva nueva desde
+// cero (walk-in) en vez de usar la que ya existía, y el abono que ya se
+// había pagado al reservar quedaba huérfano: nunca aparecía al liquidar
+// el check-out. Si hay más de una reserva pendiente con el mismo
+// documento, no se elige ninguna sola — hay que seleccionarla a mano para
+// no adivinar cuál es. Al vincularse (sola o a mano), el resumen de la
+// liquidación (tarjeta Estadía) muestra un cajón morado "Ya abonado antes"
+// con la suma de lo que ya se haya pagado por esa reserva, y el saldo
+// pendiente lo descuenta — así ese abono ya no se pierde entre la reserva,
+// el check-in y el check-out.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -1316,6 +1336,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
             </select>
           </label>
         </div>
+        <p class="mensaje-vacio" id="hint-reserva-vinculada" style="margin-top:0.5rem; font-size:0.78rem;">Si el documento que escribas abajo coincide con una sola reserva pendiente, se vincula aquí solo.</p>
       </div>
 
       <div class="tarjeta">
@@ -1573,6 +1594,21 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     if (!valor) return;
     const resultado = await buscarHuespedPorDocumento(valor);
     precargarDatosHuesped(resultado);
+
+    // Si este documento ya tiene una reserva pendiente (reservada o
+    // confirmada) y todavía no se ha elegido ninguna a mano, se vincula
+    // sola — esto es lo que evita que el abono ya pagado al reservar (o
+    // el que se cobre aquí mismo en el check-in) se pierda al llegar al
+    // check-out. Si hay más de una coincidencia, no se elige ninguna sola.
+    const selectReserva = container.querySelector('#select-reserva');
+    if (selectReserva && !selectReserva.value) {
+      const coincidencias = (reservas || []).filter((r) => r.huesped_documento === valor);
+      if (coincidencias.length === 1) {
+        selectReserva.value = String(coincidencias[0].id);
+        await aplicarReserva(coincidencias[0]);
+        mostrarToast('Este documento ya tenía una reserva pendiente — se vinculó sola (incluye el abono que ya se haya pagado).', 'exito');
+      }
+    }
   });
 
   inputNombreHuesped.addEventListener('blur', async () => {
@@ -1589,6 +1625,12 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
   const selectEstadoPago = container.querySelector('#select-estado-pago');
   const wrapMontoPago = container.querySelector('#wrap-monto-pago-checkin');
   const inputMontoPago = container.querySelector('#input-monto-pago');
+
+  // Suma de lo que ya se haya pagado (reservas_pagos) para la reserva
+  // vinculada — de la reserva original o de un check-in anterior. Se
+  // vuelve a calcular cada vez que se vincula/cambia de reserva en
+  // aplicarReserva(); en 0 si es un walk-in sin reserva.
+  let abonoPrevioActual = 0;
 
   function calcularMontoEstimado() {
     const tarifa = (tarifas || []).find((t) => t.id === Number(selectTarifaEstadia.value));
@@ -1612,7 +1654,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     const metodoPagoSel = container.querySelector('#select-metodo-pago-estadia');
     const metodoPago = metodoPagoSel ? metodoPagoSel.value : '—';
     const montoACobrar = estadoPago === 'parcial' || estadoPago === 'anticipado' ? Number(inputMontoPago.value) || 0 : 0;
-    const saldo = Math.max(0, montoEstimado - montoACobrar);
+    const saldo = Math.max(0, montoEstimado - abonoPrevioActual - montoACobrar);
     const info = ETIQUETA_ESTADO_PAGO[estadoPago] || ETIQUETA_ESTADO_PAGO.pendiente;
 
     wrap.innerHTML = `
@@ -1622,6 +1664,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
         ${filaResumen('Tarifa', tarifa ? tarifa.codigo : 'Sin elegir', {})}
         ${filaResumen('Cantidad de noches', noches || '—', {})}
         ${cajonMonto('Monto estimado estadía', formatCOP(montoEstimado), '#0b5fae', '#eaf3ff', '#8ec1f5')}
+        ${abonoPrevioActual > 0 ? cajonMonto('Ya abonado antes (reserva / check-in)', formatCOP(abonoPrevioActual), '#6a3fb5', '#f3edfb', '#c6acec') : ''}
         <div style="margin-top:0.75rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.4rem;">
           <span style="font-size:0.82rem; color:var(--color-texto-suave, #666);">Pago al check-in</span>
           <span style="display:inline-block; padding:0.3rem 0.7rem; border-radius:999px; background:${info.fondo}; color:${info.color}; font-weight:700; font-size:0.8rem; border:1px solid ${info.borde};">${info.texto}</span>
@@ -1642,7 +1685,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
   function actualizarHintMonto() {
     const estimado = calcularMontoEstimado();
     if (selectEstadoPago.value === 'anticipado') {
-      inputMontoPago.value = estimado;
+      inputMontoPago.value = Math.max(0, estimado - abonoPrevioActual);
     }
     pintarResumenLiquidacion();
   }
@@ -1653,7 +1696,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     wrapMontoPago.classList.toggle('oculto', !mostrar);
     inputMontoPago.required = mostrar;
     if (estado === 'anticipado') {
-      inputMontoPago.value = calcularMontoEstimado();
+      inputMontoPago.value = Math.max(0, calcularMontoEstimado() - abonoPrevioActual);
     } else if (estado === 'pendiente') {
       inputMontoPago.value = '';
     }
@@ -1669,8 +1712,11 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
   if (selectMetodoPagoEstadia) selectMetodoPagoEstadia.addEventListener('change', pintarResumenLiquidacion);
 
   // --- Vincular reserva: precarga campos (compartido entre el selector
-  // manual y la preselección que llega desde "Llegadas de hoy") ---
-  function aplicarReserva(reserva) {
+  // manual, la vinculación automática por documento y la preselección que
+  // llega desde "Llegadas de hoy") + trae el abono que ya se haya pagado
+  // por esa reserva, para que se refleje en el resumen y no se pierda al
+  // liquidar el check-out. ---
+  async function aplicarReserva(reserva) {
     if (!reserva) return;
     container.querySelector('input[name="nombre"]').value = reserva.huesped_nombre || '';
     container.querySelector('input[name="numero_documento"]').value = reserva.huesped_documento || '';
@@ -1680,19 +1726,32 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
     const noches = Math.round((new Date(reserva.fecha_checkout) - new Date(reserva.fecha_checkin)) / 86400000);
     container.querySelector('#input-noches').value = noches > 0 ? noches : '';
+
+    const { data: pagosPrevios, error: errPagosPrevios } = await supabase.from('reservas_pagos').select('monto').eq('reserva_id', reserva.id);
+    if (errPagosPrevios) {
+      mostrarToast(`No se pudo consultar el abono previo de esta reserva: ${errPagosPrevios.message}`, 'error');
+      abonoPrevioActual = 0;
+    } else {
+      abonoPrevioActual = (pagosPrevios || []).reduce((sum, p) => sum + Number(p.monto || 0), 0);
+    }
+
     actualizarHintMonto();
   }
 
-  container.querySelector('#select-reserva').addEventListener('change', (e) => {
+  container.querySelector('#select-reserva').addEventListener('change', async (e) => {
     const reservaId = e.target.value;
-    if (!reservaId) return;
-    aplicarReserva((reservas || []).find((r) => String(r.id) === reservaId));
+    if (!reservaId) {
+      abonoPrevioActual = 0;
+      pintarResumenLiquidacion();
+      return;
+    }
+    await aplicarReserva((reservas || []).find((r) => String(r.id) === reservaId));
   });
 
   if (reservaIdPreseleccionada) {
     const selectReserva = container.querySelector('#select-reserva');
     selectReserva.value = String(reservaIdPreseleccionada);
-    aplicarReserva((reservas || []).find((r) => r.id === reservaIdPreseleccionada));
+    await aplicarReserva((reservas || []).find((r) => r.id === reservaIdPreseleccionada));
   }
 
   actualizarHintMonto();
