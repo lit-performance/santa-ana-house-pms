@@ -15,6 +15,10 @@
 // turno), así que va antes que Reservas/Housekeeping que se consultan con
 // menos frecuencia minuto a minuto.
 //
+// Nota: 'gastos.js' se importa justo después de 'caja.js' porque es
+// subpestaña suya (parentId: 'caja') — un gasto es, por dentro, un
+// caja_movimientos más, solo con una pantalla dedicada más simple.
+//
 // Nota: 'huespedes.js' se importa junto con el resto de módulos de
 // "Análisis" (después de estadisticas.js) porque ahora vive ahí como
 // subpestaña (parentId: grupo-analisis, ver huespedes.js) — antes era
@@ -44,6 +48,7 @@ import { initTabs } from './ui.js';
 
 import './recepcion.js';
 import './caja.js';
+import './gastos.js';
 import './reservas.js';
 import './housekeeping.js';
 import './indicadores.js';
