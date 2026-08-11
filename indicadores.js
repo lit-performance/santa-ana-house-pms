@@ -18,7 +18,10 @@
 //      rango, rotación de inventario de minibar y habitaciones más
 //      apetecidas (por noches ocupadas, no por ingresos — para eso ya
 //      está el ranking de Estadísticas).
-//   6. El listado de Checkouts que ya existía.
+//   6. El listado de Checkouts que ya existía — cada fila tiene "Ver
+//      resumen" (abre la tarjeta completa) y "⬇ PDF" (descarga directa
+//      del PDF sin pasar por el modal, para volver a bajar un checkout ya
+//      hecho con un solo clic).
 //
 // El dinero se calcula directo de reservas_pagos + caja_movimientos +
 // ventas_mostrador (ventas de mostrador — clientes que no se hospedan,
@@ -40,7 +43,7 @@ import { supabase } from './supabase-client.js';
 import { formatCOP } from './currency.js';
 import { toISODate, addDays, formatFechaCorta, formatFechaHora } from './dates.js';
 import { calcularCheckoutsEnRango } from './cuentas.js';
-import { mostrarResumenCheckout } from './resumen-checkout.js';
+import { mostrarResumenCheckout, descargarResumenCheckoutPDF } from './resumen-checkout.js';
 import { calcularSaldosPorCuenta } from './caja.js';
 
 const ESTADOS_NO_OCUPAN = ['cancelada', 'no_show'];
@@ -415,7 +418,8 @@ async function cargarHuespedesRecurrentes(container) {
 }
 
 // =========================================================
-// Checkouts del rango (existente)
+// Checkouts del rango (existente) — cada fila tiene "Ver resumen" (abre
+// el modal completo) y "⬇ PDF" (descarga directa sin pasar por el modal).
 // =========================================================
 async function cargarCheckouts(container, fechaInicioISO, fechaFinISO) {
   const wrap = container.querySelector('#indicadores-checkouts');
@@ -470,7 +474,10 @@ async function cargarCheckouts(container, fechaInicioISO, fechaFinISO) {
               <td class="monto">${formatCOP(c.montoTotal)}</td>
               <td class="monto">${formatCOP(c.totalAbonado)}</td>
               <td class="monto" style="color:${c.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(c.saldoPendiente)}</td>
-              <td><button type="button" class="btn-editar btn-ver-resumen-checkout">Ver resumen</button></td>
+              <td style="white-space:nowrap;">
+                <button type="button" class="btn-editar btn-ver-resumen-checkout">Ver resumen</button>
+                <button type="button" class="btn-editar btn-pdf-resumen-checkout" title="Descargar el PDF directo, sin abrir el resumen">⬇ PDF</button>
+              </td>
             </tr>
           `
             )
@@ -484,6 +491,13 @@ async function cargarCheckouts(container, fechaInicioISO, fechaFinISO) {
     btn.addEventListener('click', (e) => {
       const checkinId = Number(e.target.closest('tr').dataset.checkinId);
       mostrarResumenCheckout(checkinId);
+    });
+  });
+
+  wrap.querySelectorAll('.btn-pdf-resumen-checkout').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const checkinId = Number(e.target.closest('tr').dataset.checkinId);
+      descargarResumenCheckoutPDF(checkinId);
     });
   });
 }
