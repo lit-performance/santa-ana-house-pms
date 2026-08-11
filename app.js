@@ -9,11 +9,11 @@
 // pantalla de inicio para el día a día. El archivo dashboard.js se deja en
 // el repo sin usar por si se quiere recuperar algo de ahí más adelante.
 //
-// Nota: 'caja.js' (pestaña visible "Registro diario de ventas") se movió
-// al segundo lugar, justo después de Recepción — es la otra pestaña de
-// uso constante durante el día (ventas por mostrador, arqueo, cierre de
-// turno), así que va antes que Reservas/Housekeeping que se consultan con
-// menos frecuencia minuto a minuto.
+// Nota: 'caja.js' (pestaña visible "Registro diario") se movió al segundo
+// lugar, justo después de Recepción — es la otra pestaña de uso constante
+// durante el día (ventas por mostrador, movimientos manuales), así que va
+// antes que Reservas/Housekeeping que se consultan con menos frecuencia
+// minuto a minuto.
 //
 // Nota: 'gastos.js' se importa justo después de 'caja.js' porque es
 // subpestaña suya (parentId: 'caja') — un gasto es, por dentro, un
@@ -35,6 +35,11 @@
 // Nota: 'usuarios.js' se movió de la antigua "Administración" a
 // subpestaña de Configuración (ver usuarios.js) — por eso ahora se
 // importa junto al bloque de Configuración, no junto a Inventario.
+//
+// Nota: 'carga-historica.js' también es subpestaña de Configuración
+// (parentId: 'grupo-configuracion') — es una herramienta de uso puntual
+// (digitar estadías de días anteriores a que el sistema entrara en uso
+// real), no de operación diaria, por eso vive ahí y no en Recepción.
 //
 // Nota: 'config-habitaciones.js' (+ config-tipos.js + config-tarifas.js,
 // que son sus subpestañas) se importan AL FINAL a propósito, después de
@@ -71,6 +76,7 @@ import './placeholders.js';
 
 // Configuración va al final del todo (ver nota arriba).
 import './usuarios.js';
+import './carga-historica.js';
 import './config-habitaciones.js';
 import './config-tipos.js';
 import './config-tarifas.js';
