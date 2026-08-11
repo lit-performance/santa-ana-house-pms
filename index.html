@@ -43,16 +43,16 @@
 
     <header class="app-header">
       <div class="app-header-top">
+        <!-- Logo del hotel + dirección, a la izquierda (como estaba antes
+             de la marca de Lit Performance — ese crédito se dejó solo en
+             el login y en el pie de página, ver footer más abajo). -->
+        <div class="header-logo-marca">
+          <img src="logo.png" alt="Santa Ana House 21" class="logo-header" onerror="this.style.display='none'" />
+          <span class="subtitulo-header">Carrera 21 6A-07 Bogotá</span>
+        </div>
         <div class="usuario-info">
           <span id="nombre-usuario-activo"></span>
           <button id="btn-cerrar-sesion" class="btn-cerrar-sesion">Cerrar sesión</button>
-        </div>
-        <!-- Logo del hotel + marca de Lit Performance, visibles en TODAS
-             las pantallas de la app (este header es fijo, fuera del
-             router — no hay que repetirlo módulo por módulo). -->
-        <div class="header-logo-marca">
-          <img src="logo.png" alt="Santa Ana House 21" class="logo-header" onerror="this.style.display='none'" />
-          <span class="marca-lit-performance marca-header">Lit Performance · 3245067380</span>
         </div>
       </div>
 
