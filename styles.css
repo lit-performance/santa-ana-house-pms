@@ -220,13 +220,22 @@ h3 {
 
 .logo-header { height: 96px; }
 
-/* Logo + marca de Lit Performance juntos, arriba a la derecha del header
-   (ver index.html) — visibles en todas las pantallas de la app. */
+/* Logo + subtítulo (dirección del hotel) juntos, arriba a la izquierda
+   del header (ver index.html) — visibles en todas las pantallas de la
+   app. El usuario y "Cerrar sesión" quedan a la derecha. */
 .header-logo-marca {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 0.2rem;
+}
+
+.subtitulo-header {
+  font-size: 0.72rem;
+  color: var(--color-texto-suave);
+  letter-spacing: 0.02em;
+  margin: 0;
+  margin-top: -0.1rem;
 }
 
 .marca-lit-performance {
@@ -235,8 +244,6 @@ h3 {
   letter-spacing: 0.02em;
   margin: 0;
 }
-
-.marca-header { margin-top: -0.1rem; }
 
 /* Pie de página fijo con la marca de Lit Performance — vive fuera del
    router en index.html, por eso aparece en TODOS los módulos sin tocar
