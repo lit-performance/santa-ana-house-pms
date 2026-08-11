@@ -95,6 +95,21 @@ async function obtenerNombresUsuarios(ids) {
   return new Map((data || []).map((u) => [u.id, u.nombre]));
 }
 
+// --- Guarda de seguridad: vuelve a confirmar contra la base de datos que
+// el turno SIGUE abierto justo antes de insertar/cerrar algo. Sin esto,
+// si dos personas tienen Caja abierta en pestañas distintas y una cierra
+// el turno mientras la otra todavía tiene un formulario abierto, esa
+// segunda persona podía guardar un movimiento/venta que quedaba pegado a
+// un turno ya cerrado — invisible desde ese momento en la pestaña de
+// Caja (aunque sí seguía contando en Indicadores/Contabilidad/Auditoría,
+// que consultan por fecha y no por turno). Ahora, si el turno ya no está
+// abierto, se bloquea la operación y se pide refrescar la página.
+async function turnoSigueAbierto(turnoId) {
+  const { data, error } = await supabase.from('caja_turnos').select('estado').eq('id', turnoId).maybeSingle();
+  if (error || !data) return false;
+  return data.estado === 'abierta';
+}
+
 // Suma ingresos/egresos por método de pago DENTRO DE UN TURNO, combinando
 // reservas_pagos (siempre ingreso) y caja_movimientos (ingreso o egreso).
 // Devuelve un objeto { [metodo]: { ingresos, egresos } } con TODOS los
@@ -178,6 +193,32 @@ export async function calcularSaldosPorCuenta() {
     const destino = bucket(t.cuenta_destino);
     saldos[origen] -= Number(t.monto);
     saldos[destino] += Number(t.monto);
+  });
+
+  // --- Ajuste por bases iniciales de apertura de caja ---
+  // Cada apertura sugiere como base lo que quedó CONTADO en el cierre
+  // anterior (continuidad entre turnos) — ese dinero ya está explicado por
+  // los ingresos/egresos ya sumados arriba, así que no se vuelve a sumar.
+  // Pero la base de la PRIMERA apertura de la historia (no hay cierre
+  // anterior que la explique) es efectivo físico que ya existía ANTES de
+  // que el sistema empezara a llevar la cuenta — y cualquier ajuste manual
+  // que alguien haga a la base sugerida en aperturas posteriores (ej. un
+  // recuento físico distinto al sugerido) tampoco está explicado por el
+  // ledger. Ambos casos se detectan comparando cada base con el
+  // saldo_contado del cierre inmediatamente anterior, y esa diferencia se
+  // suma a Efectivo — así "Saldos por cuenta" sí incluye el efectivo real
+  // desde la primera apertura en adelante.
+  const { data: turnos, error: errTurnos } = await supabase
+    .from('caja_turnos')
+    .select('saldo_inicial, saldo_contado, estado, abierto_en')
+    .order('abierto_en', { ascending: true });
+  if (errTurnos) throw errTurnos;
+
+  let saldoContadoAnterior = null;
+  (turnos || []).forEach((t) => {
+    const base = Number(t.saldo_inicial || 0);
+    saldos['Efectivo'] += saldoContadoAnterior === null ? base : base - saldoContadoAnterior;
+    if (t.estado === 'cerrada') saldoContadoAnterior = Number(t.saldo_contado || 0);
   });
 
   return saldos;
@@ -315,6 +356,9 @@ async function cargarResumenDelDia(elemento) {
   const totalVentasHoy = ventasReservasHoy + ventasManualesHoy + ventasMostradorHoy;
 
   elemento.innerHTML = `
+    <div class="acciones-tarjeta" style="justify-content:flex-end; margin-bottom:0.4rem;">
+      <button type="button" id="btn-refrescar-resumen-dia" class="btn btn-secundario btn-chico">🔄 Actualizar</button>
+    </div>
     <div class="grid-tres-columnas">
       <div class="stat-card stat-card-verde">
         <div class="stat-card-label">💵 Ventas de hoy</div>
@@ -332,8 +376,10 @@ async function cargarResumenDelDia(elemento) {
         <div class="stat-card-subtitulo">${turnoAbierto ? `Desde ${formatFechaHora(turnoAbierto.abierto_en)}` : 'Ábrela para empezar a vender'}</div>
       </div>
     </div>
-    <p class="mensaje-vacio" style="margin-top:0.6rem;">Este resumen es del día calendario de hoy (no del turno) — para el detalle exacto del turno en curso, revisa "Desglose por medio de pago" más abajo.</p>
+    <p class="mensaje-vacio" style="margin-top:0.6rem;">Este resumen es del día calendario de hoy (no del turno) — incluye cualquier pago de check-in o check-out ya registrado hoy, aunque la habitación siga ocupada. Para el detalle exacto del turno en curso, revisa "Desglose por medio de pago" más abajo.</p>
   `;
+
+  elemento.querySelector('#btn-refrescar-resumen-dia').addEventListener('click', () => cargarResumenDelDia(elemento));
 }
 
 // =========================================================
@@ -986,6 +1032,13 @@ async function cargarVentasMostrador(container, elemento, turnoId, ventasInicial
 
   elemento.querySelector('#form-venta-mostrador').addEventListener('submit', async (e) => {
     e.preventDefault();
+
+    if (!(await turnoSigueAbierto(turnoId))) {
+      mostrarToast('La caja ya no está abierta (se cerró mientras completabas este formulario). Refresca la página — esta venta NO se guardó.', 'error');
+      await cargarEstado(container);
+      return;
+    }
+
     const form = new FormData(e.target);
     const productoId = Number(form.get('producto_id'));
     const cantidad = Number(form.get('cantidad'));
@@ -1402,11 +1455,15 @@ async function abrirModalMovimiento(container, turnoId) {
               ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
             </select>
           </label>
+          <label>Fecha y hora <span class="mensaje-vacio" style="font-size:0.7rem;">(opcional — para cargue retroactivo)</span>
+            <input type="datetime-local" name="fecha_manual" />
+          </label>
         </div>
         <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
           Descripción
           <textarea name="descripcion" rows="2" style="padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit;"></textarea>
         </label>
+        <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">Deja "Fecha y hora" vacío para usar el momento actual. Solo cámbialo para cargar a mano un movimiento de un día anterior (ej. ventas de antes de empezar a usar el sistema).</p>
         <div class="modal-acciones" style="margin-top:1.25rem;">
           <button type="button" class="btn btn-secundario" id="btn-cancelar-movimiento">Cancelar</button>
           <button type="submit" class="btn btn-primario">Guardar</button>
@@ -1423,9 +1480,18 @@ async function abrirModalMovimiento(container, turnoId) {
 
   overlay.querySelector('#form-movimiento').addEventListener('submit', async (e) => {
     e.preventDefault();
+
+    if (!(await turnoSigueAbierto(turnoId))) {
+      mostrarToast('La caja ya no está abierta (se cerró mientras completabas este formulario). Refresca la página — este movimiento NO se guardó.', 'error');
+      overlay.remove();
+      await cargarEstado(container);
+      return;
+    }
+
     const form = new FormData(e.target);
     const usuario = getUsuarioActual();
-    const { error } = await supabase.from('caja_movimientos').insert({
+    const fechaManual = form.get('fecha_manual');
+    const payload = {
       turno_id: turnoId,
       tipo: form.get('tipo'),
       categoria: form.get('categoria').trim() || null,
@@ -1433,7 +1499,10 @@ async function abrirModalMovimiento(container, turnoId) {
       metodo_pago: form.get('metodo_pago'),
       descripcion: form.get('descripcion').trim() || null,
       registrado_por: usuario.id,
-    });
+    };
+    if (fechaManual) payload.creado_en = new Date(fechaManual).toISOString();
+
+    const { error } = await supabase.from('caja_movimientos').insert(payload);
     if (error) {
       mostrarToast(`Error: ${error.message}`, 'error');
       return;
@@ -1565,6 +1634,14 @@ async function abrirModalCierre(container, turno, saldoEsperadoEfectivo, desglos
 
   overlay.querySelector('#form-cierre-caja').addEventListener('submit', async (e) => {
     e.preventDefault();
+
+    if (!(await turnoSigueAbierto(turno.id))) {
+      mostrarToast('Esta caja ya fue cerrada (probablemente desde otra sesión). Refresca la página.', 'error');
+      overlay.remove();
+      await cargarEstado(container);
+      return;
+    }
+
     const form = new FormData(e.target);
     const saldoContado = totalContadoActual;
     const diferencia = saldoContado - saldoEsperadoEfectivo;
