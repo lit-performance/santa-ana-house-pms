@@ -10,6 +10,26 @@
 //
 // Toda entrada/salida de stock queda registrada en inventario_movimientos
 // para trazabilidad.
+//
+// Nota sobre "🔴 Pendientes de reponer en minibares" (nueva, punto 12 de
+// la lista de capacitación): antes, para saber qué le faltaba a cada
+// habitación había que abrir "Inventario por habitación" y revisarlas una
+// por una. Esta sección nueva compara TODAS las habitaciones contra el
+// catálogo completo de productos con cantidad estándar definida — no solo
+// lo que ya tenga fila en inventario_habitacion, así una habitación que
+// nunca se ha inventariado también aparece con su pendiente completo — y
+// arma una sola tabla con habitación + producto + cuánto falta, con un
+// botón "Reponer ahora" que hace el traslado bodega → habitación al
+// instante (reutiliza la misma lógica de "Reabastecer habitación" de
+// abajo, incluida la advertencia si en bodega no alcanza).
+//
+// Nota sobre "📤 Reposiciones de hoy" (nueva, también punto 12): resumen
+// del día de todo lo que salió de la bodega principal hacia los minibares
+// de las habitaciones (inventario_movimientos con tipo
+// 'reabastecimiento', filtrado a hoy), con un total por producto y el
+// detalle de qué fue a cada habitación — para el cierre del día, sin tener
+// que rebuscar en "Movimientos recientes" (que mezcla todos los tipos y
+// solo trae los últimos 25).
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -34,11 +54,17 @@ function escaparHTML(texto) {
 async function render(container) {
   container.innerHTML = `
     <h2>Inventario</h2>
+    <div id="inv-pendientes-wrap" style="margin-bottom:1.5rem;">
+      <p class="mensaje-vacio">Calculando pendientes de reponer…</p>
+    </div>
     <div id="inv-bodega-wrap" style="margin-bottom:1.5rem;">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
     <div id="inv-compra-wrap" style="margin-bottom:1.5rem;"></div>
     <div id="inv-reabastecer-wrap" style="margin-bottom:1.5rem;"></div>
+    <div id="inv-reposiciones-hoy-wrap" style="margin-bottom:1.5rem;">
+      <p class="mensaje-vacio">Cargando…</p>
+    </div>
     <div id="inv-habitacion-wrap" style="margin-bottom:1.5rem;">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
@@ -47,9 +73,11 @@ async function render(container) {
     </div>
   `;
   await Promise.all([
+    cargarPendientesReponer(container.querySelector('#inv-pendientes-wrap')),
     cargarInventarioBodega(container.querySelector('#inv-bodega-wrap')),
     cargarSeccionCompra(container.querySelector('#inv-compra-wrap')),
     cargarSeccionReabastecer(container.querySelector('#inv-reabastecer-wrap')),
+    cargarReposicionesHoy(container.querySelector('#inv-reposiciones-hoy-wrap')),
     cargarInventarioHabitacion(container.querySelector('#inv-habitacion-wrap')),
     cargarMovimientos(container.querySelector('#inv-movimientos-wrap')),
   ]);
@@ -271,6 +299,66 @@ async function cargarSeccionCompra(elemento) {
 }
 
 // =========================================================
+// Ejecuta un traslado bodega → habitación (descuenta bodega, suma stock
+// de la habitación, deja registro en inventario_movimientos). Se usa
+// desde el formulario "Reabastecer habitación" de abajo y también desde
+// el botón "Reponer ahora" de "Pendientes de reponer" — así ambos
+// caminos comparten exactamente la misma validación de stock de bodega.
+// Devuelve true si el traslado se hizo, false si el usuario canceló.
+// =========================================================
+async function ejecutarReabastecimiento(habitacionId, productoId, cantidad) {
+  const usuario = getUsuarioActual();
+
+  const { data: filaBodega, error: errBodega } = await supabase
+    .from('inventario_bodega')
+    .select('id, cantidad_actual')
+    .eq('producto_id', productoId)
+    .maybeSingle();
+  if (errBodega) {
+    mostrarToast(`Error: ${errBodega.message}`, 'error');
+    return false;
+  }
+
+  const stockBodega = filaBodega?.cantidad_actual || 0;
+  if (stockBodega < cantidad) {
+    const seguir = await mostrarConfirmacion({
+      titulo: 'Stock insuficiente en bodega',
+      contenidoHTML: `En bodega solo hay ${stockBodega} unidad(es) registradas de este producto. ¿Continuar de todas formas?`,
+      textoConfirmar: 'Continuar',
+    });
+    if (!seguir) return false;
+  }
+
+  if (filaBodega) {
+    await supabase
+      .from('inventario_bodega')
+      .update({ cantidad_actual: stockBodega - cantidad, actualizado_en: new Date().toISOString() })
+      .eq('id', filaBodega.id);
+  }
+
+  await ajustarInventarioHabitacion(habitacionId, productoId, cantidad, usuario?.id || null, 'reabastecimiento');
+
+  mostrarToast('Habitación reabastecida.', 'exito');
+  return true;
+}
+
+// Refresca todas las secciones que dependen del stock (bodega, pendientes
+// de reponer, inventario por habitación, reposiciones de hoy y el log de
+// movimientos) después de cualquier traslado bodega → habitación.
+async function refrescarTrasReabastecer() {
+  const wrapPendientes = document.querySelector('#inv-pendientes-wrap');
+  if (wrapPendientes) await cargarPendientesReponer(wrapPendientes);
+  const wrapBodega = document.querySelector('#inv-bodega-wrap');
+  if (wrapBodega) await cargarInventarioBodega(wrapBodega);
+  const wrapHab = document.querySelector('#inv-habitacion-wrap');
+  if (wrapHab) await cargarInventarioHabitacion(wrapHab);
+  const wrapReposicionesHoy = document.querySelector('#inv-reposiciones-hoy-wrap');
+  if (wrapReposicionesHoy) await cargarReposicionesHoy(wrapReposicionesHoy);
+  const wrapMov = document.querySelector('#inv-movimientos-wrap');
+  if (wrapMov) await cargarMovimientos(wrapMov);
+}
+
+// =========================================================
 // Reabastecer habitación (bodega → habitación)
 // =========================================================
 async function cargarSeccionReabastecer(elemento) {
@@ -325,45 +413,12 @@ async function cargarSeccionReabastecer(elemento) {
     const habitacionId = Number(form.get('habitacion_id'));
     const productoId = Number(form.get('producto_id'));
     const cantidad = Number(form.get('cantidad'));
-    const usuario = getUsuarioActual();
 
-    const { data: filaBodega, error: errBodega } = await supabase
-      .from('inventario_bodega')
-      .select('id, cantidad_actual')
-      .eq('producto_id', productoId)
-      .maybeSingle();
-    if (errBodega) {
-      mostrarToast(`Error: ${errBodega.message}`, 'error');
-      return;
-    }
+    const ok = await ejecutarReabastecimiento(habitacionId, productoId, cantidad);
+    if (!ok) return;
 
-    const stockBodega = filaBodega?.cantidad_actual || 0;
-    if (stockBodega < cantidad) {
-      const seguir = await mostrarConfirmacion({
-        titulo: 'Stock insuficiente en bodega',
-        contenidoHTML: `En bodega solo hay ${stockBodega} unidad(es) registradas de este producto. ¿Continuar de todas formas?`,
-        textoConfirmar: 'Continuar',
-      });
-      if (!seguir) return;
-    }
-
-    if (filaBodega) {
-      await supabase
-        .from('inventario_bodega')
-        .update({ cantidad_actual: stockBodega - cantidad, actualizado_en: new Date().toISOString() })
-        .eq('id', filaBodega.id);
-    }
-
-    await ajustarInventarioHabitacion(habitacionId, productoId, cantidad, usuario?.id || null, 'reabastecimiento');
-
-    mostrarToast('Habitación reabastecida.', 'exito');
     e.target.reset();
-    const wrapBodega = document.querySelector('#inv-bodega-wrap');
-    if (wrapBodega) await cargarInventarioBodega(wrapBodega);
-    const wrapHab = document.querySelector('#inv-habitacion-wrap');
-    if (wrapHab) await cargarInventarioHabitacion(wrapHab);
-    const wrapMov = document.querySelector('#inv-movimientos-wrap');
-    if (wrapMov) await cargarMovimientos(wrapMov);
+    await refrescarTrasReabastecer();
   });
 }
 
@@ -397,6 +452,191 @@ export async function ajustarInventarioHabitacion(habitacionId, productoId, delt
     cantidad: Math.abs(delta),
     registrado_por: usuarioId,
   });
+}
+
+// =========================================================
+// Pendientes de reponer — vista consolidada de TODAS las habitaciones
+// (ver nota al inicio del archivo).
+// =========================================================
+async function cargarPendientesReponer(elemento) {
+  elemento.innerHTML = '<p class="mensaje-vacio">Calculando pendientes de reponer…</p>';
+  const permitido = puedeGestionar();
+
+  const [{ data: habitaciones, error: errHab }, { data: productos, error: errProd }, { data: filas, error: errFilas }] = await Promise.all([
+    supabase.from('habitaciones').select('id, numero, nombre').order('numero'),
+    supabase.from('minibar_productos').select('id, nombre, categoria, cantidad_estandar').eq('activo', true).gt('cantidad_estandar', 0),
+    supabase.from('inventario_habitacion').select('habitacion_id, producto_id, cantidad_actual'),
+  ]);
+
+  if (errHab || errProd || errFilas) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error calculando pendientes de reponer: ${(errHab || errProd || errFilas).message}</p>`;
+    return;
+  }
+
+  const actualPorClave = new Map((filas || []).map((f) => [`${f.habitacion_id}_${f.producto_id}`, f.cantidad_actual]));
+
+  const pendientes = [];
+  (habitaciones || []).forEach((h) => {
+    (productos || []).forEach((p) => {
+      const actual = Number(actualPorClave.get(`${h.id}_${p.id}`) ?? 0);
+      const estandar = Number(p.cantidad_estandar);
+      const falta = estandar - actual;
+      if (falta > 0) {
+        pendientes.push({
+          habitacionId: h.id,
+          habitacionLabel: `${h.numero} — ${h.nombre}`,
+          productoId: p.id,
+          productoNombre: p.nombre,
+          categoria: p.categoria,
+          actual,
+          estandar,
+          falta,
+        });
+      }
+    });
+  });
+
+  pendientes.sort((a, b) => b.falta - a.falta || a.habitacionLabel.localeCompare(b.habitacionLabel));
+
+  const totalUnidadesFaltantes = pendientes.reduce((sum, x) => sum + x.falta, 0);
+  const habitacionesConFaltantes = new Set(pendientes.map((x) => x.habitacionId)).size;
+
+  elemento.innerHTML = `
+    <div class="tarjeta" style="${pendientes.length > 0 ? 'border:1.5px solid #f0a8a0; background:var(--color-alerta-fondo, #fdecea);' : ''}">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.25rem;">
+        <h3 style="margin:0;">🔴 Pendientes de reponer en minibares</h3>
+        ${pendientes.length > 0 ? `<span class="stat-card-valor" style="font-size:1.3rem; color:var(--color-rojo-oscuro);">${totalUnidadesFaltantes} unidad(es)</span>` : ''}
+      </div>
+      <p class="mensaje-vacio" style="margin-top:-0.2rem;">Compara el stock actual de cada habitación contra su cantidad estándar de minibar — incluye habitaciones que todavía no se han inventariado. ${pendientes.length > 0 ? `Afecta a ${habitacionesConFaltantes} habitación(es).` : ''}</p>
+      ${
+        pendientes.length === 0
+          ? '<p class="mensaje-vacio">✅ Todas las habitaciones están completas según su estándar de minibar.</p>'
+          : `
+        <div class="tabla-scroll">
+          <table class="tabla-simple">
+            <thead>
+              <tr>
+                <th>Habitación</th>
+                <th>Producto</th>
+                <th>Actual</th>
+                <th>Estándar</th>
+                <th>Falta</th>
+                ${permitido ? '<th></th>' : ''}
+              </tr>
+            </thead>
+            <tbody>
+              ${pendientes
+                .map(
+                  (x) => `<tr data-habitacion-id="${x.habitacionId}" data-producto-id="${x.productoId}" data-falta="${x.falta}">
+                <td>${escaparHTML(x.habitacionLabel)}</td>
+                <td>${escaparHTML(x.productoNombre)} <span class="mensaje-vacio">(${escaparHTML(x.categoria)})</span></td>
+                <td>${x.actual}</td>
+                <td>${x.estandar}</td>
+                <td style="font-weight:700; color:var(--color-rojo-oscuro);">${x.falta}</td>
+                ${permitido ? `<td><button type="button" class="btn-editar btn-reponer-ahora">Reponer ahora</button></td>` : ''}
+              </tr>`
+                )
+                .join('')}
+            </tbody>
+          </table>
+        </div>
+      `
+      }
+    </div>
+  `;
+
+  if (!permitido) return;
+
+  elemento.querySelectorAll('.btn-reponer-ahora').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      const fila = e.target.closest('tr');
+      const habitacionId = Number(fila.dataset.habitacionId);
+      const productoId = Number(fila.dataset.productoId);
+      const cantidad = Number(fila.dataset.falta);
+      const ok = await ejecutarReabastecimiento(habitacionId, productoId, cantidad);
+      if (ok) await refrescarTrasReabastecer();
+    });
+  });
+}
+
+// =========================================================
+// Reposiciones de hoy — resumen rápido para el cierre del día (ver nota
+// al inicio del archivo).
+// =========================================================
+async function cargarReposicionesHoy(elemento) {
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+
+  const hoy = new Date();
+  const inicioHoy = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()).toISOString();
+  const inicioManana = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 1).toISOString();
+
+  const { data: movimientos, error } = await supabase
+    .from('inventario_movimientos')
+    .select('*, minibar_productos(nombre, categoria), habitaciones(numero, nombre)')
+    .eq('tipo', 'reabastecimiento')
+    .gte('creado_en', inicioHoy)
+    .lt('creado_en', inicioManana)
+    .order('creado_en', { ascending: false });
+
+  if (error) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando las reposiciones de hoy: ${error.message}</p>`;
+    return;
+  }
+
+  const filas = movimientos || [];
+  const totalUnidades = filas.reduce((sum, m) => sum + Number(m.cantidad), 0);
+
+  const porProducto = new Map();
+  filas.forEach((m) => {
+    const nombre = m.minibar_productos?.nombre || 'Producto';
+    porProducto.set(nombre, (porProducto.get(nombre) || 0) + Number(m.cantidad));
+  });
+  const resumenProductos = Array.from(porProducto.entries()).sort((a, b) => b[1] - a[1]);
+
+  elemento.innerHTML = `
+    <div class="tarjeta">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.25rem;">
+        <h3 style="margin:0;">📤 Reposiciones de hoy (bodega → habitaciones)</h3>
+        <span class="stat-card-valor" style="font-size:1.3rem; color:var(--color-verde-oscuro);">${totalUnidades} unidad(es)</span>
+      </div>
+      <p class="mensaje-vacio" style="margin-top:-0.2rem;">Todo lo que salió hoy de la bodega principal para reponer los minibares — para el cierre del día, sin tener que rebuscar en "Movimientos recientes".</p>
+      ${
+        filas.length === 0
+          ? '<p class="mensaje-vacio">Todavía no se ha reabastecido ninguna habitación hoy.</p>'
+          : `
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:0.75rem; margin-bottom:1rem;">
+          ${resumenProductos
+            .map(
+              ([nombre, cantidad]) => `
+            <div class="stat-card">
+              <div class="stat-card-label">${escaparHTML(nombre)}</div>
+              <div class="stat-card-valor" style="font-size:1.4rem;">${cantidad}</div>
+            </div>
+          `
+            )
+            .join('')}
+        </div>
+        <div class="tabla-scroll">
+          <table class="tabla-simple">
+            <thead><tr><th>Hora</th><th>Habitación</th><th>Producto</th><th>Cantidad</th></tr></thead>
+            <tbody>
+              ${filas
+                .map(
+                  (m) => `<tr>
+                <td>${formatFechaHora(m.creado_en)}</td>
+                <td>${m.habitaciones ? `${escaparHTML(m.habitaciones.numero)} — ${escaparHTML(m.habitaciones.nombre)}` : '—'}</td>
+                <td>${escaparHTML(m.minibar_productos?.nombre || '—')}</td>
+                <td style="font-weight:700;">${m.cantidad}</td>
+              </tr>`
+                )
+                .join('')}
+            </tbody>
+          </table>
+        </div>
+      `
+      }
+    </div>
+  `;
 }
 
 // =========================================================
