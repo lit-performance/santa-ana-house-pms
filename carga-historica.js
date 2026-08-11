@@ -36,6 +36,14 @@
 // Solo propietario/administrador pueden ver y usar esta pantalla — es
 // una herramienta de corrección/carga retroactiva, no de operación
 // diaria (por eso no la puede usar recepcionista).
+//
+// CORRECCIÓN (ver 095): el módulo se había registrado con
+// parentId: 'grupo-configuracion', que no existe — el id real del
+// módulo principal de Configuración es 'configuracion' (ver
+// config-habitaciones.js), igual que usan usuarios.js y la entrada
+// "Documentos" de placeholders.js. Por el id equivocado, esta pantalla
+// quedaba registrada pero huérfana: no aparecía ni como pestaña
+// principal ni como subpestaña de nada. Ya corregido abajo.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -425,6 +433,6 @@ registerModule({
   label: 'Carga histórica',
   icono: '🗓️',
   roles: ROLES_PERMITIDOS,
-  parentId: 'grupo-configuracion',
+  parentId: 'configuracion',
   render,
 });
