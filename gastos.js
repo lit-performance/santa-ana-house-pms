@@ -8,42 +8,37 @@
 // `caja_movimientos` normal con tipo='egreso' y una categoría de la lista
 // fija de abajo. Esto es a propósito — así el gasto queda automáticamente
 // reflejado en TODO lo que ya lee caja_movimientos sin tocar esos
-// archivos: el resumen del día y el desglose del turno en "Registro
-// diario de ventas" (caja.js), Indicadores, Contabilidad y Auditoría.
-// Un gasto ES un movimiento de caja, solo que con una categoría fija y una
-// pantalla más amigable para quien no necesita ver el resto del arqueo.
+// archivos: el resumen del día y el desglose por medio de pago en
+// "Registro diario" (caja.js), Indicadores, Contabilidad y Auditoría.
 //
-// Por la misma razón que un movimiento manual o una venta de mostrador,
-// requiere que haya una caja/turno ABIERTO — no se puede pagar un gasto
-// con la caja cerrada (ver nota de `turnoSigueAbierto` en caja.js; aquí
-// se reimplementa la misma guarda mínima).
-//
-// Subpestaña de "Registro diario de ventas" (parentId: 'caja') porque es
-// parte del mismo flujo de dinero del día a día.
+// Nota IMPORTANTE (ya no hay que "abrir caja" para registrar un gasto):
+// desde el rediseño de Registro diario, el turno del día se administra
+// solo por dentro (ver `obtenerOCrearTurnoDeHoy` en caja.js, importada
+// aquí) — nunca hay que pedirle a la recepcionista que abra nada antes de
+// poder registrar un gasto, se resuelve automático al guardar.
 //
 // Nota sobre "Monto" (corrige un bug real de capacitación): antes el
 // campo era type="number" con step="1000" y min="1" — eso hace que el
 // navegador exija que el valor sea EXACTAMENTE 1 más un múltiplo de 1000
 // (1, 1001, 2001, 3001…), así que al escribir un monto normal como
-// "20000" el navegador lo rechazaba con un mensaje confuso ("los valores
-// más cercanos son 19001 o 20001"). Ahora el campo es de texto con
-// formato "$" y punto de miles en vivo (igual que el resto del sistema,
-// ver currency.js) y acepta cualquier monto — el valor real que se
-// guarda siempre se lee con `valorNumericoInput`.
+// "20000" el navegador lo rechazaba con un mensaje confuso. Ahora el
+// campo es de texto con formato "$" y punto de miles en vivo (igual que
+// el resto del sistema, ver currency.js) y acepta cualquier monto.
 //
 // Nota sobre "Link del comprobante (Drive)": campo opcional para pegar el
-// link donde quedó alojada la factura/soporte del gasto (foto, PDF,
-// carpeta de Drive, etc). No se creó una columna nueva en la base de
-// datos — se guarda como parte del texto de `descripcion` (junto con
-// proveedor y notas, ya se hacía así), y en el historial se muestra como
-// un enlace clicable "🔗 Ver soporte" en vez del link completo.
+// link donde quedó alojada la factura/soporte del gasto. No se creó una
+// columna nueva en la base de datos — se guarda como parte del texto de
+// `descripcion` (junto con proveedor y notas), y en el historial se
+// muestra como un enlace clicable "🔗 Ver soporte" en vez del link
+// completo.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast } from './ui.js';
 import { formatCOP, activarInputDinero, valorNumericoInput } from './currency.js';
-import { formatFechaHora, toISODate, addDays } from './dates.js';
+import { formatFechaHora, toISODate } from './dates.js';
 import { getUsuarioActual } from './auth.js';
+import { obtenerOCrearTurnoDeHoy } from './caja.js';
 
 const ROLES_OPERAN = ['propietario', 'administrador', 'recepcionista'];
 const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
@@ -73,22 +68,11 @@ function primerDiaDelMes() {
   return toISODate(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
 }
 
-async function obtenerTurnoAbierto() {
-  const { data } = await supabase.from('caja_turnos').select('id, estado').eq('estado', 'abierta').limit(1).maybeSingle();
-  return data || null;
-}
-
-async function turnoSigueAbierto(turnoId) {
-  const { data, error } = await supabase.from('caja_turnos').select('estado').eq('id', turnoId).maybeSingle();
-  if (error || !data) return false;
-  return data.estado === 'abierta';
-}
-
 async function render(container) {
   const hoyISO = toISODate(new Date());
   container.innerHTML = `
     <h2>Gastos</h2>
-    <p style="color:var(--color-texto-suave); margin-bottom:1.25rem;">Registro de gastos operativos del hotel — agua, luz, gas, aseo, mantenimiento y demás. Cada gasto se paga desde la cuenta que elijas y queda reflejado de inmediato en Registro diario de ventas, Indicadores, Contabilidad y Auditoría.</p>
+    <p style="color:var(--color-texto-suave); margin-bottom:1.25rem;">Registro de gastos operativos del hotel — agua, luz, gas, aseo, mantenimiento y demás. Cada gasto se paga desde la cuenta que elijas y queda reflejado de inmediato en Registro diario, Indicadores, Contabilidad y Auditoría.</p>
     <div id="gastos-form-wrap" style="margin-bottom:1.5rem;"></div>
     <div class="tarjeta" style="margin-bottom:1.5rem;">
       <form id="form-filtro-gastos" class="form-grid">
@@ -121,18 +105,6 @@ async function render(container) {
 async function cargarFormNuevoGasto(elemento, container) {
   if (!puedeOperar()) {
     elemento.innerHTML = '';
-    return;
-  }
-
-  const turno = await obtenerTurnoAbierto();
-
-  if (!turno) {
-    elemento.innerHTML = `
-      <div class="tarjeta" style="border-color:var(--color-naranja, #c77c11);">
-        <h3 style="margin-top:0;">⚠️ No hay una caja abierta</h3>
-        <p class="mensaje-vacio">Para registrar un gasto primero hay que abrir la caja del día — ve a "Registro diario de ventas" y ábrela. Ningún gasto se puede pagar con la caja cerrada.</p>
-      </div>
-    `;
     return;
   }
 
@@ -182,9 +154,11 @@ async function cargarFormNuevoGasto(elemento, container) {
       return;
     }
 
-    if (!(await turnoSigueAbierto(turno.id))) {
-      mostrarToast('La caja ya no está abierta (se cerró mientras completabas este formulario). Refresca la página — este gasto NO se guardó.', 'error');
-      await cargarFormNuevoGasto(elemento, container);
+    let turno;
+    try {
+      turno = await obtenerOCrearTurnoDeHoy();
+    } catch (errTurno) {
+      mostrarToast(`No se pudo registrar el gasto: ${errTurno.message}`, 'error');
       return;
     }
 
