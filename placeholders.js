@@ -33,11 +33,16 @@
 //     también, y Usuarios/Documentos se movieron como subpestañas de
 //     Configuración. Se deja registrada (no se borra) para poder
 //     reactivarla fácil si se necesita más adelante.
-//   - IA, Mantenimiento, CRM, Gastos y Facturación quedan ocultos con
-//     `roles: []` (nadie los ve, pero el código/los datos siguen intactos
-//     — reversible con solo devolverles roles).
-//   - Auditoría ya no es un placeholder: se construyó de verdad (ver
-//     auditoria.js), así que se quitó de MODULOS_PENDIENTES.
+//   - IA, Mantenimiento y Facturación quedan ocultos con `roles: []`
+//     (nadie los ve, pero el código/los datos siguen intactos —
+//     reversible con solo devolverles roles).
+//   - Auditoría y Gastos ya no son placeholders: se construyeron de
+//     verdad (ver auditoria.js y gastos.js), así que se quitaron de
+//     MODULOS_PENDIENTES. Dejar la entrada de un módulo aquí después de
+//     que ya tiene su propio archivo real causa el aviso "Módulo
+//     duplicado ignorado" en consola (app.js importa el archivo real
+//     ANTES que placeholders.js, así que el real siempre gana — pero es
+//     ruido innecesario que aquí se evita quitando la entrada vieja).
 //
 // No tocan la base de datos — son solo vista, sin tablas ni RLS propias
 // (excepto lo que ya haya hecho el módulo real correspondiente).
@@ -150,24 +155,11 @@ GRUPOS.forEach((grupo) => {
 });
 
 // --- Módulos "próximamente" ---
-// IA, Mantenimiento y Gastos quedan con roles: [] (ocultos temporalmente,
-// ver nota de cabecera) en vez de borrarse — así es trivial reactivarlos
-// más adelante devolviéndoles su lista de roles.
+// IA y Mantenimiento quedan con roles: [] (ocultos temporalmente, ver
+// nota de cabecera) en vez de borrarse — así es trivial reactivarlos más
+// adelante devolviéndoles su lista de roles. Gastos y Auditoría ya NO
+// están aquí — se construyeron de verdad (ver gastos.js y auditoria.js).
 const MODULOS_PENDIENTES = [
-  {
-    id: 'gastos',
-    label: 'Gastos',
-    icono: '💸',
-    roles: [],
-    parentId: 'grupo-finanzas',
-    titulo: 'Gastos',
-    descripcion: 'Registro de los gastos operativos del hotel, categorizados para reportes y contabilidad.',
-    features: [
-      'Registro de gastos por categoría',
-      'Adjuntar soporte/factura',
-      'Se sumará a Contabilidad igual que Compras',
-    ],
-  },
   {
     id: 'mantenimiento',
     label: 'Mantenimiento',
