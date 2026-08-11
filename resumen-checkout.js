@@ -23,11 +23,26 @@
 // abrir el modal primero — se usa desde el botón "⬇ PDF" del listado de
 // Checkouts en Indicadores, para volver a descargar un checkout ya hecho
 // con un solo clic.
+//
+// Nota sobre la marca del hotel y de Lit Performance en los descargables:
+// tanto el PDF como el Excel llevan arriba el nombre y dirección del
+// hotel (el PDF además con el logo, arriba a la izquierda — usando la URL
+// pública de GitHub Pages, porque la ventana de impresión se abre en
+// blanco y no puede resolver una ruta relativa como "logo.png"), y al
+// final llevan la marca "Lit Performance · 3245067380" (desarrollador del
+// sistema). Si el hotel cambia de dirección o de logo más adelante, este
+// es el único lugar que hay que tocar para que se actualice en todos los
+// descargables.
 
 import { obtenerResumenLiquidacion } from './cuentas.js';
 import { formatCOP } from './currency.js';
 import { formatFechaCorta, formatFechaHora } from './dates.js';
 import { mostrarToast } from './ui.js';
+
+const HOTEL_NOMBRE = 'Santa Ana House 21';
+const HOTEL_DIRECCION = 'Carrera 21 6A-07 Bogotá';
+const HOTEL_LOGO_URL = 'https://lit-performance.github.io/santa-ana-house-pms/logo.png';
+const MARCA_LIT_PERFORMANCE = 'Lit Performance · 3245067380';
 
 function escaparHTML(texto) {
   const div = document.createElement('div');
@@ -70,7 +85,10 @@ function encabezadoHabitacion(datos) {
 
 function filasCSV(datos) {
   const filas = [
-    ['Resumen de liquidación — Santa Ana House 21'],
+    [HOTEL_NOMBRE],
+    [HOTEL_DIRECCION],
+    [],
+    ['Resumen de liquidación'],
     [],
     ['Huésped', datos.huespedNombre],
     ['Documento', `${datos.tipoDocumento || ''} ${datos.numeroDocumento || ''}`.trim()],
@@ -101,6 +119,8 @@ function filasCSV(datos) {
     [],
     ['Comentarios del check-in', datos.observacionesCheckin || ''],
     ['Comentarios del check-out', datos.observacionesCheckout || ''],
+    [],
+    [MARCA_LIT_PERFORMANCE],
   ];
   return filas;
 }
@@ -150,9 +170,12 @@ function abrirVistaPDF(datos) {
       <style>
         * { print-color-adjust: exact; -webkit-print-color-adjust: exact; box-sizing: border-box; }
         body { font-family: Arial, Helvetica, sans-serif; padding: 2rem; color: #222; }
-        h1 { font-size: 1.3rem; margin-bottom: 0.1rem; }
+        .encabezado-pdf { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.6rem; padding-bottom: 0.6rem; border-bottom: 2px solid #1a5276; }
+        .encabezado-pdf img { height: 62px; max-width: 140px; object-fit: contain; }
+        .encabezado-pdf .datos-hotel-pdf h1 { font-size: 1.25rem; margin: 0; }
+        .encabezado-pdf .datos-hotel-pdf p { margin: 0.15rem 0 0; color: #666; font-size: 0.85rem; }
         h2 { font-size: 1rem; margin: 1.4rem 0 0.4rem; }
-        .sub { color: #666; margin-top: 0; }
+        .sub { color: #666; margin-top: 0.4rem; }
         table { width: 100%; border-collapse: collapse; margin-top: 0.3rem; }
         th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
         th { background: #f4f4f6; }
@@ -161,12 +184,19 @@ function abrirVistaPDF(datos) {
         .cajon-label { font-size: 0.7rem; text-transform: uppercase; color: #555; }
         .cajon-valor { font-size: 1.2rem; font-weight: 700; }
         .badge-ok { background: #e6f4ea; color: #1e7e34; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.8rem; font-weight: 700; }
+        .pie-pdf { margin-top: 2.5rem; padding-top: 0.75rem; border-top: 1px solid #ddd; text-align: center; font-size: 0.75rem; color: #888; }
         @media print { body { padding: 0.5rem; } }
       </style>
     </head>
     <body>
-      <h1>🧾 Resumen de liquidación — Santa Ana House 21</h1>
-      <p class="sub">${escaparHTML(encabezadoHabitacion(datos))} · <span class="badge-ok">✅ Check-out completado</span></p>
+      <div class="encabezado-pdf">
+        <img src="${HOTEL_LOGO_URL}" alt="${escaparHTML(HOTEL_NOMBRE)}" onerror="this.style.display='none'" />
+        <div class="datos-hotel-pdf">
+          <h1>${escaparHTML(HOTEL_NOMBRE)}</h1>
+          <p>${escaparHTML(HOTEL_DIRECCION)}</p>
+        </div>
+      </div>
+      <p class="sub">🧾 Resumen de liquidación — ${escaparHTML(encabezadoHabitacion(datos))} · <span class="badge-ok">✅ Check-out completado</span></p>
 
       <h2>👤 Huésped</h2>
       <table>
@@ -208,6 +238,8 @@ function abrirVistaPDF(datos) {
           ${datos.observacionesCheckout ? `<tr><td>Check-out</td><td>${escaparHTML(datos.observacionesCheckout)}</td></tr>` : ''}
         </table>
       ` : ''}
+
+      <div class="pie-pdf">${escaparHTML(MARCA_LIT_PERFORMANCE)}</div>
     </body>
     </html>
   `);
