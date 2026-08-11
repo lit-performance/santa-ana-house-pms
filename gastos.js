@@ -20,11 +20,28 @@
 //
 // Subpestaña de "Registro diario de ventas" (parentId: 'caja') porque es
 // parte del mismo flujo de dinero del día a día.
+//
+// Nota sobre "Monto" (corrige un bug real de capacitación): antes el
+// campo era type="number" con step="1000" y min="1" — eso hace que el
+// navegador exija que el valor sea EXACTAMENTE 1 más un múltiplo de 1000
+// (1, 1001, 2001, 3001…), así que al escribir un monto normal como
+// "20000" el navegador lo rechazaba con un mensaje confuso ("los valores
+// más cercanos son 19001 o 20001"). Ahora el campo es de texto con
+// formato "$" y punto de miles en vivo (igual que el resto del sistema,
+// ver currency.js) y acepta cualquier monto — el valor real que se
+// guarda siempre se lee con `valorNumericoInput`.
+//
+// Nota sobre "Link del comprobante (Drive)": campo opcional para pegar el
+// link donde quedó alojada la factura/soporte del gasto (foto, PDF,
+// carpeta de Drive, etc). No se creó una columna nueva en la base de
+// datos — se guarda como parte del texto de `descripcion` (junto con
+// proveedor y notas, ya se hacía así), y en el historial se muestra como
+// un enlace clicable "🔗 Ver soporte" en vez del link completo.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast } from './ui.js';
-import { formatCOP } from './currency.js';
+import { formatCOP, activarInputDinero, valorNumericoInput } from './currency.js';
 import { formatFechaHora, toISODate, addDays } from './dates.js';
 import { getUsuarioActual } from './auth.js';
 
@@ -41,6 +58,14 @@ function escaparHTML(texto) {
   const div = document.createElement('div');
   div.textContent = texto || '';
   return div.innerHTML;
+}
+
+// Igual que escaparHTML, pero convierte cualquier URL http(s) suelta en
+// el texto en un enlace clicable "🔗 Ver soporte" — así el link de Drive
+// pegado al registrar el gasto queda usable desde el historial.
+function linkificarDescripcion(texto) {
+  const escapado = escaparHTML(texto || '');
+  return escapado.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">🔗 Ver soporte</a>');
 }
 
 function primerDiaDelMes() {
@@ -121,7 +146,7 @@ async function cargarFormNuevoGasto(elemento, container) {
           </select>
         </label>
         <label>Monto
-          <input type="number" name="monto" step="1000" min="1" required />
+          <input type="text" name="monto" id="input-monto-gasto" placeholder="$0" required />
         </label>
         <label>Pagado desde
           <select name="metodo_pago" required>
@@ -130,6 +155,9 @@ async function cargarFormNuevoGasto(elemento, container) {
         </label>
         <label>Proveedor / a quién se pagó <span class="mensaje-vacio" style="font-size:0.7rem;">(opcional)</span>
           <input type="text" name="proveedor" placeholder="Opcional" />
+        </label>
+        <label>Link del comprobante (Drive) <span class="mensaje-vacio" style="font-size:0.7rem;">(opcional)</span>
+          <input type="url" name="link_drive" placeholder="https://drive.google.com/..." />
         </label>
       </form>
       <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:0.75rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
@@ -142,8 +170,17 @@ async function cargarFormNuevoGasto(elemento, container) {
     </div>
   `;
 
+  const inputMonto = elemento.querySelector('#input-monto-gasto');
+  activarInputDinero(inputMonto);
+
   elemento.querySelector('#form-nuevo-gasto').addEventListener('submit', async (e) => {
     e.preventDefault();
+
+    const montoValor = valorNumericoInput(inputMonto);
+    if (montoValor <= 0) {
+      mostrarToast('Ingresa un monto válido para el gasto.', 'error');
+      return;
+    }
 
     if (!(await turnoSigueAbierto(turno.id))) {
       mostrarToast('La caja ya no está abierta (se cerró mientras completabas este formulario). Refresca la página — este gasto NO se guardó.', 'error');
@@ -155,13 +192,18 @@ async function cargarFormNuevoGasto(elemento, container) {
     const usuario = getUsuarioActual();
     const proveedor = form.get('proveedor').trim();
     const notas = form.get('notas').trim();
-    const descripcionPartes = [proveedor ? `Pagado a: ${proveedor}` : null, notas || null].filter(Boolean);
+    const linkDrive = form.get('link_drive').trim();
+    const descripcionPartes = [
+      proveedor ? `Pagado a: ${proveedor}` : null,
+      notas || null,
+      linkDrive ? `Soporte: ${linkDrive}` : null,
+    ].filter(Boolean);
 
     const { error } = await supabase.from('caja_movimientos').insert({
       turno_id: turno.id,
       tipo: 'egreso',
       categoria: form.get('categoria'),
-      monto: Number(form.get('monto')),
+      monto: montoValor,
       metodo_pago: form.get('metodo_pago'),
       descripcion: descripcionPartes.length ? descripcionPartes.join(' — ') : null,
       registrado_por: usuario?.id || null,
@@ -174,10 +216,11 @@ async function cargarFormNuevoGasto(elemento, container) {
 
     mostrarToast('Gasto registrado.', 'exito');
     e.target.reset();
+    activarInputDinero(inputMonto);
     const wrapLista = document.querySelector('#gastos-lista-wrap');
     if (wrapLista) {
-      const form = container.querySelector('#form-filtro-gastos');
-      const fd = new FormData(form);
+      const formFiltro = container.querySelector('#form-filtro-gastos');
+      const fd = new FormData(formFiltro);
       await cargarListaGastos(wrapLista, fd.get('fecha_inicio'), fd.get('fecha_fin'));
     }
   });
@@ -250,7 +293,7 @@ async function cargarListaGastos(elemento, fechaInicioISO, fechaFinISO) {
                 <td>${escaparHTML(g.categoria)}</td>
                 <td class="monto">${formatCOP(g.monto)}</td>
                 <td>${escaparHTML(g.metodo_pago || '—')}</td>
-                <td>${escaparHTML(g.descripcion || '—')}</td>
+                <td>${g.descripcion ? linkificarDescripcion(g.descripcion) : '—'}</td>
               </tr>`
                 )
                 .join('') || '<tr><td colspan="5" class="mensaje-vacio">Sin gastos registrados en este rango.</td></tr>'
