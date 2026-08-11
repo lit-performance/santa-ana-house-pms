@@ -3,12 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Santa Ana House 21 — Sistema Integral de Gestión Hotelera</title>
-  <link rel="icon" type="image/png" href="logo.png" />
+  <title>Santa Ana House 21</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
     rel="stylesheet"
   />
   <link rel="stylesheet" href="styles.css" />
@@ -20,7 +19,6 @@
     <div class="login-card">
       <img src="logo.png" alt="Santa Ana House 21" class="logo-login" onerror="this.style.display='none'" />
       <h1 class="login-titulo">Santa Ana House 21</h1>
-      <p class="subtitulo-sistema" style="margin:-0.25rem 0 1rem;">Sistema Integral de Gestión Hotelera</p>
       <p>Ingresa con tu correo y contraseña asignados por el hotel.</p>
       <form id="form-login" class="form-login">
         <label>
@@ -34,6 +32,9 @@
         <p id="error-login" class="error-login oculto"></p>
         <button type="submit" id="btn-login" class="btn btn-primario">Ingresar</button>
       </form>
+      <!-- Marca de agua de Lit Performance (desarrollador del sistema) —
+           visible en la pantalla de login, antes de entrar. -->
+      <p class="marca-lit-performance">Sistema desarrollado por Lit Performance · 3245067380</p>
     </div>
   </div>
 
@@ -42,13 +43,18 @@
 
     <header class="app-header">
       <div class="app-header-top">
-        <img src="logo.png" alt="Santa Ana House 21" class="logo-header" onerror="this.style.display='none'" />
         <div class="usuario-info">
           <span id="nombre-usuario-activo"></span>
           <button id="btn-cerrar-sesion" class="btn-cerrar-sesion">Cerrar sesión</button>
         </div>
+        <!-- Logo del hotel + marca de Lit Performance, visibles en TODAS
+             las pantallas de la app (este header es fijo, fuera del
+             router — no hay que repetirlo módulo por módulo). -->
+        <div class="header-logo-marca">
+          <img src="logo.png" alt="Santa Ana House 21" class="logo-header" onerror="this.style.display='none'" />
+          <span class="marca-lit-performance marca-header">Lit Performance · 3245067380</span>
+        </div>
       </div>
-      <p class="subtitulo-sistema" style="margin:0.1rem 0 0.6rem;">Sistema Integral de Gestión Hotelera</p>
 
       <!-- Pestañas de primer nivel (secciones) + una segunda fila que
            muestra solo las subpestañas de la sección activa. -->
@@ -57,6 +63,13 @@
     </header>
 
     <main id="main-content" class="main-content"></main>
+
+    <!-- Pie de página fijo con la marca de Lit Performance — al estar
+         fuera del router, aparece en TODOS los módulos/pantallazos del
+         sistema sin tener que tocar cada uno por separado. -->
+    <footer class="app-footer">
+      <span>Lit Performance · 3245067380</span>
+    </footer>
 
   </div>
 
