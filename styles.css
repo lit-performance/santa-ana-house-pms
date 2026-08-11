@@ -220,6 +220,37 @@ h3 {
 
 .logo-header { height: 96px; }
 
+/* Logo + marca de Lit Performance juntos, arriba a la derecha del header
+   (ver index.html) — visibles en todas las pantallas de la app. */
+.header-logo-marca {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+}
+
+.marca-lit-performance {
+  font-size: 0.72rem;
+  color: var(--color-texto-suave);
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+
+.marca-header { margin-top: -0.1rem; }
+
+/* Pie de página fijo con la marca de Lit Performance — vive fuera del
+   router en index.html, por eso aparece en TODOS los módulos sin tocar
+   cada uno por separado. */
+.app-footer {
+  text-align: center;
+  padding: 1.1rem 1rem;
+  font-size: 0.75rem;
+  color: var(--color-texto-suave);
+  border-top: 1px solid var(--color-borde);
+  margin-top: 2rem;
+  letter-spacing: 0.02em;
+}
+
 .tabs-nav {
   display: flex;
   gap: 0.25rem;
@@ -354,6 +385,8 @@ h3 {
 }
 
 .modal-caja-ancha { max-width: 560px; max-height: 85vh; overflow-y: auto; }
+
+.modal-caja-super-ancha { max-width: 960px; max-height: 90vh; overflow-y: auto; }
 
 .modal-contenido { margin: 1rem 0; }
 
