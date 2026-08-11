@@ -75,6 +75,13 @@ import { calcularHabitacionesEnUso } from './cuentas.js';
 const ROLES_OPERAN_CAJA = ['propietario', 'administrador', 'recepcionista'];
 const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
 
+// Categorías que vienen de Gastos (gastos.js) y de Compras recibidas
+// (compras.js) — se usan para separar esos egresos "reales" del día de la
+// tarjeta de Movimientos manuales (que es solo para propinas, ajustes
+// puntuales o cargue retroactivo). Ver `cargarGastosHoy` más abajo.
+const CATEGORIAS_GASTOS = ['Agua', 'Luz', 'Gas', 'Internet', 'Aseo', 'Mantenimiento', 'Insumos', 'Nómina', 'Otro'];
+const CATEGORIA_COMPRAS = 'Compras';
+
 function puedeOperar() {
   const usuario = getUsuarioActual();
   return Boolean(usuario) && ROLES_OPERAN_CAJA.includes(usuario.rol);
@@ -328,6 +335,7 @@ async function render(container) {
         <p class="kicker-columna">🟢 Operación de hoy</p>
         <div id="habitaciones-uso-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
         <div id="ventas-mostrador-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
+        <div id="gastos-hoy-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
         <div id="movimientos-manuales-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
         <div id="ingresos-reservas-wrap"><p class="mensaje-vacio">Cargando…</p></div>
       </div>
@@ -345,6 +353,7 @@ async function render(container) {
     cargarResumenDelDia(container.querySelector('#resumen-dia-wrap')),
     cargarHabitacionesEnUso(container.querySelector('#habitaciones-uso-wrap')),
     cargarVentasMostradorHoy(container, container.querySelector('#ventas-mostrador-wrap')),
+    cargarGastosHoy(container.querySelector('#gastos-hoy-wrap')),
     cargarMovimientosManualesHoy(container, container.querySelector('#movimientos-manuales-wrap')),
     cargarIngresosReservasHoy(container.querySelector('#ingresos-reservas-wrap')),
     cargarDesgloseHoy(container.querySelector('#desglose-hoy-wrap')),
@@ -360,6 +369,8 @@ async function render(container) {
 async function refrescarTrasMovimiento(container) {
   const wrapResumen = container.querySelector('#resumen-dia-wrap');
   if (wrapResumen) await cargarResumenDelDia(wrapResumen);
+  const wrapGastos = container.querySelector('#gastos-hoy-wrap');
+  if (wrapGastos) await cargarGastosHoy(wrapGastos);
   const wrapDesglose = container.querySelector('#desglose-hoy-wrap');
   if (wrapDesglose) await cargarDesgloseHoy(wrapDesglose);
   const wrapIngresos = container.querySelector('#ingresos-reservas-wrap');
@@ -657,10 +668,70 @@ async function cargarVentasMostradorHoy(container, elemento) {
 }
 
 // =========================================================
+// Gastos y compras — hoy (columna izquierda). Egresos REALES del día:
+// lo pagado desde Gastos (agua, luz, gas, insumos, etc. — ver gastos.js)
+// y las compras a proveedores ya recibidas (ver compras.js). Ambos
+// módulos guardan sus egresos como un caja_movimientos más, así que esta
+// tarjeta simplemente los filtra por categoría y los muestra juntos —
+// para que se vea de un vistazo qué salió hoy sin tener que entrar a
+// Gastos o Compras por separado.
+// =========================================================
+async function cargarGastosHoy(elemento) {
+  if (!elemento) return;
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+
+  const { data: movimientos, error } = await supabase
+    .from('caja_movimientos')
+    .select('*')
+    .eq('tipo', 'egreso')
+    .gte('creado_en', hoyISO)
+    .lt('creado_en', mananaISO)
+    .order('creado_en', { ascending: false });
+
+  if (error) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando gastos: ${error.message}</p>`;
+    return;
+  }
+
+  const categoriasReales = new Set([...CATEGORIAS_GASTOS, CATEGORIA_COMPRAS]);
+  const gastos = (movimientos || []).filter((m) => categoriasReales.has(m.categoria));
+  const total = gastos.reduce((sum, g) => sum + Number(g.monto), 0);
+
+  elemento.innerHTML = `
+    <div class="tarjeta tarjeta-acento tarjeta-acento-rojo">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.5rem;">
+        <h3 style="margin:0;">💸 Gastos y compras — hoy</h3>
+        <strong>${formatCOP(total)}</strong>
+      </div>
+      <p class="mensaje-vacio" style="margin-bottom:0.5rem;">Pagos operativos de hoy (agua, luz, gas, insumos… — módulo Gastos) y compras a proveedores ya recibidas (módulo Compras).</p>
+      <div class="tabla-scroll">
+        <table class="tabla-simple">
+          <thead><tr><th>Hora</th><th>Categoría</th><th>Monto</th><th>Método</th><th>Detalle</th></tr></thead>
+          <tbody>
+            ${
+              gastos
+                .map(
+                  (g) =>
+                    `<tr><td>${formatFechaHora(g.creado_en)}</td><td>${escaparHTML(g.categoria || '—')}</td><td>${formatCOP(g.monto)}</td><td>${escaparHTML(g.metodo_pago || '—')}</td><td>${escaparHTML(g.descripcion || '—')}</td></tr>`
+                )
+                .join('') || '<tr><td colspan="5" class="mensaje-vacio">Sin gastos ni compras registradas hoy.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// =========================================================
 // Movimientos manuales — hoy (columna izquierda). Ingresos o egresos que
-// no son ni una venta de mostrador ni un gasto operativo (ver Gastos) —
-// ej. propinas, ajustes puntuales, o cargue retroactivo de un día
-// anterior con "Fecha y hora".
+// NO son venta de mostrador, gasto operativo (ver arriba) ni compra
+// recibida — ej. propinas, ajustes puntuales, o cargue retroactivo de un
+// día anterior con "Fecha y hora". Se excluyen aquí los de Gastos/Compras
+// para no mostrarlos duplicados en las dos tarjetas.
 // =========================================================
 async function cargarMovimientosManualesHoy(container, elemento) {
   if (!elemento) return;
@@ -670,7 +741,7 @@ async function cargarMovimientosManualesHoy(container, elemento) {
   const hoyISO = toISODate(new Date());
   const mananaISO = toISODate(addDays(new Date(), 1));
 
-  const { data: movimientos, error } = await supabase
+  const { data: movimientosCrudos, error } = await supabase
     .from('caja_movimientos')
     .select('*')
     .gte('creado_en', hoyISO)
@@ -682,19 +753,22 @@ async function cargarMovimientosManualesHoy(container, elemento) {
     return;
   }
 
+  const categoriasReales = new Set([...CATEGORIAS_GASTOS, CATEGORIA_COMPRAS]);
+  const movimientos = (movimientosCrudos || []).filter((m) => !categoriasReales.has(m.categoria));
+
   elemento.innerHTML = `
     <div class="tarjeta tarjeta-acento tarjeta-acento-naranja">
       <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.5rem;">
         <h3 style="margin:0;">➕➖ Movimientos manuales — hoy</h3>
         ${permitido ? '<button type="button" id="btn-nuevo-movimiento" class="btn btn-secundario btn-chico">+ Movimiento</button>' : ''}
       </div>
-      <p class="mensaje-vacio" style="margin-bottom:0.5rem;">Ingresos o egresos que no son ni una venta de mostrador ni un gasto operativo (ver Gastos) — ej. propinas, ajustes puntuales.</p>
+      <p class="mensaje-vacio" style="margin-bottom:0.5rem;">Ingresos o egresos que no son venta de mostrador, gasto operativo (ver arriba) ni compra recibida — ej. propinas, ajustes puntuales.</p>
       <div class="tabla-scroll">
         <table class="tabla-simple">
           <thead><tr><th>Hora</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Método</th><th>Descripción</th></tr></thead>
           <tbody>
             ${
-              (movimientos || [])
+              movimientos
                 .map(
                   (m) =>
                     `<tr><td>${formatFechaHora(m.creado_en)}</td><td>${m.tipo === 'ingreso' ? '⬆️ Ingreso' : '⬇️ Egreso'}</td><td>${escaparHTML(m.categoria || '—')}</td><td>${formatCOP(m.monto)}</td><td>${escaparHTML(m.metodo_pago || '—')}</td><td>${escaparHTML(m.descripcion || '—')}</td></tr>`
@@ -727,8 +801,9 @@ async function abrirModalMovimiento(container) {
             </select>
           </label>
           <label>Categoría
-            <input type="text" name="categoria" placeholder="Ej: Insumos, Propina, Otro" />
+            <input type="text" name="categoria" placeholder="Ej: Propina, Ajuste de caja, Descuadre" />
           </label>
+          <p class="mensaje-vacio" style="grid-column:1/-1; margin:-0.5rem 0 0; font-size:0.72rem;">Evita usar aquí nombres de categorías de Gastos (Agua, Luz, Gas…) o "Compras" — esos se registran desde esos módulos para que aparezcan en su propia tarjeta.</p>
           <label>Monto
             <input type="number" name="monto" step="1000" min="1" required />
           </label>
