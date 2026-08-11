@@ -77,7 +77,22 @@
 // automático en Caja ("Ingresos por reservas"), Indicadores y
 // Contabilidad sin ningún paso manual extra. El campo "Monto total
 // estimado" (noches × tarifa) es solo una ayuda visual para la
-// recepcionista, no se guarda.
+// recepcionista, no se guarda. Elegir "Anticipado" cobra automático el
+// valor completo que falte de la estadía (estimado menos lo ya abonado
+// antes) — deja la habitación saldada, y solo quedaría pendiente el
+// consumo de minibar, que se liquida en el check-out.
+//
+// Nota sobre "adicionar días a la estadía": si un huésped que ya tenía su
+// reserva hecha (por ejemplo 2 noches) decide en el check-in quedarse más
+// días, la recepcionista solo tiene que aumentar el campo "Cantidad de
+// noches" de la tarjeta Estadía — al guardar, la reserva vinculada
+// extiende su fecha_checkout sola (contando desde hoy), siempre que
+// ninguna otra reserva de esa misma habitación se cruce con la fecha
+// nueva (si se cruza, se avisa y el check-in continúa con la fecha
+// original). Lo mismo aplica editando un check-in ya en curso desde
+// "✏️ Editar" en la tabla de habitaciones en uso — ahí la fecha nueva se
+// cuenta desde el check-in ORIGINAL de la reserva, no desde el día en que
+// se edita.
 //
 // Nota sobre liquidación al check-out: el botón "Check-out" ya NO libera
 // la habitación directo — abre un modal que muestra el saldo pendiente
@@ -88,28 +103,50 @@
 // continuar — el checkout no se bloquea, pero no se puede hacer "sin
 // darse cuenta" de que quedó plata por cobrar. Ese pago final se registra
 // en reservas_pagos igual que un abono normal, así que aparece automático
-// en Caja e Indicadores.
+// en Caja e Indicadores. El modal es ancho (ver modal-caja-super-ancha en
+// styles.css) para ver el detalle de minibar con más espacio, cada línea
+// de consumo se puede editar (cambiar cantidad) o quitar sin salir de
+// ahí, y antes de poder confirmar el check-out hay que marcar la casilla
+// "Revisé el consumo de minibar" — el botón "Confirmar y hacer check-out"
+// no deja avanzar si esa casilla no está marcada (validación nativa del
+// navegador), así siempre hay un paso explícito de revisar el minibar
+// antes de cerrar la cuenta.
+//
+// Nota sobre "➕ Consumo" en la tabla de habitaciones en uso: agrega un
+// consumo de mostrador (minibar/servicios) a una habitación ocupada en
+// cualquier momento de la estadía (no solo al check-out) — útil cuando el
+// huésped pide algo al entrar o durante su estadía y la recepcionista lo
+// quiere dejar registrado de una vez, sin esperar al checkout. Usa el
+// mismo catálogo y la misma lógica de descuento de inventario que el
+// resto del sistema (ver minibar.js / inventario.js), así que aparece
+// automático en el saldo pendiente de esa habitación y en la liquidación
+// del check-out cuando llegue el momento.
 //
 // Nota sobre "✏️ Editar" en la tabla de habitaciones en uso: abre un
 // modal para corregir un check-in ya registrado (typo en el nombre,
 // documento mal digitado, cambio de tarifa, cambio de habitación, etc).
 // Lo que SÍ se puede editar: todos los datos del huésped, acompañantes,
-// tarifa, cantidad de noches, método de pago y depósito. Lo que NO se
-// edita desde aquí: la firma digital y el consentimiento de Habeas Data
-// (quedan tal como se capturaron en el momento del check-in — no tiene
-// sentido "re-firmar" retroactivamente), y los pagos ya registrados en
-// Caja (esos se corrigen desde Caja o desde el propio módulo Reservas,
-// nunca reescribiendo el check-in). Si se cambia la habitación, el
-// cambio se sincroniza con la reserva vinculada y con el estado de AMBAS
-// habitaciones (la anterior pasa a limpieza, la nueva a ocupada) para que
-// Reservas y Housekeeping no queden desincronizados.
+// tarifa, cantidad de noches (incluida su extensión de la reserva, ver
+// nota arriba), método de pago y depósito. Lo que NO se edita desde aquí:
+// la firma digital y el consentimiento de Habeas Data (quedan tal como se
+// capturaron en el momento del check-in — no tiene sentido "re-firmar"
+// retroactivamente), y los pagos ya registrados en Caja (esos se corrigen
+// desde Caja o desde el propio módulo Reservas, nunca reescribiendo el
+// check-in). Si se cambia la habitación, el cambio se sincroniza con la
+// reserva vinculada y con el estado de AMBAS habitaciones (la anterior
+// pasa a limpieza, la nueva a ocupada) para que Reservas y Housekeeping no
+// queden desincronizados.
 //
 // Nota sobre "Pago que recibes ahora" y el minibar: cada vez que se
-// agrega o quita un consumo dentro del modal de liquidación, el campo
-// "Pago que recibes ahora" se vuelve a calcular y se fuerza su valor al
-// nuevo saldo pendiente (a menos que la recepcionista ya lo haya editado a
-// mano, en cuyo caso se respeta lo que escribió) — así nunca queda un
-// consumo de minibar agregado sin que el monto a cobrar lo refleje.
+// agrega, edita o quita un consumo dentro del modal de liquidación, el
+// campo "Pago que recibes ahora" se vuelve a calcular y se fuerza su
+// valor al nuevo saldo pendiente (a menos que la recepcionista ya lo haya
+// editado a mano, en cuyo caso se respeta lo que escribió) — así nunca
+// queda un consumo de minibar agregado sin que el monto a cobrar lo
+// refleje. Los campos de dinero (pago al check-in, pago del check-out) se
+// muestran con "$" y punto de miles mientras se escribe (ver
+// currency.js); el valor real que se guarda siempre se lee con
+// `valorNumericoInput`, nunca directo del campo.
 //
 // Nota sobre comentarios del check-out: el modal de liquidación tiene su
 // propio campo de comentarios (aparte de las "Observaciones" del
@@ -119,28 +156,18 @@
 // un pago asociado, y si hubo pago también queda anexado al comentario de
 // ese abono en reservas_pagos para que aparezca en el detalle de Caja.
 //
-// Nota sobre minibar en la liquidación del check-out: el modal de
-// "Check-out" ya no muestra el consumo de minibar como una sola línea de
-// total — lista cada producto consumido (con cantidad y monto) y permite
-// agregar (o quitar) un consumo de último momento sin salir del modal, por
-// si algo no se había registrado todavía. Cada cambio ahí recalcula el
-// monto total y el saldo pendiente en vivo, y también actualiza el
-// inventario de la habitación (misma función que usa minibar.js), así que
-// nunca queda desincronizado. Ver también el badge "🥤" en la tabla de
-// habitaciones en uso, que avisa cuándo una habitación ya tiene consumo de
-// minibar antes de siquiera abrir el checkout. El servicio de lavandería
-// (si se cobra al checkout) se agrega/quita exactamente igual: es un
-// producto más del catálogo de minibar (categoría "Servicios"), no
-// necesitó ningún cambio de código aquí.
-//
 // Nota sobre el resumen visual de la liquidación (tarjeta Estadía): se
 // arma en vivo con lo que la recepcionista va llenando (habitación,
 // tarifa, noches, tipo de pago, monto a cobrar, saldo) usando cajones de
 // color para que sea imposible perderse — azul para el estimado total,
 // verde para lo que se cobra ahora, rojo (o verde si queda en cero) para
-// el saldo pendiente. No guarda nada aparte: es solo una vista de lo que
-// ya está en el formulario, para reducir errores de digitación antes de
-// guardar el check-in.
+// el saldo pendiente. Desde ahora también muestra, si el check-in está
+// vinculado a una reserva con abono previo (de Reservas o de un check-in
+// vinculado automáticamente), un cajón morado con "Ya abonado antes" — y
+// el saldo pendiente descuenta ese abono además de lo que se cobre ahora.
+// No guarda nada aparte: es solo una vista de lo que ya está en el
+// formulario, para reducir errores de digitación antes de guardar el
+// check-in.
 //
 // Nota sobre el cruce con Housekeeping al elegir habitación en el
 // check-in: el desplegable de Habitación solo deja elegir habitaciones
@@ -151,14 +178,6 @@
 // mientras se llenaba el formulario) y se bloquea el check-in si ya no
 // está disponible. Así Recepción nunca puede hospedar a alguien en una
 // habitación que Housekeeping tiene marcada como no disponible.
-//
-// Nota sobre autocompletar datos de huésped: al salir del campo Número de
-// documento (o del campo Nombre, si el documento sigue vacío), se busca
-// primero en el check-in más reciente de esa persona (recepcion_checkins,
-// tiene el set completo de campos) y si no aparece ahí, en la ficha
-// básica de huespedes (solo contacto). Si encuentra algo, rellena los
-// campos y avisa con un toast — así un huésped recurrente no tiene que
-// volver a dictar todos sus datos.
 //
 // Nota IMPORTANTE sobre vincular la reserva automáticamente (corrige un
 // bug real detectado en capacitación): al salir del campo Número de
@@ -181,7 +200,7 @@ import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatFechaHora, toISODate, addDays } from './dates.js';
-import { formatCOP } from './currency.js';
+import { formatCOP, activarInputDinero, valorNumericoInput } from './currency.js';
 import { calcularHabitacionesEnUso } from './cuentas.js';
 import { getUsuarioActual } from './auth.js';
 import { ajustarInventarioHabitacion } from './inventario.js';
@@ -189,6 +208,10 @@ import { mostrarResumenCheckout } from './resumen-checkout.js';
 
 const TIPOS_DOCUMENTO = ['Cédula de ciudadanía', 'Cédula de extranjería', 'Pasaporte', 'Tarjeta de identidad', 'PEP', 'Otro'];
 const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
+
+// Estados de reserva que "ocupan" la habitación, usados para detectar
+// cruces de fechas al extender una estadía (mismo criterio que reservas.js).
+const ESTADOS_RESERVA_ACTIVOS = ['reservada', 'confirmada', 'check_in', 'hospedado'];
 
 // Mismas reglas de bloqueo que reservas.js, para que "Ver disponibilidad"
 // diga exactamente lo mismo que el calendario de Reservas.
@@ -399,6 +422,7 @@ async function cargarVistaHoy(container) {
             </td>
             <td style="white-space:nowrap;">
               <button type="button" class="btn-editar btn-editar-checkin" data-checkin-id="${i.checkinId}">✏️ Editar</button>
+              <button type="button" class="btn-editar btn-agregar-consumo" data-checkin-id="${i.checkinId}">➕ Consumo</button>
               <button type="button" class="btn-editar btn-checkout" data-checkin-id="${i.checkinId}">Check-out</button>
             </td>
           </tr>
@@ -421,6 +445,113 @@ async function cargarVistaHoy(container) {
       const item = itemsOrdenados.find((i) => i.checkinId === Number(btn.dataset.checkinId));
       if (item) abrirModalEditarCheckin(container, item);
     });
+  });
+
+  wrapCheckins.querySelectorAll('.btn-agregar-consumo').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const item = itemsOrdenados.find((i) => i.checkinId === Number(btn.dataset.checkinId));
+      if (item) abrirModalAgregarConsumoRapido(container, item);
+    });
+  });
+}
+
+// --- "➕ Consumo": agregar un consumo de mostrador a una habitación
+// ocupada en cualquier momento de la estadía, sin pasar por el checkout. ---
+async function abrirModalAgregarConsumoRapido(container, item) {
+  if (!item.reservaId) {
+    mostrarToast('Este check-in no tiene una reserva vinculada; no se puede agregar consumo desde aquí.', 'error');
+    return;
+  }
+
+  const { data: productos, error: errProductos } = await supabase
+    .from('minibar_productos')
+    .select('*')
+    .eq('activo', true)
+    .order('categoria')
+    .order('nombre');
+
+  if (errProductos) {
+    mostrarToast(`Error cargando productos: ${errProductos.message}`, 'error');
+    return;
+  }
+
+  const categorias = [...new Set((productos || []).map((p) => p.categoria))];
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja">
+      <h3>➕ Agregar consumo</h3>
+      <p class="mensaje-vacio">${escaparHTML(item.huespedNombre)} — ${item.habitacionLabel}</p>
+      <form id="form-agregar-consumo-rapido" class="modal-contenido">
+        <div class="form-grid">
+          <label>Producto
+            <select name="producto_id" required>
+              ${categorias
+                .map(
+                  (cat) => `
+                <optgroup label="${escaparHTML(cat)}">
+                  ${(productos || [])
+                    .filter((p) => p.categoria === cat)
+                    .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)} — ${formatCOP(p.precio)}</option>`)
+                    .join('')}
+                </optgroup>
+              `
+                )
+                .join('')}
+            </select>
+          </label>
+          <label>Cantidad
+            <input type="number" name="cantidad" min="1" value="1" required />
+          </label>
+        </div>
+        <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">Este consumo queda sumado al saldo pendiente de la habitación de una vez, y aparecerá listo en la liquidación del check-out.</p>
+        <div class="modal-acciones" style="margin-top:1rem;">
+          <button type="button" class="btn btn-secundario" id="btn-cancelar-consumo-rapido">Cancelar</button>
+          <button type="submit" class="btn btn-primario">+ Agregar consumo</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#btn-cancelar-consumo-rapido').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  overlay.querySelector('#form-agregar-consumo-rapido').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const productoId = Number(form.get('producto_id'));
+    const cantidad = Number(form.get('cantidad')) || 1;
+    const producto = (productos || []).find((p) => p.id === productoId);
+    if (!producto) return;
+
+    const usuario = getUsuarioActual();
+    const { error: errInsert } = await supabase.from('minibar_consumos').insert({
+      reserva_id: item.reservaId,
+      habitacion_id: item.habitacionId,
+      producto_id: productoId,
+      cantidad,
+      precio_unitario: producto.precio,
+      monto: producto.precio * cantidad,
+      registrado_por: usuario?.id || null,
+    });
+    if (errInsert) {
+      mostrarToast(`Error agregando el consumo: ${errInsert.message}`, 'error');
+      return;
+    }
+
+    try {
+      await ajustarInventarioHabitacion(item.habitacionId, productoId, -cantidad, usuario?.id || null, 'consumo');
+    } catch (errInv) {
+      mostrarToast('Consumo agregado, pero no se pudo actualizar el inventario de la habitación.', 'error');
+    }
+
+    mostrarToast(`Consumo agregado a ${item.habitacionLabel}.`, 'exito');
+    overlay.remove();
+    await vistaLista(container);
   });
 }
 
@@ -447,12 +578,14 @@ async function abrirModalLiquidacion(container, item) {
   let consumos = consumosIniciales || [];
   const categorias = [...new Set((productos || []).map((p) => p.categoria))];
   let montoEditadoManualmente = false;
+  let editandoConsumoId = null;
+  let minibarConfirmado = false;
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
-    <div class="modal-caja modal-caja-ancha">
-      <h3>Liquidar y hacer check-out</h3>
+    <div class="modal-caja modal-caja-super-ancha">
+      <h3>🧾 Liquidar y hacer check-out</h3>
       <form id="form-liquidacion">
         <div class="modal-contenido">
           <p class="mensaje-vacio">${escaparHTML(item.huespedNombre)} — ${item.habitacionLabel}</p>
@@ -483,9 +616,9 @@ async function abrirModalLiquidacion(container, item) {
   function pintarLiquidacion() {
     // Antes de reescribir el HTML, se guarda lo que la recepcionista ya
     // haya tocado (método de pago, monto editado a mano) para no perderlo
-    // al repintar después de agregar/quitar un consumo.
+    // al repintar después de agregar/editar/quitar un consumo.
     const metodoPrevio = overlay.querySelector('select[name="metodo_pago"]')?.value;
-    const pagoPrevio = inputPago()?.value;
+    const pagoPrevioNumerico = inputPago() ? valorNumericoInput(inputPago()) : null;
     const comentarioPrevio = overlay.querySelector('textarea[name="comentarios_checkout"]')?.value;
 
     const montoMinibar = montoMinibarActual();
@@ -493,41 +626,50 @@ async function abrirModalLiquidacion(container, item) {
     const saldo = saldoActual();
 
     cuerpo.innerHTML = `
-      <table class="tabla-simple" style="margin-top:0.5rem;">
-        <tbody>
-          <tr><td>Habitación (${item.cantidadNoches ?? '—'} noches)</td><td class="monto">${formatCOP(item.montoHabitacion)}</td></tr>
-          <tr><td><strong>Monto total</strong></td><td class="monto" style="font-weight:700;">${formatCOP(montoTotal)}</td></tr>
-          <tr><td>Abonado hasta ahora</td><td class="monto">${formatCOP(item.totalAbonado)}</td></tr>
-          <tr><td><strong>Saldo pendiente</strong></td><td class="monto" style="color:${saldo > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(saldo)}</td></tr>
-        </tbody>
-      </table>
+      <div style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-top:0.5rem;">
+        ${cajonMonto(`Habitación (${item.cantidadNoches ?? '—'} noches)`, formatCOP(item.montoHabitacion), '#0b5fae', '#eaf3ff', '#8ec1f5')}
+        ${cajonMonto('Monto total', formatCOP(montoTotal), '#1a5276', '#eaf2f8', '#a9c8e0')}
+        ${cajonMonto('Abonado hasta ahora', formatCOP(item.totalAbonado), 'var(--color-verde-oscuro, #1b7a3d)', '#eafbea', '#8fd3a4')}
+        ${cajonMonto('Saldo pendiente', formatCOP(saldo), saldo > 0 ? 'var(--color-rojo-oscuro, #b3261e)' : 'var(--color-verde-oscuro, #1b7a3d)', saldo > 0 ? '#fdeceb' : '#eafbea', saldo > 0 ? '#f0a8a0' : '#8fd3a4')}
+      </div>
 
-      <div class="tarjeta" style="margin-top:0.85rem; background:var(--color-fondo-suave, #f8f9fb);">
+      <div class="tarjeta" style="margin-top:1rem; background:var(--color-fondo-suave, #f8f9fb); border:1.5px solid #cfe0ee;">
         <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.5rem;">
           <h3 style="margin:0;">🥤 Consumo de minibar</h3>
-          <strong style="font-size:1.1rem;">${formatCOP(montoMinibar)}</strong>
+          <strong style="font-size:1.15rem; color:#0b5fae;">${formatCOP(montoMinibar)}</strong>
         </div>
         ${
           consumos.length === 0
             ? '<p class="mensaje-vacio">Sin consumo de minibar registrado.</p>'
             : `
-          <table class="tabla-simple">
-            <thead><tr><th>Producto</th><th>Cant.</th><th>Monto</th><th></th></tr></thead>
-            <tbody>
-              ${consumos
-                .map(
-                  (c) => `
-                <tr>
-                  <td>${c.minibar_productos ? escaparHTML(c.minibar_productos.nombre) : '—'}</td>
-                  <td>${c.cantidad}</td>
-                  <td class="monto">${formatCOP(c.monto)}</td>
-                  <td><button type="button" class="btn-editar btn-quitar-consumo-liquidacion" data-id="${c.id}">Quitar</button></td>
-                </tr>
-              `
-                )
-                .join('')}
-            </tbody>
-          </table>
+          <div class="tabla-scroll">
+            <table class="tabla-simple">
+              <thead><tr><th>Producto</th><th>Cant.</th><th>Monto</th><th style="text-align:right;">Acciones</th></tr></thead>
+              <tbody>
+                ${consumos
+                  .map((c) => {
+                    const enEdicion = editandoConsumoId === c.id;
+                    return `
+                  <tr>
+                    <td>${c.minibar_productos ? escaparHTML(c.minibar_productos.nombre) : '—'}</td>
+                    <td>${enEdicion ? `<input type="number" min="1" class="input-editar-cantidad-consumo" data-id="${c.id}" value="${c.cantidad}" style="width:64px;" />` : c.cantidad}</td>
+                    <td class="monto">${enEdicion ? '—' : formatCOP(c.monto)}</td>
+                    <td style="white-space:nowrap; text-align:right;">
+                      ${
+                        enEdicion
+                          ? `<button type="button" class="btn-editar btn-guardar-edicion-consumo" data-id="${c.id}">💾 Guardar</button>
+                             <button type="button" class="btn-editar btn-cancelar-edicion-consumo" data-id="${c.id}">Cancelar</button>`
+                          : `<button type="button" class="btn-editar btn-editar-consumo-liquidacion" data-id="${c.id}">✏️ Editar</button>
+                             <button type="button" class="btn-editar btn-quitar-consumo-liquidacion" data-id="${c.id}">🗑 Quitar</button>`
+                      }
+                    </td>
+                  </tr>
+                `;
+                  })
+                  .join('')}
+              </tbody>
+            </table>
+          </div>
         `
         }
         ${
@@ -560,9 +702,14 @@ async function abrirModalLiquidacion(container, item) {
         }
       </div>
 
+      <label style="display:flex; align-items:flex-start; gap:0.6rem; margin-top:1rem; padding:0.85rem 1rem; background:var(--color-alerta-fondo, #fff8e1); border:1.5px solid #e8c547; border-radius:10px; font-size:0.88rem;">
+        <input type="checkbox" id="check-confirmo-minibar" style="width:auto; margin-top:0.2rem;" ${minibarConfirmado ? 'checked' : ''} required />
+        <span>✅ Revisé el consumo de minibar de arriba (<strong>${formatCOP(montoMinibar)}</strong>) y estoy de acuerdo con el total antes de continuar con el check-out.</span>
+      </label>
+
       <div class="form-grid" style="margin-top:1rem;">
         <label>Pago que recibes ahora
-          <input type="number" name="pago_final" step="1000" min="0" value="${saldo}" />
+          <input type="text" name="pago_final" placeholder="$0" />
         </label>
         <label>Método de pago
           <select name="metodo_pago">
@@ -570,7 +717,7 @@ async function abrirModalLiquidacion(container, item) {
           </select>
         </label>
       </div>
-      <p class="mensaje-vacio" style="margin-top:0.3rem; font-size:0.78rem;">Este monto ya incluye el consumo de minibar de arriba. Si agregas o quitas un consumo, se vuelve a calcular solo.</p>
+      <p class="mensaje-vacio" style="margin-top:0.3rem; font-size:0.78rem;">Este monto ya incluye el consumo de minibar de arriba. Si agregas, editas o quitas un consumo, se vuelve a calcular solo.</p>
       <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">Si el pago es menor al saldo pendiente, te pedimos confirmar antes de liberar la habitación — el checkout no se bloquea, pero el saldo queda registrado como pendiente de cobro.</p>
 
       <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
@@ -579,18 +726,27 @@ async function abrirModalLiquidacion(container, item) {
       </label>
     `;
 
-    // El valor del campo de pago se fuerza explícitamente aquí (no solo
-    // vía el atributo "value" de arriba) para que quede garantizado que
-    // refleja el saldo recién calculado — incluyendo minibar — apenas se
-    // repinta, sin depender de cómo cada navegador procese el HTML.
+    // Campo de dinero con formato "$" y punto de miles en vivo. El valor
+    // se fuerza explícitamente al saldo recién calculado (a menos que la
+    // recepcionista ya lo haya editado a mano) para que quede garantizado
+    // que refleja cualquier cambio en el minibar, sin depender de cómo
+    // cada navegador procese el HTML.
+    activarInputDinero(inputPago());
     if (!montoEditadoManualmente) {
-      inputPago().value = saldo;
-    } else if (pagoPrevio !== undefined) {
-      inputPago().value = pagoPrevio;
+      inputPago().value = saldo || '';
+      activarInputDinero(inputPago());
+    } else if (pagoPrevioNumerico !== null) {
+      inputPago().value = pagoPrevioNumerico || '';
+      activarInputDinero(inputPago());
     }
 
     inputPago().addEventListener('input', () => {
       montoEditadoManualmente = true;
+    });
+
+    const checkConfirmo = cuerpo.querySelector('#check-confirmo-minibar');
+    checkConfirmo.addEventListener('change', () => {
+      minibarConfirmado = checkConfirmo.checked;
     });
 
     cuerpo.querySelectorAll('.btn-quitar-consumo-liquidacion').forEach((btn) => {
@@ -614,7 +770,63 @@ async function abrirModalLiquidacion(container, item) {
 
         consumos = consumos.filter((c) => c.id !== consumoId);
         montoEditadoManualmente = false;
+        minibarConfirmado = false;
         mostrarToast('Consumo quitado de la liquidación. El monto a cobrar se actualizó.', 'exito');
+        pintarLiquidacion();
+      });
+    });
+
+    cuerpo.querySelectorAll('.btn-editar-consumo-liquidacion').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        editandoConsumoId = Number(btn.dataset.id);
+        pintarLiquidacion();
+      });
+    });
+
+    cuerpo.querySelectorAll('.btn-cancelar-edicion-consumo').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        editandoConsumoId = null;
+        pintarLiquidacion();
+      });
+    });
+
+    cuerpo.querySelectorAll('.btn-guardar-edicion-consumo').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const consumoId = Number(btn.dataset.id);
+        const consumo = consumos.find((c) => c.id === consumoId);
+        if (!consumo) return;
+        const input = cuerpo.querySelector(`.input-editar-cantidad-consumo[data-id="${consumoId}"]`);
+        const nuevaCantidad = Number(input.value) || 1;
+        const deltaCantidad = nuevaCantidad - consumo.cantidad;
+
+        if (deltaCantidad === 0) {
+          editandoConsumoId = null;
+          pintarLiquidacion();
+          return;
+        }
+
+        const nuevoMonto = Number(consumo.precio_unitario) * nuevaCantidad;
+        const { error } = await supabase.from('minibar_consumos').update({ cantidad: nuevaCantidad, monto: nuevoMonto }).eq('id', consumoId);
+        if (error) {
+          mostrarToast(`Error editando el consumo: ${error.message}`, 'error');
+          return;
+        }
+
+        try {
+          const usuario = getUsuarioActual();
+          // deltaCantidad positivo = se consumió más (resta del
+          // inventario de la habitación); negativo = se devuelve.
+          await ajustarInventarioHabitacion(item.habitacionId, consumo.producto_id, -deltaCantidad, usuario?.id || null, 'ajuste_habitacion');
+        } catch (errInv) {
+          mostrarToast('Consumo editado, pero no se pudo ajustar el inventario de la habitación.', 'error');
+        }
+
+        consumo.cantidad = nuevaCantidad;
+        consumo.monto = nuevoMonto;
+        editandoConsumoId = null;
+        montoEditadoManualmente = false;
+        minibarConfirmado = false;
+        mostrarToast('Consumo actualizado. El monto a cobrar se actualizó.', 'exito');
         pintarLiquidacion();
       });
     });
@@ -657,6 +869,7 @@ async function abrirModalLiquidacion(container, item) {
 
         consumos = [nuevoConsumo, ...consumos];
         montoEditadoManualmente = false;
+        minibarConfirmado = false;
         mostrarToast('Consumo agregado. El monto a cobrar se actualizó para incluirlo.', 'exito');
         pintarLiquidacion();
       });
@@ -673,7 +886,7 @@ async function abrirModalLiquidacion(container, item) {
   overlay.querySelector('#form-liquidacion').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
-    const pagoFinal = form.get('pago_final') ? Number(form.get('pago_final')) : 0;
+    const pagoFinal = valorNumericoInput(inputPago());
     const metodoPago = form.get('metodo_pago');
     const comentarioCheckout = form.get('comentarios_checkout')?.trim() || null;
     const saldoRestante = saldoActual() - pagoFinal;
@@ -880,6 +1093,7 @@ async function abrirModalEditarCheckin(container, item) {
             <input type="number" name="deposito" step="1000" value="${checkin.deposito ?? ''}" />
           </label>
         </div>
+        <p class="mensaje-vacio" style="margin-top:0.4rem; font-size:0.78rem;">💡 Si el huésped decide quedarse más noches, solo aumenta "Cantidad de noches" — la reserva vinculada extiende su fecha de salida sola (contando desde el check-in original), siempre que la habitación siga libre esos días.</p>
 
         <p class="mensaje-vacio" style="margin-top:0.75rem; font-size:0.78rem;">No editables desde aquí: firma digital, consentimiento Habeas Data y pagos ya registrados (se corrigen en Caja o Reservas).</p>
 
@@ -998,17 +1212,46 @@ async function abrirModalEditarCheckin(container, item) {
       return;
     }
 
-    // --- Mantener sincronizada la reserva vinculada (huésped + habitación) ---
+    // --- Mantener sincronizada la reserva vinculada (huésped + habitación
+    // + fecha de salida si la cantidad de noches cambió, ver nota de
+    // cabecera "adicionar días a la estadía") ---
     if (checkin.reserva_id) {
-      const { error: errReserva } = await supabase
+      const nuevaCantidadNoches = payload.cantidad_noches;
+      const payloadReservaSync = {
+        huesped_nombre: nombre,
+        huesped_documento: documento,
+        huesped_telefono: celular,
+        habitacion_id: nuevaHabitacionId,
+      };
+
+      const { data: reservaVinculadaActual } = await supabase
         .from('reservas')
-        .update({
-          huesped_nombre: nombre,
-          huesped_documento: documento,
-          huesped_telefono: celular,
-          habitacion_id: nuevaHabitacionId,
-        })
-        .eq('id', checkin.reserva_id);
+        .select('fecha_checkin')
+        .eq('id', checkin.reserva_id)
+        .maybeSingle();
+
+      if (reservaVinculadaActual?.fecha_checkin) {
+        const nuevaFechaCheckoutISO = toISODate(addDays(reservaVinculadaActual.fecha_checkin, nuevaCantidadNoches > 0 ? nuevaCantidadNoches : 1));
+        const { data: crucesEdicion } = await supabase
+          .from('reservas')
+          .select('id, huesped_nombre, fecha_checkin, fecha_checkout')
+          .eq('habitacion_id', nuevaHabitacionId)
+          .in('estado', ESTADOS_RESERVA_ACTIVOS)
+          .neq('id', checkin.reserva_id)
+          .lt('fecha_checkin', nuevaFechaCheckoutISO)
+          .gt('fecha_checkout', reservaVinculadaActual.fecha_checkin);
+
+        if (!crucesEdicion || crucesEdicion.length === 0) {
+          payloadReservaSync.fecha_checkout = nuevaFechaCheckoutISO;
+        } else {
+          mostrarToast(
+            `No se pudo extender la estadía hasta ${nuevaFechaCheckoutISO}: la habitación ya tiene otra reserva (${crucesEdicion[0].huesped_nombre}) que se cruza. Se guardó el resto de los cambios igual.`,
+            'error'
+          );
+        }
+      }
+
+      const { error: errReserva } = await supabase.from('reservas').update(payloadReservaSync).eq('id', checkin.reserva_id);
       if (errReserva) {
         mostrarToast(`Check-in actualizado, pero no se pudo sincronizar la reserva vinculada: ${errReserva.message}`, 'error');
       }
@@ -1438,6 +1681,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
             <input type="number" name="deposito" step="1000" />
           </label>
         </div>
+        <p class="mensaje-vacio" style="margin-top:0.4rem; font-size:0.78rem;">💡 Si el huésped ya tenía su reserva hecha y decide quedarse más días, solo aumenta "Cantidad de noches" — la reserva vinculada se extiende sola (contando desde hoy), siempre que la habitación siga libre esos días.</p>
         <div class="acciones-tarjeta" style="justify-content:flex-start; margin-top:0.5rem;">
           <button type="button" id="btn-ver-disponibilidad" class="btn btn-secundario btn-chico">📅 Ver disponibilidad</button>
         </div>
@@ -1451,9 +1695,10 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
             </select>
           </label>
           <label id="wrap-monto-pago-checkin" class="oculto">Monto a cobrar ahora
-            <input type="number" name="monto_pago_checkin" id="input-monto-pago" step="1000" min="0" />
+            <input type="text" name="monto_pago_checkin" id="input-monto-pago" placeholder="$0" />
           </label>
         </div>
+        <p class="mensaje-vacio" style="margin-top:0.4rem; font-size:0.78rem;">💳 Elige "Anticipado" para cobrar de una vez el valor completo que falte de la estadía — la habitación queda saldada y solo quedaría pendiente el consumo de minibar, que se liquida en el check-out.</p>
 
         <div id="resumen-liquidacion-wrap" style="margin-top:1.25rem;"></div>
       </div>
@@ -1626,6 +1871,9 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
   const wrapMontoPago = container.querySelector('#wrap-monto-pago-checkin');
   const inputMontoPago = container.querySelector('#input-monto-pago');
 
+  // Campo de dinero con formato "$" y punto de miles en vivo.
+  activarInputDinero(inputMontoPago);
+
   // Suma de lo que ya se haya pagado (reservas_pagos) para la reserva
   // vinculada — de la reserva original o de un check-in anterior. Se
   // vuelve a calcular cada vez que se vincula/cambia de reserva en
@@ -1653,7 +1901,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     const estadoPago = selectEstadoPago.value;
     const metodoPagoSel = container.querySelector('#select-metodo-pago-estadia');
     const metodoPago = metodoPagoSel ? metodoPagoSel.value : '—';
-    const montoACobrar = estadoPago === 'parcial' || estadoPago === 'anticipado' ? Number(inputMontoPago.value) || 0 : 0;
+    const montoACobrar = estadoPago === 'parcial' || estadoPago === 'anticipado' ? valorNumericoInput(inputMontoPago) : 0;
     const saldo = Math.max(0, montoEstimado - abonoPrevioActual - montoACobrar);
     const info = ETIQUETA_ESTADO_PAGO[estadoPago] || ETIQUETA_ESTADO_PAGO.pendiente;
 
@@ -1686,6 +1934,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     const estimado = calcularMontoEstimado();
     if (selectEstadoPago.value === 'anticipado') {
       inputMontoPago.value = Math.max(0, estimado - abonoPrevioActual);
+      activarInputDinero(inputMontoPago);
     }
     pintarResumenLiquidacion();
   }
@@ -1697,6 +1946,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     inputMontoPago.required = mostrar;
     if (estado === 'anticipado') {
       inputMontoPago.value = Math.max(0, calcularMontoEstimado() - abonoPrevioActual);
+      activarInputDinero(inputMontoPago);
     } else if (estado === 'pendiente') {
       inputMontoPago.value = '';
     }
@@ -1771,6 +2021,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     const hayFirma = ctx.getImageData(0, 0, canvas.width, canvas.height).data.some((v, i) => i % 4 === 3 && v !== 0);
 
     const habitacionId = Number(form.get('habitacion_id'));
+    const hoyISO = toISODate(new Date());
 
     // Verificación de último momento contra la base de datos: aunque el
     // desplegable ya deshabilita las habitaciones que no están
@@ -1804,7 +2055,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     const documento = form.get('numero_documento').trim();
     const celular = form.get('celular').trim() || null;
     const estadoPagoCheckin = form.get('estado_pago_checkin');
-    const montoPagoCheckin = form.get('monto_pago_checkin') ? Number(form.get('monto_pago_checkin')) : 0;
+    const montoPagoCheckin = valorNumericoInput(inputMontoPago);
 
     // --- Acompañantes: recolectar los bloques (si el checkbox está
     // marcado) y descartar cualquier bloque que haya quedado sin nombre. ---
@@ -1830,15 +2081,40 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
     if (reservaIdSeleccionada) {
       reservaIdFinal = Number(reservaIdSeleccionada);
-      const { error: errReservaUpd } = await supabase
+
+      // Si el check-in trae más (o menos) noches que las que tenía la
+      // reserva original, actualizamos también fecha_checkout — esto es
+      // lo que permite "adicionar días a la estadía" con solo cambiar el
+      // campo Cantidad de noches de arriba: el check-in cuenta desde hoy,
+      // así que la nueva salida es hoy + esas noches. Antes de guardar,
+      // se verifica que ninguna OTRA reserva activa de esa misma
+      // habitación se cruce con la fecha nueva — si hay cruce, se avisa y
+      // no se extiende la fecha (el resto del check-in sigue igual).
+      const nuevaFechaCheckoutISO = toISODate(addDays(hoyISO, cantidadNoches > 0 ? cantidadNoches : 1));
+      const { data: cruces } = await supabase
         .from('reservas')
-        .update({ estado: 'hospedado' })
-        .eq('id', reservaIdFinal);
+        .select('id, huesped_nombre, fecha_checkin, fecha_checkout')
+        .eq('habitacion_id', habitacionId)
+        .in('estado', ESTADOS_RESERVA_ACTIVOS)
+        .neq('id', reservaIdFinal)
+        .lt('fecha_checkin', nuevaFechaCheckoutISO)
+        .gt('fecha_checkout', hoyISO);
+
+      const payloadReservaVinculada = { estado: 'hospedado' };
+      if (!cruces || cruces.length === 0) {
+        payloadReservaVinculada.fecha_checkout = nuevaFechaCheckoutISO;
+      } else {
+        mostrarToast(
+          `No se pudo extender la estadía hasta ${nuevaFechaCheckoutISO}: la habitación ya tiene otra reserva (${cruces[0].huesped_nombre}) que se cruza. El check-in continúa con la fecha original de la reserva.`,
+          'error'
+        );
+      }
+
+      const { error: errReservaUpd } = await supabase.from('reservas').update(payloadReservaVinculada).eq('id', reservaIdFinal);
       if (errReservaUpd) {
         mostrarToast(`No se pudo actualizar la reserva vinculada: ${errReservaUpd.message}`, 'error');
       }
     } else {
-      const hoyISO = toISODate(new Date());
       const { data: nuevaReserva, error: errReservaNueva } = await supabase
         .from('reservas')
         .insert({
