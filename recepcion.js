@@ -18,6 +18,22 @@
 // pago al check-in (que alimenta Caja automático), firma digital (canvas)
 // y consentimiento Habeas Data.
 //
+// Nota IMPORTANTE sobre "¿El huésped paga la estadía ahora?" (antes era un
+// simple desplegable, y no quedaba claro si se estaba cobrando o no): ahora
+// son tres tarjetas grandes y explícitas — Pendiente / Abono parcial / Pago
+// total — NINGUNA queda marcada por defecto, así que es obligatorio elegir
+// una a propósito (no se puede dejar "sin querer" en la opción por
+// defecto). Y antes de guardar el check-in de verdad, se abre una tarjeta
+// de confirmación (mismo patrón que la liquidación del check-out) que
+// resume en un solo vistazo: cuánto vale la estadía, cuánto se abonó
+// antes, qué se está cobrando ahora, con qué método, y cuánto queda
+// pendiente para el check-out — con dos botones, "Volver a editar" (por si
+// algo no cuadra) y "Confirmar y registrar check-in" (que es el único que
+// de verdad guarda todo en la base de datos). Esto es a propósito: ya no
+// hay forma de terminar un check-in sin que quede clarísimo, para la
+// recepcionista y para quien revise después, si el huésped pagó, abonó, o
+// quedó debiendo todo.
+//
 // Nota sobre "Ver disponibilidad" en la tarjeta Estadía: abre una mini
 // versión del calendario de Reservas (próximos 10 días x habitaciones) para
 // decidir dónde alojar sin salir del check-in. Solo la columna de HOY es
@@ -65,22 +81,22 @@
 // se ve ahí.
 //
 // Nota sobre campos obligatorios en Estadía: habitación, tarifa, cantidad
-// de noches, método de pago y "Pago al check-in" son obligatorios — y si
-// el pago es parcial o anticipado, el monto a cobrar también. Esto es a
-// propósito: evita check-ins a medio llenar que después generan dudas en
-// Caja o en Reservas sobre cuánto se cobró o a qué tarifa.
+// de noches, método de pago y "¿El huésped paga la estadía ahora?" son
+// obligatorios — y si la opción elegida es Abono parcial o Pago total, el
+// monto a cobrar también. Esto es a propósito: evita check-ins a medio
+// llenar que después generan dudas en Caja o en Reservas sobre cuánto se
+// cobró o a qué tarifa.
 //
-// Nota sobre el pago al check-in: "Pago al check-in" (pendiente / parcial
-// / anticipado) NO se guarda en una columna suelta — si hay monto, se
-// inserta directo en `reservas_pagos` (la misma tabla de abonos que ya
-// usan Reservas y la liquidación del check-out), así el pago aparece
-// automático en Caja ("Ingresos por reservas"), Indicadores y
-// Contabilidad sin ningún paso manual extra. El campo "Monto total
-// estimado" (noches × tarifa) es solo una ayuda visual para la
-// recepcionista, no se guarda. Elegir "Anticipado" cobra automático el
-// valor completo que falte de la estadía (estimado menos lo ya abonado
-// antes) — deja la habitación saldada, y solo quedaría pendiente el
-// consumo de minibar, que se liquida en el check-out.
+// Nota sobre el pago al check-in: lo que se cobre (parcial o total) NO se
+// guarda en una columna suelta — se inserta directo en `reservas_pagos`
+// (la misma tabla de abonos que ya usan Reservas y la liquidación del
+// check-out), así el pago aparece automático en Caja ("Ingresos por
+// reservas"), Indicadores y Contabilidad sin ningún paso manual extra. El
+// campo "Monto total estimado" (noches × tarifa) es solo una ayuda visual
+// para la recepcionista, no se guarda. Elegir "Pago total" cobra
+// automático el valor completo que falte de la estadía (estimado menos lo
+// ya abonado antes) — deja la habitación saldada, y solo quedaría
+// pendiente el consumo de minibar, que se liquida en el check-out.
 //
 // Nota sobre "adicionar días a la estadía": si un huésped que ya tenía su
 // reserva hecha (por ejemplo 2 noches) decide en el check-in quedarse más
@@ -161,13 +177,13 @@
 // tarifa, noches, tipo de pago, monto a cobrar, saldo) usando cajones de
 // color para que sea imposible perderse — azul para el estimado total,
 // verde para lo que se cobra ahora, rojo (o verde si queda en cero) para
-// el saldo pendiente. Desde ahora también muestra, si el check-in está
-// vinculado a una reserva con abono previo (de Reservas o de un check-in
-// vinculado automáticamente), un cajón morado con "Ya abonado antes" — y
-// el saldo pendiente descuenta ese abono además de lo que se cobre ahora.
-// No guarda nada aparte: es solo una vista de lo que ya está en el
-// formulario, para reducir errores de digitación antes de guardar el
-// check-in.
+// el saldo pendiente. Si el check-in está vinculado a una reserva con
+// abono previo (de Reservas o de un check-in vinculado automáticamente),
+// muestra un cajón morado con "Ya abonado antes" — y el saldo pendiente
+// descuenta ese abono además de lo que se cobre ahora. Esta tarjeta es
+// solo una vista en vivo mientras se llena el formulario; la tarjeta de
+// confirmación que se abre al enviar (ver nota de cabecera) es la que
+// resume TODO de forma definitiva antes de guardar.
 //
 // Nota sobre el cruce con Housekeeping al elegir habitación en el
 // check-in: el desplegable de Habitación solo deja elegir habitaciones
@@ -191,11 +207,7 @@
 // había pagado al reservar quedaba huérfano: nunca aparecía al liquidar
 // el check-out. Si hay más de una reserva pendiente con el mismo
 // documento, no se elige ninguna sola — hay que seleccionarla a mano para
-// no adivinar cuál es. Al vincularse (sola o a mano), el resumen de la
-// liquidación (tarjeta Estadía) muestra un cajón morado "Ya abonado antes"
-// con la suma de lo que ya se haya pagado por esa reserva, y el saldo
-// pendiente lo descuenta — así ese abono ya no se pierde entre la reserva,
-// el check-in y el check-out.
+// no adivinar cuál es.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -227,11 +239,33 @@ const ETIQUETA_ESTADO_HABITACION = {
 };
 const DIAS_VISIBLES_DISPONIBILIDAD = 10;
 
-// Colores/etiquetas del resumen visual de liquidación (tarjeta Estadía).
+// Colores/etiquetas del resumen visual de liquidación (tarjeta Estadía) Y
+// de la tarjeta de confirmación final del check-in.
 const ETIQUETA_ESTADO_PAGO = {
-  pendiente: { texto: '🕒 Pendiente — sin pago todavía', color: '#8a6d00', fondo: 'var(--color-alerta-fondo, #fff8e1)', borde: '#e8c547' },
-  parcial: { texto: '🔷 Parcial — abono ahora', color: '#0b5fae', fondo: '#eaf3ff', borde: '#8ec1f5' },
-  anticipado: { texto: '✅ Anticipado — pago completo', color: 'var(--color-verde-oscuro, #1b7a3d)', fondo: '#eafbea', borde: '#8fd3a4' },
+  pendiente: {
+    texto: '🕒 Pendiente — sin pago todavía',
+    color: '#8a6d00',
+    fondo: 'var(--color-alerta-fondo, #fff8e1)',
+    borde: '#e8c547',
+    titulo: '🕒 Sin pago por ahora',
+    detalle: 'El huésped NO paga nada en este momento — el valor completo de la estadía queda pendiente para cobrarse en el check-out.',
+  },
+  parcial: {
+    texto: '🔷 Parcial — abono ahora',
+    color: '#0b5fae',
+    fondo: '#eaf3ff',
+    borde: '#8ec1f5',
+    titulo: '🔷 Abono parcial',
+    detalle: 'El huésped abona una parte ahora. El resto de la estadía queda pendiente y se cobra en el check-out.',
+  },
+  anticipado: {
+    texto: '✅ Anticipado — pago completo',
+    color: 'var(--color-verde-oscuro, #1b7a3d)',
+    fondo: '#eafbea',
+    borde: '#8fd3a4',
+    titulo: '✅ Pago total (anticipado)',
+    detalle: 'El huésped paga ahora el valor completo de la estadía — la habitación queda saldada. Solo quedaría pendiente lo que consuma de minibar, que se liquida en el check-out.',
+  },
 };
 
 async function render(container) {
@@ -1553,6 +1587,222 @@ async function abrirModalDisponibilidad(selectHabitacion) {
   });
 }
 
+// --- Tarjeta de confirmación final del check-in (mismo patrón que la
+// liquidación del check-out): resume TODO antes de guardar de verdad —
+// cuánto vale la estadía, cuánto se abonó antes, qué se cobra ahora, con
+// qué método, y cuánto queda pendiente para el check-out. Solo el botón
+// "Confirmar y registrar check-in" escribe en la base de datos; "Volver a
+// editar" simplemente cierra la tarjeta y deja el formulario intacto. ---
+function abrirModalConfirmarCheckin(datos) {
+  const info = ETIQUETA_ESTADO_PAGO[datos.estadoPagoCheckin] || ETIQUETA_ESTADO_PAGO.pendiente;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja modal-caja-ancha">
+      <h3>🧾 Confirmar check-in — ${escaparHTML(datos.huespedNombre)}</h3>
+      <div class="modal-contenido">
+        <p class="mensaje-vacio" style="margin-top:-0.5rem;">Revisa la liquidación antes de guardar — este es el único paso que registra el check-in de verdad.</p>
+        ${filaResumen('Habitación', datos.habitacionTexto, { negrita: true })}
+        ${filaResumen('Tarifa', datos.tarifaCodigo, {})}
+        ${filaResumen('Noches', datos.cantidadNoches || '—', {})}
+        ${cajonMonto('Monto estimado de la estadía', formatCOP(datos.montoEstimado), '#0b5fae', '#eaf3ff', '#8ec1f5')}
+        ${datos.abonoPrevioActual > 0 ? cajonMonto('Ya abonado antes (reserva / check-in previo)', formatCOP(datos.abonoPrevioActual), '#6a3fb5', '#f3edfb', '#c6acec') : ''}
+
+        <div style="margin-top:1rem; padding:0.9rem 1rem; border-radius:10px; background:${info.fondo}; border:1.5px solid ${info.borde};">
+          <p style="margin:0; font-weight:700; color:${info.color};">${info.titulo}</p>
+          <p style="margin:0.35rem 0 0; font-size:0.85rem; color:${info.color};">${info.detalle}</p>
+        </div>
+
+        ${datos.estadoPagoCheckin !== 'pendiente' ? cajonMonto('Se cobra ahora', formatCOP(datos.montoPagoCheckin), 'var(--color-verde-oscuro, #1b7a3d)', '#eafbea', '#8fd3a4') : ''}
+        ${datos.estadoPagoCheckin !== 'pendiente' ? filaResumen('Método de pago', datos.metodoPago, {}) : ''}
+        ${cajonMonto(
+          'Saldo que queda pendiente para el check-out',
+          formatCOP(datos.saldoDespues),
+          datos.saldoDespues > 0 ? 'var(--color-rojo-oscuro, #b3261e)' : 'var(--color-verde-oscuro, #1b7a3d)',
+          datos.saldoDespues > 0 ? '#fdeceb' : '#eafbea',
+          datos.saldoDespues > 0 ? '#f0a8a0' : '#8fd3a4'
+        )}
+        <p class="mensaje-vacio" style="margin-top:0.75rem; font-size:0.78rem;">Este saldo no incluye lo que el huésped consuma de minibar durante la estadía — eso se suma aparte y se liquida en el check-out.</p>
+      </div>
+      <div class="modal-acciones">
+        <button type="button" class="btn btn-secundario" id="btn-volver-editar-checkin">Volver a editar</button>
+        <button type="button" class="btn btn-primario" id="btn-confirmar-registro-checkin">Confirmar y registrar check-in</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#btn-volver-editar-checkin').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  overlay.querySelector('#btn-confirmar-registro-checkin').addEventListener('click', async () => {
+    const btn = overlay.querySelector('#btn-confirmar-registro-checkin');
+    btn.disabled = true;
+    btn.textContent = 'Registrando…';
+    await datos.onConfirmar();
+    overlay.remove();
+  });
+}
+
+// Ejecuta de verdad el registro del check-in (todos los inserts/updates) —
+// solo se llama desde el botón "Confirmar y registrar check-in" de la
+// tarjeta de confirmación de arriba, nunca directo desde el submit del
+// formulario.
+async function ejecutarRegistroCheckin(p) {
+  const { container, form, habitacionId, hoyISO, reservaIdSeleccionada, tarifaId, cantidadNoches, nombre, documento, celular, estadoPagoCheckin, montoPagoCheckin, acompanantesDetalle, hayFirma, canvas } = p;
+
+  // --- Vincular o crear la reserva asociada ---
+  let reservaIdFinal = null;
+
+  if (reservaIdSeleccionada) {
+    reservaIdFinal = Number(reservaIdSeleccionada);
+
+    // Si el check-in trae más (o menos) noches que las que tenía la
+    // reserva original, actualizamos también fecha_checkout — esto es lo
+    // que permite "adicionar días a la estadía" con solo cambiar el campo
+    // Cantidad de noches de arriba: el check-in cuenta desde hoy, así que
+    // la nueva salida es hoy + esas noches. Antes de guardar, se verifica
+    // que ninguna OTRA reserva activa de esa misma habitación se cruce
+    // con la fecha nueva — si hay cruce, se avisa y no se extiende la
+    // fecha (el resto del check-in sigue igual).
+    const nuevaFechaCheckoutISO = toISODate(addDays(hoyISO, cantidadNoches > 0 ? cantidadNoches : 1));
+    const { data: cruces } = await supabase
+      .from('reservas')
+      .select('id, huesped_nombre, fecha_checkin, fecha_checkout')
+      .eq('habitacion_id', habitacionId)
+      .in('estado', ESTADOS_RESERVA_ACTIVOS)
+      .neq('id', reservaIdFinal)
+      .lt('fecha_checkin', nuevaFechaCheckoutISO)
+      .gt('fecha_checkout', hoyISO);
+
+    const payloadReservaVinculada = { estado: 'hospedado' };
+    if (!cruces || cruces.length === 0) {
+      payloadReservaVinculada.fecha_checkout = nuevaFechaCheckoutISO;
+    } else {
+      mostrarToast(
+        `No se pudo extender la estadía hasta ${nuevaFechaCheckoutISO}: la habitación ya tiene otra reserva (${cruces[0].huesped_nombre}) que se cruza. El check-in continúa con la fecha original de la reserva.`,
+        'error'
+      );
+    }
+
+    const { error: errReservaUpd } = await supabase.from('reservas').update(payloadReservaVinculada).eq('id', reservaIdFinal);
+    if (errReservaUpd) {
+      mostrarToast(`No se pudo actualizar la reserva vinculada: ${errReservaUpd.message}`, 'error');
+    }
+  } else {
+    const { data: nuevaReserva, error: errReservaNueva } = await supabase
+      .from('reservas')
+      .insert({
+        habitacion_id: habitacionId,
+        huesped_nombre: nombre,
+        huesped_telefono: celular,
+        huesped_documento: documento,
+        fecha_checkin: hoyISO,
+        fecha_checkout: toISODate(addDays(hoyISO, cantidadNoches > 0 ? cantidadNoches : 1)),
+        estado: 'hospedado',
+        tarifa_id: tarifaId,
+        comentarios: 'Creada automáticamente desde Recepción (walk-in).',
+      })
+      .select('id')
+      .single();
+
+    if (errReservaNueva) {
+      mostrarToast(`Check-in continuará, pero no se pudo crear la reserva asociada: ${errReservaNueva.message}`, 'error');
+    } else {
+      reservaIdFinal = nuevaReserva.id;
+    }
+  }
+
+  // --- Pago al check-in: si hay monto, se inserta en reservas_pagos
+  // (misma tabla que lee Caja automático) — no hay campo suelto. ---
+  if ((estadoPagoCheckin === 'parcial' || estadoPagoCheckin === 'anticipado') && montoPagoCheckin > 0) {
+    if (!reservaIdFinal) {
+      mostrarToast('No hay una reserva vinculada; no se pudo registrar el pago en Caja.', 'error');
+    } else {
+      const { error: errPagoInicial } = await supabase.from('reservas_pagos').insert({
+        reserva_id: reservaIdFinal,
+        monto: montoPagoCheckin,
+        metodo_pago: form.get('metodo_pago'),
+        comentarios: estadoPagoCheckin === 'anticipado' ? 'Pago anticipado registrado en el check-in.' : 'Abono parcial registrado en el check-in.',
+      });
+      if (errPagoInicial) {
+        mostrarToast(`Check-in continuará, pero no se pudo registrar el pago en Caja: ${errPagoInicial.message}`, 'error');
+      }
+    }
+  }
+
+  // --- Ficha de huésped (histórico) ---
+  // Guarda o actualiza los datos de contacto en `huespedes` (por
+  // numero_documento) sin pisar preferencias/alergias/observaciones si ya
+  // existían — eso se edita solo desde el módulo Huéspedes.
+  const { error: errHuesped } = await supabase.from('huespedes').upsert(
+    {
+      numero_documento: documento,
+      tipo_documento: form.get('tipo_documento'),
+      nombre,
+      telefono: celular,
+      correo: form.get('correo').trim() || null,
+      empresa: form.get('empresa').trim() || null,
+      actualizado_en: new Date().toISOString(),
+    },
+    { onConflict: 'numero_documento' }
+  );
+  if (errHuesped) {
+    mostrarToast(`Check-in guardado, pero no se pudo actualizar la ficha del huésped: ${errHuesped.message}`, 'error');
+  }
+
+  // --- Acompañantes con documento también quedan en el listado general
+  // de huespedes, igual que el huésped principal. ---
+  await alimentarHuespedesConAcompanantes(acompanantesDetalle);
+
+  const payload = {
+    reserva_id: reservaIdFinal,
+    habitacion_id: habitacionId,
+    nombre,
+    tipo_documento: form.get('tipo_documento'),
+    numero_documento: documento,
+    nacionalidad: form.get('nacionalidad').trim() || null,
+    fecha_nacimiento: form.get('fecha_nacimiento') || null,
+    direccion: form.get('direccion').trim() || null,
+    ciudad: form.get('ciudad').trim() || null,
+    departamento: form.get('departamento').trim() || null,
+    pais: form.get('pais').trim() || null,
+    correo: form.get('correo').trim() || null,
+    celular,
+    empresa: form.get('empresa').trim() || null,
+    placa_vehiculo: form.get('placa_vehiculo').trim() || null,
+    acompanantes_detalle: acompanantesDetalle,
+    foto_documento_url: form.get('foto_documento_url').trim() || null,
+    firma_digital: hayFirma ? canvas.toDataURL('image/png') : null,
+    consentimiento_habeas_data: true,
+    observaciones: form.get('observaciones').trim() || null,
+    tarifa_id: tarifaId,
+    cantidad_noches: cantidadNoches,
+    metodo_pago: form.get('metodo_pago'),
+    deposito: form.get('deposito') ? Number(form.get('deposito')) : null,
+  };
+
+  const { error: errInsert } = await supabase.from('recepcion_checkins').insert(payload);
+  if (errInsert) {
+    mostrarToast(`Error registrando check-in: ${errInsert.message}`, 'error');
+    return;
+  }
+
+  const { error: errEstado } = await supabase.rpc('cambiar_estado_habitacion', {
+    p_habitacion_id: habitacionId,
+    p_estado: 'ocupada',
+  });
+  if (errEstado) {
+    mostrarToast(`Check-in guardado, pero no se pudo marcar la habitación como ocupada: ${errEstado.message}`, 'error');
+  }
+
+  mostrarToast('Check-in registrado.', 'exito');
+  await vistaLista(container);
+}
+
 async function vistaFormulario(container, reservaIdPreseleccionada) {
   const [{ data: habitaciones }, { data: tarifas }, { data: reservas }] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre, estado').order('numero'),
@@ -1686,19 +1936,27 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
           <button type="button" id="btn-ver-disponibilidad" class="btn btn-secundario btn-chico">📅 Ver disponibilidad</button>
         </div>
 
-        <div class="form-grid" style="margin-top:0.75rem;">
-          <label>Pago al check-in
-            <select id="select-estado-pago" name="estado_pago_checkin" required>
-              <option value="pendiente">Pendiente (sin pago todavía)</option>
-              <option value="parcial">Parcial (abono)</option>
-              <option value="anticipado">Anticipado (pago completo)</option>
-            </select>
-          </label>
-          <label id="wrap-monto-pago-checkin" class="oculto">Monto a cobrar ahora
+        <div class="tarjeta" style="margin-top:0.75rem; background:var(--color-fondo-suave, #f8f9fb);">
+          <h3 style="margin-top:0;">💳 ¿El huésped paga la estadía ahora?</h3>
+          <p class="mensaje-vacio" style="margin-top:-0.3rem; margin-bottom:0.75rem;">Es obligatorio elegir una opción para poder registrar el check-in — no queda ninguna marcada por defecto.</p>
+          <div id="opciones-pago-checkin" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:0.75rem;">
+            <label class="opcion-pago-checkin" data-valor="pendiente" style="display:flex; flex-direction:column; gap:0.35rem; padding:0.9rem 1rem; border:2px solid var(--color-borde); border-radius:10px; cursor:pointer;">
+              <span style="display:flex; align-items:center; gap:0.5rem; font-weight:700;"><input type="radio" name="estado_pago_checkin" value="pendiente" required style="width:auto;" /> 🕒 Pendiente</span>
+              <span style="font-size:0.8rem; color:var(--color-texto-suave);">No paga nada ahora — todo queda para el check-out.</span>
+            </label>
+            <label class="opcion-pago-checkin" data-valor="parcial" style="display:flex; flex-direction:column; gap:0.35rem; padding:0.9rem 1rem; border:2px solid var(--color-borde); border-radius:10px; cursor:pointer;">
+              <span style="display:flex; align-items:center; gap:0.5rem; font-weight:700;"><input type="radio" name="estado_pago_checkin" value="parcial" required style="width:auto;" /> 🔷 Abono parcial</span>
+              <span style="font-size:0.8rem; color:var(--color-texto-suave);">Paga una parte ahora, el resto queda para el check-out.</span>
+            </label>
+            <label class="opcion-pago-checkin" data-valor="anticipado" style="display:flex; flex-direction:column; gap:0.35rem; padding:0.9rem 1rem; border:2px solid var(--color-borde); border-radius:10px; cursor:pointer;">
+              <span style="display:flex; align-items:center; gap:0.5rem; font-weight:700;"><input type="radio" name="estado_pago_checkin" value="anticipado" required style="width:auto;" /> ✅ Pago total (anticipado)</span>
+              <span style="font-size:0.8rem; color:var(--color-texto-suave);">Paga el valor completo ahora — la habitación queda saldada.</span>
+            </label>
+          </div>
+          <label id="wrap-monto-pago-checkin" class="oculto" style="margin-top:0.85rem; display:block;">Monto a cobrar ahora
             <input type="text" name="monto_pago_checkin" id="input-monto-pago" placeholder="$0" />
           </label>
         </div>
-        <p class="mensaje-vacio" style="margin-top:0.4rem; font-size:0.78rem;">💳 Elige "Anticipado" para cobrar de una vez el valor completo que falte de la estadía — la habitación queda saldada y solo quedaría pendiente el consumo de minibar, que se liquida en el check-out.</p>
 
         <div id="resumen-liquidacion-wrap" style="margin-top:1.25rem;"></div>
       </div>
@@ -1717,7 +1975,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
       <div class="modal-acciones" style="margin-top:1rem;">
         <button type="button" id="btn-cancelar-checkin" class="btn btn-secundario">Cancelar</button>
-        <button type="submit" class="btn btn-primario">Registrar Check-in</button>
+        <button type="submit" class="btn btn-primario">Revisar y registrar Check-in</button>
       </div>
     </form>
   `;
@@ -1867,12 +2125,17 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
   // --- Monto estimado de la estadía (noches × tarifa) + pago al check-in ---
   const selectTarifaEstadia = container.querySelector('#select-tarifa');
   const inputNochesEstadia = container.querySelector('#input-noches');
-  const selectEstadoPago = container.querySelector('#select-estado-pago');
+  const radiosEstadoPago = container.querySelectorAll('input[name="estado_pago_checkin"]');
   const wrapMontoPago = container.querySelector('#wrap-monto-pago-checkin');
   const inputMontoPago = container.querySelector('#input-monto-pago');
 
   // Campo de dinero con formato "$" y punto de miles en vivo.
   activarInputDinero(inputMontoPago);
+
+  function estadoPagoActual() {
+    const marcado = container.querySelector('input[name="estado_pago_checkin"]:checked');
+    return marcado ? marcado.value : '';
+  }
 
   // Suma de lo que ya se haya pagado (reservas_pagos) para la reserva
   // vinculada — de la reserva original o de un check-in anterior. Se
@@ -1888,7 +2151,9 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
   }
 
   // Arma la tarjeta-recibo con lo que la recepcionista lleva llenado hasta
-  // ahora — se repinta completa cada vez que cambia algo relevante.
+  // ahora — se repinta completa cada vez que cambia algo relevante. Es
+  // solo una vista en vivo; la tarjeta de confirmación al enviar el
+  // formulario es la que resume todo de forma definitiva.
   function pintarResumenLiquidacion() {
     const wrap = container.querySelector('#resumen-liquidacion-wrap');
     if (!wrap) return;
@@ -1898,7 +2163,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     const tarifa = (tarifas || []).find((t) => t.id === Number(selectTarifaEstadia.value));
     const noches = Number(inputNochesEstadia.value) || 0;
     const montoEstimado = calcularMontoEstimado();
-    const estadoPago = selectEstadoPago.value;
+    const estadoPago = estadoPagoActual();
     const metodoPagoSel = container.querySelector('#select-metodo-pago-estadia');
     const metodoPago = metodoPagoSel ? metodoPagoSel.value : '—';
     const montoACobrar = estadoPago === 'parcial' || estadoPago === 'anticipado' ? valorNumericoInput(inputMontoPago) : 0;
@@ -1907,15 +2172,15 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
     wrap.innerHTML = `
       <div class="tarjeta" style="background:var(--color-fondo-suave, #f8f9fb); border:2px solid var(--color-borde, #ddd);">
-        <h3 style="margin-top:0;">🧾 Resumen de la liquidación</h3>
+        <h3 style="margin-top:0;">🧾 Resumen en vivo</h3>
         ${filaResumen('Habitación', habitacionTexto, { negrita: true })}
         ${filaResumen('Tarifa', tarifa ? tarifa.codigo : 'Sin elegir', {})}
         ${filaResumen('Cantidad de noches', noches || '—', {})}
         ${cajonMonto('Monto estimado estadía', formatCOP(montoEstimado), '#0b5fae', '#eaf3ff', '#8ec1f5')}
         ${abonoPrevioActual > 0 ? cajonMonto('Ya abonado antes (reserva / check-in)', formatCOP(abonoPrevioActual), '#6a3fb5', '#f3edfb', '#c6acec') : ''}
         <div style="margin-top:0.75rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.4rem;">
-          <span style="font-size:0.82rem; color:var(--color-texto-suave, #666);">Pago al check-in</span>
-          <span style="display:inline-block; padding:0.3rem 0.7rem; border-radius:999px; background:${info.fondo}; color:${info.color}; font-weight:700; font-size:0.8rem; border:1px solid ${info.borde};">${info.texto}</span>
+          <span style="font-size:0.82rem; color:var(--color-texto-suave, #666);">¿Paga ahora?</span>
+          <span style="display:inline-block; padding:0.3rem 0.7rem; border-radius:999px; background:${info.fondo}; color:${info.color}; font-weight:700; font-size:0.8rem; border:1px solid ${info.borde};">${estadoPago ? info.texto : '⚠️ Falta elegir arriba'}</span>
         </div>
         ${filaResumen('Método de pago', metodoPago, {})}
         ${cajonMonto('Monto a cobrar ahora', formatCOP(montoACobrar), 'var(--color-verde-oscuro, #1b7a3d)', '#eafbea', '#8fd3a4')}
@@ -1932,7 +2197,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
   function actualizarHintMonto() {
     const estimado = calcularMontoEstimado();
-    if (selectEstadoPago.value === 'anticipado') {
+    if (estadoPagoActual() === 'anticipado') {
       inputMontoPago.value = Math.max(0, estimado - abonoPrevioActual);
       activarInputDinero(inputMontoPago);
     }
@@ -1940,7 +2205,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
   }
 
   function actualizarVisibilidadPago() {
-    const estado = selectEstadoPago.value;
+    const estado = estadoPagoActual();
     const mostrar = estado === 'parcial' || estado === 'anticipado';
     wrapMontoPago.classList.toggle('oculto', !mostrar);
     inputMontoPago.required = mostrar;
@@ -1950,12 +2215,19 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     } else if (estado === 'pendiente') {
       inputMontoPago.value = '';
     }
+    // Resalta visualmente la tarjeta de pago elegida, para que sea
+    // imposible confundir cuál quedó marcada.
+    container.querySelectorAll('.opcion-pago-checkin').forEach((lbl) => {
+      const elegida = lbl.dataset.valor === estado;
+      lbl.style.borderColor = elegida ? 'var(--color-azul)' : 'var(--color-borde)';
+      lbl.style.background = elegida ? 'rgba(30, 78, 140, 0.06)' : 'transparent';
+    });
     pintarResumenLiquidacion();
   }
 
   selectTarifaEstadia.addEventListener('change', actualizarHintMonto);
   inputNochesEstadia.addEventListener('input', actualizarHintMonto);
-  selectEstadoPago.addEventListener('change', actualizarVisibilidadPago);
+  radiosEstadoPago.forEach((radio) => radio.addEventListener('change', actualizarVisibilidadPago));
   inputMontoPago.addEventListener('input', pintarResumenLiquidacion);
   container.querySelector('#select-habitacion').addEventListener('change', pintarResumenLiquidacion);
   const selectMetodoPagoEstadia = container.querySelector('#select-metodo-pago-estadia');
@@ -2016,6 +2288,12 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
       return;
     }
 
+    const tipoPagoMarcado = container.querySelector('input[name="estado_pago_checkin"]:checked');
+    if (!tipoPagoMarcado) {
+      mostrarToast('Elige si el huésped paga ahora (Parcial/Total) o si queda Pendiente, antes de continuar — es obligatorio.', 'error');
+      return;
+    }
+
     const form = new FormData(e.target);
     const reservaIdSeleccionada = container.querySelector('#select-reserva').value || null;
     const hayFirma = ctx.getImageData(0, 0, canvas.width, canvas.height).data.some((v, i) => i % 4 === 3 && v !== 0);
@@ -2050,12 +2328,17 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     }
 
     const tarifaId = form.get('tarifa_id') ? Number(form.get('tarifa_id')) : null;
+    const tarifa = (tarifas || []).find((t) => t.id === tarifaId);
     const cantidadNoches = form.get('cantidad_noches') ? Number(form.get('cantidad_noches')) : 1;
     const nombre = form.get('nombre').trim();
     const documento = form.get('numero_documento').trim();
     const celular = form.get('celular').trim() || null;
-    const estadoPagoCheckin = form.get('estado_pago_checkin');
+    const estadoPagoCheckin = tipoPagoMarcado.value;
     const montoPagoCheckin = valorNumericoInput(inputMontoPago);
+    const montoEstimado = calcularMontoEstimado();
+    const metodoPago = form.get('metodo_pago');
+    const habitacionTexto = container.querySelector('#select-habitacion').selectedOptions[0]?.textContent || habitacionActual.numero;
+    const saldoDespues = Math.max(0, montoEstimado - abonoPrevioActual - montoPagoCheckin);
 
     // --- Acompañantes: recolectar los bloques (si el checkbox está
     // marcado) y descartar cualquier bloque que haya quedado sin nombre. ---
@@ -2076,153 +2359,39 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
       if (acompanantesDetalle.length === 0) acompanantesDetalle = null;
     }
 
-    // --- Vincular o crear la reserva asociada ---
-    let reservaIdFinal = null;
-
-    if (reservaIdSeleccionada) {
-      reservaIdFinal = Number(reservaIdSeleccionada);
-
-      // Si el check-in trae más (o menos) noches que las que tenía la
-      // reserva original, actualizamos también fecha_checkout — esto es
-      // lo que permite "adicionar días a la estadía" con solo cambiar el
-      // campo Cantidad de noches de arriba: el check-in cuenta desde hoy,
-      // así que la nueva salida es hoy + esas noches. Antes de guardar,
-      // se verifica que ninguna OTRA reserva activa de esa misma
-      // habitación se cruce con la fecha nueva — si hay cruce, se avisa y
-      // no se extiende la fecha (el resto del check-in sigue igual).
-      const nuevaFechaCheckoutISO = toISODate(addDays(hoyISO, cantidadNoches > 0 ? cantidadNoches : 1));
-      const { data: cruces } = await supabase
-        .from('reservas')
-        .select('id, huesped_nombre, fecha_checkin, fecha_checkout')
-        .eq('habitacion_id', habitacionId)
-        .in('estado', ESTADOS_RESERVA_ACTIVOS)
-        .neq('id', reservaIdFinal)
-        .lt('fecha_checkin', nuevaFechaCheckoutISO)
-        .gt('fecha_checkout', hoyISO);
-
-      const payloadReservaVinculada = { estado: 'hospedado' };
-      if (!cruces || cruces.length === 0) {
-        payloadReservaVinculada.fecha_checkout = nuevaFechaCheckoutISO;
-      } else {
-        mostrarToast(
-          `No se pudo extender la estadía hasta ${nuevaFechaCheckoutISO}: la habitación ya tiene otra reserva (${cruces[0].huesped_nombre}) que se cruza. El check-in continúa con la fecha original de la reserva.`,
-          'error'
-        );
-      }
-
-      const { error: errReservaUpd } = await supabase.from('reservas').update(payloadReservaVinculada).eq('id', reservaIdFinal);
-      if (errReservaUpd) {
-        mostrarToast(`No se pudo actualizar la reserva vinculada: ${errReservaUpd.message}`, 'error');
-      }
-    } else {
-      const { data: nuevaReserva, error: errReservaNueva } = await supabase
-        .from('reservas')
-        .insert({
-          habitacion_id: habitacionId,
-          huesped_nombre: nombre,
-          huesped_telefono: celular,
-          huesped_documento: documento,
-          fecha_checkin: hoyISO,
-          fecha_checkout: toISODate(addDays(hoyISO, cantidadNoches > 0 ? cantidadNoches : 1)),
-          estado: 'hospedado',
-          tarifa_id: tarifaId,
-          comentarios: 'Creada automáticamente desde Recepción (walk-in).',
-        })
-        .select('id')
-        .single();
-
-      if (errReservaNueva) {
-        mostrarToast(`Check-in continuará, pero no se pudo crear la reserva asociada: ${errReservaNueva.message}`, 'error');
-      } else {
-        reservaIdFinal = nuevaReserva.id;
-      }
-    }
-
-    // --- Pago al check-in: si hay monto, se inserta en reservas_pagos
-    // (misma tabla que lee Caja automático) — no hay campo suelto. ---
-    if ((estadoPagoCheckin === 'parcial' || estadoPagoCheckin === 'anticipado') && montoPagoCheckin > 0) {
-      if (!reservaIdFinal) {
-        mostrarToast('No hay una reserva vinculada; no se pudo registrar el pago en Caja.', 'error');
-      } else {
-        const { error: errPagoInicial } = await supabase.from('reservas_pagos').insert({
-          reserva_id: reservaIdFinal,
-          monto: montoPagoCheckin,
-          metodo_pago: form.get('metodo_pago'),
-          comentarios: estadoPagoCheckin === 'anticipado' ? 'Pago anticipado registrado en el check-in.' : 'Abono parcial registrado en el check-in.',
-        });
-        if (errPagoInicial) {
-          mostrarToast(`Check-in continuará, pero no se pudo registrar el pago en Caja: ${errPagoInicial.message}`, 'error');
-        }
-      }
-    }
-
-    // --- Ficha de huésped (histórico) ---
-    // Guarda o actualiza los datos de contacto en `huespedes` (por
-    // numero_documento) sin pisar preferencias/alergias/observaciones si
-    // ya existían — eso se edita solo desde el módulo Huéspedes.
-    const { error: errHuesped } = await supabase.from('huespedes').upsert(
-      {
-        numero_documento: documento,
-        tipo_documento: form.get('tipo_documento'),
-        nombre,
-        telefono: celular,
-        correo: form.get('correo').trim() || null,
-        empresa: form.get('empresa').trim() || null,
-        actualizado_en: new Date().toISOString(),
-      },
-      { onConflict: 'numero_documento' }
-    );
-    if (errHuesped) {
-      mostrarToast(`Check-in guardado, pero no se pudo actualizar la ficha del huésped: ${errHuesped.message}`, 'error');
-    }
-
-    // --- Acompañantes con documento también quedan en el listado general
-    // de huespedes, igual que el huésped principal. ---
-    await alimentarHuespedesConAcompanantes(acompanantesDetalle);
-
-    const payload = {
-      reserva_id: reservaIdFinal,
-      habitacion_id: habitacionId,
-      nombre,
-      tipo_documento: form.get('tipo_documento'),
-      numero_documento: documento,
-      nacionalidad: form.get('nacionalidad').trim() || null,
-      fecha_nacimiento: form.get('fecha_nacimiento') || null,
-      direccion: form.get('direccion').trim() || null,
-      ciudad: form.get('ciudad').trim() || null,
-      departamento: form.get('departamento').trim() || null,
-      pais: form.get('pais').trim() || null,
-      correo: form.get('correo').trim() || null,
-      celular,
-      empresa: form.get('empresa').trim() || null,
-      placa_vehiculo: form.get('placa_vehiculo').trim() || null,
-      acompanantes_detalle: acompanantesDetalle,
-      foto_documento_url: form.get('foto_documento_url').trim() || null,
-      firma_digital: hayFirma ? canvas.toDataURL('image/png') : null,
-      consentimiento_habeas_data: true,
-      observaciones: form.get('observaciones').trim() || null,
-      tarifa_id: tarifaId,
-      cantidad_noches: cantidadNoches,
-      metodo_pago: form.get('metodo_pago'),
-      deposito: form.get('deposito') ? Number(form.get('deposito')) : null,
-    };
-
-    const { error: errInsert } = await supabase.from('recepcion_checkins').insert(payload);
-    if (errInsert) {
-      mostrarToast(`Error registrando check-in: ${errInsert.message}`, 'error');
-      return;
-    }
-
-    const { error: errEstado } = await supabase.rpc('cambiar_estado_habitacion', {
-      p_habitacion_id: habitacionId,
-      p_estado: 'ocupada',
+    // Nada se ha guardado todavía — se abre la tarjeta de confirmación con
+    // todo lo que se va a registrar, y solo si la recepcionista confirma
+    // ahí se ejecuta el registro real (ejecutarRegistroCheckin).
+    abrirModalConfirmarCheckin({
+      huespedNombre: nombre,
+      habitacionTexto,
+      tarifaCodigo: tarifa ? tarifa.codigo : '—',
+      cantidadNoches,
+      montoEstimado,
+      abonoPrevioActual,
+      estadoPagoCheckin,
+      montoPagoCheckin,
+      metodoPago,
+      saldoDespues,
+      onConfirmar: () =>
+        ejecutarRegistroCheckin({
+          container,
+          form,
+          habitacionId,
+          hoyISO,
+          reservaIdSeleccionada,
+          tarifaId,
+          cantidadNoches,
+          nombre,
+          documento,
+          celular,
+          estadoPagoCheckin,
+          montoPagoCheckin,
+          acompanantesDetalle,
+          hayFirma,
+          canvas,
+        }),
     });
-    if (errEstado) {
-      mostrarToast(`Check-in guardado, pero no se pudo marcar la habitación como ocupada: ${errEstado.message}`, 'error');
-    }
-
-    mostrarToast('Check-in registrado.', 'exito');
-    await vistaLista(container);
   });
 }
 
