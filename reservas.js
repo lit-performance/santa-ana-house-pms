@@ -27,7 +27,9 @@
 // temporada baja de la tarifa elegida, cada vez que cambian las fechas o la
 // tarifa en el formulario. Si el usuario edita el campo "Monto total" a
 // mano, el cálculo automático se detiene para esa apertura del modal (para
-// no pisar un valor que alguien ajustó a propósito, ej. un descuento).
+// no pisar un valor que alguien ajustó a propósito, ej. un descuento). El
+// campo se muestra formateado con "$" y punto de miles (ver currency.js);
+// el valor real que se guarda se lee siempre con `valorNumericoInput`.
 //
 // Nota sobre el chequeo de cruce de fechas: antes de crear o editar una
 // reserva se verifica que ninguna otra reserva activa (reservada,
@@ -44,6 +46,14 @@
 // aparte (ver caja.js), así que agregar/quitar un método aquí también
 // cambia lo que se ve ahí.
 //
+// Nota sobre "¿Hubo abono al crear la reserva?": además del monto, ahora
+// se elige el TIPO de pago inicial — "Abono parcial" (se cobra lo que se
+// escriba) o "Pago total" (se cobra automático el Monto total completo de
+// la reserva, sin tener que copiar el número a mano). Cambiar a "Pago
+// total" rellena el campo de abono con el monto total actual; si después
+// se sigue ajustando el monto total, el abono no se vuelve a recalcular
+// solo — hay que volver a elegir "Pago total" o escribir el número a mano.
+//
 // Nota sobre "Eliminar" una reserva: solo se puede borrar de verdad una
 // reserva que NO tenga abonos (reservas_pagos) ni check-in
 // (recepcion_checkins) vinculados — la base de datos lo bloquea a
@@ -55,7 +65,7 @@
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
-import { formatCOP } from './currency.js';
+import { formatCOP, activarInputDinero, valorNumericoInput } from './currency.js';
 import { badgeEstadoReserva, opcionesEstadoReserva, badgeEstadoHabitacion } from './badges.js';
 import { toISODate, addDays, formatFechaHora } from './dates.js';
 
@@ -343,7 +353,7 @@ async function abrirModalReserva(container, reserva, prellenado) {
             </select>
           </label>
           <label>Monto total
-            <input type="number" name="monto_total" step="1000" value="${editando ? reserva.monto_total ?? '' : ''}" />
+            <input type="text" name="monto_total" id="input-monto-total-reserva" placeholder="$0" value="${editando && reserva.monto_total ? reserva.monto_total : ''}" />
           </label>
         </div>
         <p id="monto-auto-hint" class="mensaje-vacio" style="font-size:0.78rem; margin-top:0.3rem;">El monto total se calcula solo (noches × tarifa) al elegir tarifa y fechas. Si lo editas a mano, dejamos de tocarlo.</p>
@@ -358,8 +368,14 @@ async function abrirModalReserva(container, reserva, prellenado) {
           <div class="tarjeta" style="margin-top:1rem; background:var(--color-fondo-suave, #f8f9fb);">
             <h3 style="margin-top:0;">¿Hubo abono al crear la reserva?</h3>
             <div class="form-grid">
-              <label>Abono inicial (opcional)
-                <input type="number" name="abono_inicial" step="1000" min="0" placeholder="0" />
+              <label>Tipo de pago
+                <select name="tipo_pago_inicial" id="select-tipo-pago-inicial">
+                  <option value="parcial">Abono parcial</option>
+                  <option value="total">Pago total (deja saldada la reserva)</option>
+                </select>
+              </label>
+              <label>${'Abono inicial (opcional)'}
+                <input type="text" name="abono_inicial" id="input-abono-inicial" placeholder="$0" />
               </label>
               <label>Método de pago
                 <select name="metodo_pago_abono">
@@ -367,7 +383,7 @@ async function abrirModalReserva(container, reserva, prellenado) {
                 </select>
               </label>
             </div>
-            <p class="mensaje-vacio" style="margin-top:0.3rem; font-size:0.78rem;">Déjalo en blanco o en 0 si la reserva queda sin abono por ahora — se puede agregar después reabriendo la reserva.</p>
+            <p class="mensaje-vacio" style="margin-top:0.3rem; font-size:0.78rem;">Déjalo en blanco o en 0 si la reserva queda sin abono por ahora — se puede agregar después reabriendo la reserva. Con "Pago total" el abono se llena solo con el Monto total de arriba.</p>
           </div>
         `
             : ''
@@ -389,7 +405,10 @@ async function abrirModalReserva(container, reserva, prellenado) {
   const selectTarifa = overlay.querySelector('select[name="tarifa_id"]');
   const inputCheckin = overlay.querySelector('input[name="fecha_checkin"]');
   const inputCheckout = overlay.querySelector('input[name="fecha_checkout"]');
-  const inputMonto = overlay.querySelector('input[name="monto_total"]');
+  const inputMonto = overlay.querySelector('#input-monto-total-reserva');
+
+  // Campo de dinero con formato "$" y punto de miles en vivo.
+  activarInputDinero(inputMonto);
 
   let montoEditadoManualmente = false;
   inputMonto.addEventListener('input', () => {
@@ -402,6 +421,7 @@ async function abrirModalReserva(container, reserva, prellenado) {
     const noches = calcularNoches(inputCheckin.value, inputCheckout.value);
     if (!tarifa || noches <= 0) return;
     inputMonto.value = noches * Number(tarifa.precio_temporada_baja);
+    activarInputDinero(inputMonto);
   }
 
   selectTarifa.addEventListener('change', recalcularMontoAutomatico);
@@ -412,6 +432,20 @@ async function abrirModalReserva(container, reserva, prellenado) {
   // existente sin monto guardado), calculamos una vez de entrada.
   if (!editando || !reserva.monto_total) {
     recalcularMontoAutomatico();
+  }
+
+  // --- ¿Hubo abono al crear la reserva? — abono parcial vs pago total ---
+  if (!editando) {
+    const inputAbono = overlay.querySelector('#input-abono-inicial');
+    const selectTipoPagoInicial = overlay.querySelector('#select-tipo-pago-inicial');
+    activarInputDinero(inputAbono);
+
+    selectTipoPagoInicial.addEventListener('change', () => {
+      if (selectTipoPagoInicial.value === 'total') {
+        inputAbono.value = valorNumericoInput(inputMonto) || '';
+        activarInputDinero(inputAbono);
+      }
+    });
   }
 
   // --- Autocompletar si el huésped ya estuvo hospedado antes (solo al
@@ -497,7 +531,7 @@ async function abrirModalReserva(container, reserva, prellenado) {
       fecha_checkout: form.get('fecha_checkout'),
       estado: form.get('estado'),
       tarifa_id: form.get('tarifa_id') ? Number(form.get('tarifa_id')) : null,
-      monto_total: form.get('monto_total') ? Number(form.get('monto_total')) : null,
+      monto_total: valorNumericoInput(inputMonto) || null,
       comentarios: form.get('comentarios').trim() || null,
     };
 
@@ -552,15 +586,20 @@ async function abrirModalReserva(container, reserva, prellenado) {
     // --- Abono inicial (solo aplica al crear, ver el bloque "¿Hubo abono
     // al crear la reserva?" arriba) — se registra en reservas_pagos, la
     // misma tabla que ya lee Caja/Indicadores automático, igual que el
-    // pago al check-in. ---
+    // pago al check-in. Si el tipo de pago es "total", se fuerza el
+    // abono a ser exactamente el monto total (sin importar lo que haya
+    // quedado escrito en el campo), para que la reserva quede saldada de
+    // verdad y no por lo que alguien haya alcanzado a escribir a mano. ---
     if (!editando) {
-      const abonoInicial = form.get('abono_inicial') ? Number(form.get('abono_inicial')) : 0;
+      const inputAbono = overlay.querySelector('#input-abono-inicial');
+      const tipoPagoInicial = form.get('tipo_pago_inicial');
+      const abonoInicial = tipoPagoInicial === 'total' ? payload.monto_total || 0 : valorNumericoInput(inputAbono);
       if (abonoInicial > 0) {
         const { error: errAbono } = await supabase.from('reservas_pagos').insert({
           reserva_id: reservaGuardada.id,
           monto: abonoInicial,
           metodo_pago: form.get('metodo_pago_abono'),
-          comentarios: 'Abono registrado al crear la reserva.',
+          comentarios: tipoPagoInicial === 'total' ? 'Pago total registrado al crear la reserva.' : 'Abono registrado al crear la reserva.',
         });
         if (errAbono) {
           mostrarToast(`Reserva creada, pero no se pudo registrar el abono: ${errAbono.message}`, 'error');
@@ -621,7 +660,7 @@ async function cargarPagos(overlay, reservaId) {
     </table>
     <form id="form-nuevo-pago" class="form-grid" style="margin-top:0.75rem;">
       <label>Monto
-        <input type="number" name="monto" step="1000" required />
+        <input type="text" name="monto" id="input-monto-nuevo-pago" placeholder="$0" required />
       </label>
       <label>Método de pago
         <select name="metodo_pago">
@@ -635,12 +674,15 @@ async function cargarPagos(overlay, reservaId) {
     </form>
   `;
 
+  activarInputDinero(wrap.querySelector('#input-monto-nuevo-pago'));
+
   wrap.querySelector('#form-nuevo-pago').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
+    const montoNuevoPago = valorNumericoInput(wrap.querySelector('#input-monto-nuevo-pago'));
     const { error: errInsert } = await supabase.from('reservas_pagos').insert({
       reserva_id: reservaId,
-      monto: Number(form.get('monto')),
+      monto: montoNuevoPago,
       metodo_pago: form.get('metodo_pago'),
       comentarios: form.get('comentarios').trim() || null,
     });
