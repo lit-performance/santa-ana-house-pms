@@ -16,6 +16,19 @@
 // habitación en inventario_habitacion (ver inventario.js). Si se elimina un
 // consumo por error, el descuento se revierte. Esto es un registro
 // complementario para saber qué reponer — si falla no bloquea el cobro.
+//
+// REDISEÑO (ver 098) — "Registrar consumo" pedido por la administradora:
+// antes, cada producto se guardaba con su propio submit y la pantalla se
+// refrescaba completa después de cada uno, así que el desplegable de
+// habitación volvía a su primera opción — para cobrar dos productos de la
+// misma habitación había que volver a buscarla y re-seleccionarla cada
+// vez, y no quedaba claro de un vistazo para cuál habitación quedó cada
+// línea. Ahora es UNA sola venta: se elige la habitación una vez, se
+// agregan uno o varios productos a una lista (mismo patrón que "Nueva
+// orden de compra" en compras.js), se ve el total en vivo, y un solo
+// botón "✅ Registrar venta" guarda todo junto y confirma con el número
+// de habitación y el total — "cerrar venta" ahora es un solo paso
+// deliberado al final, no algo que pasa sin querer en cada producto.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -95,6 +108,22 @@ async function cargarSeccionConsumo(elemento, container) {
   }
 
   const categorias = [...new Set((productos || []).map((p) => p.categoria))];
+  const productoPorId = new Map((productos || []).map((p) => [p.id, p]));
+
+  function opcionesProducto() {
+    return categorias
+      .map(
+        (cat) => `
+      <optgroup label="${escaparHTML(cat)}">
+        ${(productos || [])
+          .filter((p) => p.categoria === cat)
+          .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)} — ${formatCOP(p.precio)}</option>`)
+          .join('')}
+      </optgroup>
+    `
+      )
+      .join('');
+  }
 
   elemento.innerHTML = `
     <div class="tarjeta">
@@ -105,7 +134,7 @@ async function cargarSeccionConsumo(elemento, container) {
           : !permitido
           ? '<p class="mensaje-vacio">Tu rol no tiene permiso para registrar consumo.</p>'
           : `
-        <form id="form-consumo" class="form-grid">
+        <form id="form-consumo">
           <label>Habitación
             <select name="checkin_id" required>
               ${habitacionesEnUso
@@ -113,26 +142,13 @@ async function cargarSeccionConsumo(elemento, container) {
                 .join('')}
             </select>
           </label>
-          <label>Producto
-            <select name="producto_id" required>
-              ${categorias
-                .map(
-                  (cat) => `
-                <optgroup label="${escaparHTML(cat)}">
-                  ${(productos || [])
-                    .filter((p) => p.categoria === cat)
-                    .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)} — ${formatCOP(p.precio)}</option>`)
-                    .join('')}
-                </optgroup>
-              `
-                )
-                .join('')}
-            </select>
-          </label>
-          <label>Cantidad
-            <input type="number" name="cantidad" min="1" value="1" required />
-          </label>
-          <button type="submit" class="btn btn-primario">+ Agregar consumo</button>
+          <p style="font-size:0.78rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--color-texto-suave); margin:1rem 0 0.4rem;">Productos consumidos</p>
+          <div id="items-consumo-wrap"></div>
+          <button type="button" id="btn-agregar-item-consumo" class="btn btn-secundario btn-chico">+ Agregar producto</button>
+          <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:1rem; align-items:center;">
+            <strong id="total-consumo-venta" style="font-size:1.1rem;">Total: ${formatCOP(0)}</strong>
+            <button type="submit" class="btn btn-primario">✅ Registrar venta</button>
+          </div>
         </form>
       `
       }
@@ -178,48 +194,128 @@ async function cargarSeccionConsumo(elemento, container) {
   `;
 
   if (permitido && habitacionesEnUso.length > 0) {
+    const wrapItems = elemento.querySelector('#items-consumo-wrap');
+    const totalEl = elemento.querySelector('#total-consumo-venta');
+
+    function actualizarTotalConsumo() {
+      const filas = [...wrapItems.querySelectorAll('.fila-item-consumo')];
+      let total = 0;
+      filas.forEach((fila) => {
+        const productoId = Number(fila.querySelector('.item-consumo-producto').value);
+        const cantidad = Number(fila.querySelector('.item-consumo-cantidad').value) || 0;
+        const producto = productoPorId.get(productoId);
+        if (producto) total += producto.precio * cantidad;
+      });
+      totalEl.textContent = `Total: ${formatCOP(total)}`;
+    }
+
+    function filaItemConsumo() {
+      const fila = document.createElement('div');
+      fila.className = 'form-grid fila-item-consumo';
+      fila.style.cssText = 'grid-template-columns:2fr 1fr auto; align-items:end; margin-bottom:0.5rem;';
+      fila.innerHTML = `
+        <label>Producto
+          <select class="item-consumo-producto" required>${opcionesProducto()}</select>
+        </label>
+        <label>Cantidad
+          <input type="number" class="item-consumo-cantidad" min="1" value="1" required />
+        </label>
+        <button type="button" class="btn-editar btn-quitar-item-consumo">Quitar</button>
+      `;
+      fila.querySelector('.btn-quitar-item-consumo').addEventListener('click', () => {
+        fila.remove();
+        actualizarTotalConsumo();
+      });
+      fila.querySelector('.item-consumo-producto').addEventListener('change', actualizarTotalConsumo);
+      fila.querySelector('.item-consumo-cantidad').addEventListener('input', actualizarTotalConsumo);
+      return fila;
+    }
+
+    wrapItems.appendChild(filaItemConsumo());
+    actualizarTotalConsumo();
+
+    elemento.querySelector('#btn-agregar-item-consumo').addEventListener('click', () => {
+      wrapItems.appendChild(filaItemConsumo());
+      actualizarTotalConsumo();
+    });
+
     elemento.querySelector('#form-consumo').addEventListener('submit', async (e) => {
       e.preventDefault();
       const formData = new FormData(e.target);
       const checkinId = Number(formData.get('checkin_id'));
-      const productoId = Number(formData.get('producto_id'));
-      const cantidad = Number(formData.get('cantidad'));
 
       const hab = habitacionesEnUso.find((h) => h.checkinId === checkinId);
-      const producto = (productos || []).find((p) => p.id === productoId);
-      if (!hab || !producto) return;
+      if (!hab) return;
 
       if (!hab.reservaId) {
         mostrarToast('Este check-in no tiene una reserva vinculada; no se puede cargar el consumo.', 'error');
         return;
       }
 
-      const usuario = getUsuarioActual();
-      const { error } = await supabase.from('minibar_consumos').insert({
-        reserva_id: hab.reservaId,
-        habitacion_id: hab.habitacionId,
-        producto_id: productoId,
-        cantidad,
-        precio_unitario: producto.precio,
-        monto: producto.precio * cantidad,
-        registrado_por: usuario.id,
-      });
-
-      if (error) {
-        mostrarToast(`Error registrando consumo: ${error.message}`, 'error');
+      const filas = [...wrapItems.querySelectorAll('.fila-item-consumo')];
+      if (filas.length === 0) {
+        mostrarToast('Agrega al menos un producto a la venta.', 'error');
         return;
       }
 
-      try {
-        await ajustarInventarioHabitacion(hab.habitacionId, productoId, -cantidad, usuario.id, 'consumo');
-      } catch (errInv) {
-        mostrarToast('Consumo cobrado, pero no se pudo actualizar el inventario de la habitación.', 'error');
+      const items = filas
+        .map((fila) => ({
+          producto: productoPorId.get(Number(fila.querySelector('.item-consumo-producto').value)),
+          cantidad: Number(fila.querySelector('.item-consumo-cantidad').value),
+        }))
+        .filter((item) => item.producto && item.cantidad > 0);
+
+      if (items.length === 0) {
+        mostrarToast('Agrega al menos un producto válido a la venta.', 'error');
+        return;
       }
 
-      mostrarToast('Consumo registrado.', 'exito');
+      const usuario = getUsuarioActual();
+      const btnSubmit = e.target.querySelector('button[type="submit"]');
+      btnSubmit.disabled = true;
+      btnSubmit.textContent = 'Registrando…';
+
+      let totalVenta = 0;
+      const errores = [];
+
+      for (const item of items) {
+        const monto = item.producto.precio * item.cantidad;
+        const { error } = await supabase.from('minibar_consumos').insert({
+          reserva_id: hab.reservaId,
+          habitacion_id: hab.habitacionId,
+          producto_id: item.producto.id,
+          cantidad: item.cantidad,
+          precio_unitario: item.producto.precio,
+          monto,
+          registrado_por: usuario.id,
+        });
+
+        if (error) {
+          errores.push(`${item.producto.nombre}: ${error.message}`);
+          continue;
+        }
+
+        totalVenta += monto;
+
+        try {
+          await ajustarInventarioHabitacion(hab.habitacionId, item.producto.id, -item.cantidad, usuario.id, 'consumo');
+        } catch (errInv) {
+          // No bloquea el cobro — igual que antes, es un registro
+          // complementario para saber qué reponer.
+        }
+      }
+
+      if (errores.length > 0) {
+        mostrarToast(`Venta registrada con errores en: ${errores.join('; ')}`, 'error');
+      } else {
+        mostrarToast(`✅ Venta registrada — Habitación ${hab.habitacionLabel}: ${items.length} producto(s), total ${formatCOP(totalVenta)}.`, 'exito');
+      }
+
       await cargarSeccionConsumo(elemento, container);
     });
+  }
 
+  if (permitido) {
     elemento.querySelectorAll('.btn-eliminar-consumo').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const ok = await mostrarConfirmacion({
