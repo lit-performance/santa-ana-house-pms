@@ -31,10 +31,15 @@
 // `descripcion` (junto con proveedor y notas), y en el historial se
 // muestra como un enlace clicable "🔗 Ver soporte" en vez del link
 // completo.
+//
+// Nota sobre "🗑 Eliminar" (ver 099): el historial no tenía forma de
+// borrar un gasto mal registrado o duplicado — se agrega aquí, con
+// confirmación, borrando directo el caja_movimientos correspondiente
+// (mismo permiso que para registrar un gasto nuevo).
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
-import { mostrarToast } from './ui.js';
+import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP, activarInputDinero, valorNumericoInput } from './currency.js';
 import { formatFechaHora, toISODate } from './dates.js';
 import { getUsuarioActual } from './auth.js';
@@ -225,6 +230,7 @@ async function cargarListaGastos(elemento, fechaInicioISO, fechaFinISO) {
     return;
   }
 
+  const permitido = puedeOperar();
   const total = (gastos || []).reduce((sum, g) => sum + Number(g.monto), 0);
   const porCategoria = new Map();
   (gastos || []).forEach((g) => {
@@ -257,20 +263,21 @@ async function cargarListaGastos(elemento, fechaInicioISO, fechaFinISO) {
       </div>
       <div class="tabla-scroll">
         <table class="tabla-simple">
-          <thead><tr><th>Fecha</th><th>Categoría</th><th>Monto</th><th>Pagado desde</th><th>Detalle</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Categoría</th><th>Monto</th><th>Pagado desde</th><th>Detalle</th>${permitido ? '<th></th>' : ''}</tr></thead>
           <tbody>
             ${
               (gastos || [])
                 .map(
-                  (g) => `<tr>
+                  (g) => `<tr data-id="${g.id}">
                 <td>${formatFechaHora(g.creado_en)}</td>
                 <td>${escaparHTML(g.categoria)}</td>
                 <td class="monto">${formatCOP(g.monto)}</td>
                 <td>${escaparHTML(g.metodo_pago || '—')}</td>
                 <td>${g.descripcion ? linkificarDescripcion(g.descripcion) : '—'}</td>
+                ${permitido ? `<td><button type="button" class="btn-editar btn-eliminar-gasto">🗑 Eliminar</button></td>` : ''}
               </tr>`
                 )
-                .join('') || '<tr><td colspan="5" class="mensaje-vacio">Sin gastos registrados en este rango.</td></tr>'
+                .join('') || `<tr><td colspan="${permitido ? 6 : 5}" class="mensaje-vacio">Sin gastos registrados en este rango.</td></tr>`
             }
           </tbody>
         </table>
@@ -297,6 +304,31 @@ async function cargarListaGastos(elemento, fechaInicioISO, fechaFinISO) {
     enlace.click();
     enlace.remove();
     URL.revokeObjectURL(url);
+  });
+
+  if (!permitido) return;
+
+  elemento.querySelectorAll('.btn-eliminar-gasto').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const fila = btn.closest('tr');
+      const id = Number(fila.dataset.id);
+
+      const ok = await mostrarConfirmacion({
+        titulo: 'Eliminar gasto',
+        contenidoHTML: '¿Eliminar este gasto? Esta acción no se puede deshacer — desaparecerá también de Registro diario, Indicadores, Contabilidad y Auditoría.',
+        textoConfirmar: 'Eliminar',
+      });
+      if (!ok) return;
+
+      const { error: errDelete } = await supabase.from('caja_movimientos').delete().eq('id', id);
+      if (errDelete) {
+        mostrarToast(`Error eliminando: ${errDelete.message}`, 'error');
+        return;
+      }
+
+      mostrarToast('Gasto eliminado.', 'exito');
+      await cargarListaGastos(elemento, fechaInicioISO, fechaFinISO);
+    });
   });
 }
 
