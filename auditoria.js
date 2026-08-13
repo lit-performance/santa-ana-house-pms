@@ -1,9 +1,9 @@
 // auditoria.js
 //
 // Módulo: Auditoría. Bitácora unificada de TODO movimiento de dinero y
-// de cuenta en el sistema, de solo lectura — pensada para el propietario
-// (o quien haga auditoría) revise quién hizo qué y cuándo, sin tener que
-// entrar módulo por módulo.
+// de cuenta en el sistema — pensada para el propietario (o quien haga
+// auditoría) revise quién hizo qué y cuándo, sin tener que entrar módulo
+// por módulo.
 //
 // No crea tablas nuevas: solo consulta y normaliza en un mismo formato
 // {fecha, tipo, usuarioId, descripcion, monto, signo} las 6 fuentes de
@@ -18,11 +18,26 @@
 // El rango de fechas se aplica por evento (fecha real de cada fila), no
 // por turno, para no perder nada que haya ocurrido con la caja cerrada
 // (mismo criterio que ya usan indicadores.js y contabilidad.js).
+//
+// CORRECCIÓN DE TRANSACCIONES (ver 105) — pedido real: "puse un pago con
+// método X y necesito corregirlo a Y". Antes esta bitácora era 100%
+// solo-lectura y no había forma de corregir NADA desde la app (solo con
+// SQL directo). Ahora, solo para propietario/administrador, las filas de
+// tipo "Ingreso manual", "Egreso manual" y "Pago de reserva" tienen
+// botones "✏️ Editar" (corrige método de pago y monto) y "🗑 Eliminar"
+// — van directo a la tabla de origen (caja_movimientos o reservas_pagos)
+// por su id real. A propósito NO se habilitó para aperturas/cierres de
+// caja, transferencias entre cuentas ni ventas de mostrador — son casos
+// más delicados (transferencias no tienen "método de pago" como tal, y
+// una venta de mostrador también mueve inventario, que esto no revierte)
+// y quedan fuera de esta primera versión para no arriesgar datos.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
+import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
 import { formatFechaHora, toISODate, addDays } from './dates.js';
+import { getUsuarioActual } from './auth.js';
 
 const ETIQUETA_TIPO = {
   apertura: { label: '🔓 Apertura de caja', color: 'var(--color-azul-oscuro, #1565c0)' },
@@ -33,6 +48,17 @@ const ETIQUETA_TIPO = {
   venta_mostrador: { label: '🛍️ Venta de mostrador', color: 'var(--color-verde-oscuro, #2e7d32)' },
   pago_reserva: { label: '🧾 Pago de reserva', color: 'var(--color-verde-oscuro, #2e7d32)' },
 };
+
+// Tablas de origen que sí se pueden corregir desde aquí (ver nota de
+// cabecera) — solo las que tienen forma sencilla {id, metodo_pago, monto}.
+const TABLAS_EDITABLES = { movimiento_ingreso: 'caja_movimientos', movimiento_egreso: 'caja_movimientos', pago_reserva: 'reservas_pagos' };
+const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
+const ROLES_CORRIGEN = ['propietario', 'administrador'];
+
+function puedeCorregir() {
+  const usuario = getUsuarioActual();
+  return Boolean(usuario) && ROLES_CORRIGEN.includes(usuario.rol);
+}
 
 function escaparHTML(texto) {
   const div = document.createElement('div');
@@ -166,10 +192,13 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
   (movimientos || []).forEach((m) => {
     const esIngreso = m.tipo === 'ingreso';
     eventos.push({
+      id: m.id,
+      tabla: 'caja_movimientos',
       fecha: m.creado_en,
       tipo: esIngreso ? 'movimiento_ingreso' : 'movimiento_egreso',
       usuarioId: m.registrado_por,
       descripcion: `${m.categoria ? `${m.categoria} — ` : ''}${m.descripcion || 'Sin descripción'} (${m.metodo_pago})`,
+      metodoPago: m.metodo_pago,
       monto: Number(m.monto),
       signo: esIngreso ? 1 : -1,
     });
@@ -202,10 +231,13 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
     const huesped = p.reservas?.huesped_nombre || 'Huésped';
     const habitacion = p.reservas?.habitaciones?.numero;
     eventos.push({
+      id: p.id,
+      tabla: 'reservas_pagos',
       fecha: p.fecha,
       tipo: 'pago_reserva',
       usuarioId: null,
       descripcion: `${escaparHTML(huesped)}${habitacion ? ` (hab. ${escaparHTML(habitacion)})` : ''} — ${p.comentarios || 'Pago de reserva'} (${p.metodo_pago})`,
+      metodoPago: p.metodo_pago,
       monto: Number(p.monto),
       signo: 1,
     });
@@ -216,6 +248,7 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
   );
 
   const nombresUsuarios = await obtenerNombresUsuarios(eventosFiltrados.map((ev) => ev.usuarioId));
+  const permiteCorregir = puedeCorregir();
 
   // --- Resumen ---
   const totalIngresos = eventosFiltrados.filter((ev) => ev.signo === 1).reduce((sum, ev) => sum + ev.monto, 0);
@@ -242,10 +275,11 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
         <h3 style="margin:0;">Bitácora (${fechaInicio} a ${fechaFin})</h3>
         <button type="button" id="btn-exportar-auditoria" class="btn btn-secundario btn-chico">Descargar CSV</button>
       </div>
+      ${permiteCorregir ? '<p class="mensaje-vacio" style="margin-top:-0.5rem; margin-bottom:0.75rem; font-size:0.78rem;">Las filas de Ingreso/Egreso manual y Pago de reserva se pueden corregir (método de pago y monto) o eliminar directo desde aquí.</p>' : ''}
       <div class="tabla-scroll">
         <table class="tabla-simple">
           <thead>
-            <tr><th>Fecha y hora</th><th>Tipo</th><th>Usuario</th><th>Descripción</th><th style="text-align:right;">Monto</th></tr>
+            <tr><th>Fecha y hora</th><th>Tipo</th><th>Usuario</th><th>Descripción</th><th style="text-align:right;">Monto</th>${permiteCorregir ? '<th></th>' : ''}</tr>
           </thead>
           <tbody>
             ${
@@ -255,17 +289,27 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
                   const nombreUsuario = nombresUsuarios.get(ev.usuarioId) || (ev.usuarioId ? '—' : 'Sistema (huésped)');
                   const colorMonto = ev.signo === 1 ? 'var(--color-verde-oscuro, #2e7d32)' : ev.signo === -1 ? 'var(--color-rojo-oscuro, #c62828)' : 'inherit';
                   const prefijo = ev.signo === 1 ? '+' : ev.signo === -1 ? '−' : '';
+                  const editable = permiteCorregir && ev.tabla;
                   return `
-                <tr>
+                <tr data-id="${ev.id ?? ''}" data-tabla="${ev.tabla ?? ''}" data-metodo="${escaparHTML(ev.metodoPago || '')}" data-monto="${ev.monto}">
                   <td style="white-space:nowrap;">${formatFechaHora(ev.fecha)}</td>
                   <td><span style="color:${info.color}; font-weight:600;">${info.label}</span></td>
                   <td>${escaparHTML(nombreUsuario)}</td>
                   <td>${ev.descripcion}</td>
                   <td style="text-align:right; color:${colorMonto}; font-weight:600;">${prefijo}${formatCOP(Math.abs(ev.monto))}</td>
+                  ${
+                    permiteCorregir
+                      ? `<td style="white-space:nowrap;">${
+                          editable
+                            ? '<button type="button" class="btn-editar btn-editar-transaccion">✏️ Editar</button> <button type="button" class="btn-editar btn-eliminar-transaccion">🗑</button>'
+                            : ''
+                        }</td>`
+                      : ''
+                  }
                 </tr>
               `;
                 })
-                .join('') || '<tr><td colspan="5" class="mensaje-vacio">No hay eventos en este rango con ese filtro.</td></tr>'
+                .join('') || `<tr><td colspan="${permiteCorregir ? 6 : 5}" class="mensaje-vacio">No hay eventos en este rango con ese filtro.</td></tr>`
             }
           </tbody>
         </table>
@@ -291,6 +335,104 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
     enlace.click();
     enlace.remove();
     URL.revokeObjectURL(url);
+  });
+
+  if (!permiteCorregir) return;
+
+  const recargar = () => generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento);
+
+  elemento.querySelectorAll('.btn-editar-transaccion').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const fila = e.target.closest('tr');
+      abrirModalEditarTransaccion(
+        {
+          id: Number(fila.dataset.id),
+          tabla: fila.dataset.tabla,
+          metodoPago: fila.dataset.metodo,
+          monto: Number(fila.dataset.monto),
+        },
+        recargar
+      );
+    });
+  });
+
+  elemento.querySelectorAll('.btn-eliminar-transaccion').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      const fila = e.target.closest('tr');
+      const id = Number(fila.dataset.id);
+      const tabla = fila.dataset.tabla;
+
+      const ok = await mostrarConfirmacion({
+        titulo: 'Eliminar transacción',
+        contenidoHTML: '¿Eliminar esta transacción? Esta acción no se puede deshacer.',
+        textoConfirmar: 'Eliminar',
+      });
+      if (!ok) return;
+
+      const { error: errDelete } = await supabase.from(tabla).delete().eq('id', id);
+      if (errDelete) {
+        mostrarToast(`Error eliminando: ${errDelete.message}`, 'error');
+        return;
+      }
+      mostrarToast('Transacción eliminada.', 'exito');
+      await recargar();
+    });
+  });
+}
+
+// Modal simple para corregir método de pago y monto de una transacción
+// (caja_movimientos o reservas_pagos, ver TABLAS_EDITABLES). No toca
+// ningún otro campo (categoría, descripción, fecha) a propósito, para
+// mantener el riesgo de esta corrección al mínimo.
+function abrirModalEditarTransaccion(ev, recargar) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja">
+      <h3>Corregir transacción</h3>
+      <div class="modal-contenido">
+        <form id="form-editar-transaccion" class="form-grid">
+          <label>Método de pago
+            <select name="metodo_pago" required>
+              ${METODOS_PAGO.map((m) => `<option value="${m}" ${ev.metodoPago === m ? 'selected' : ''}>${m}</option>`).join('')}
+            </select>
+          </label>
+          <label>Monto
+            <input type="number" name="monto" min="0" step="1" value="${ev.monto}" required />
+          </label>
+        </form>
+      </div>
+      <div class="modal-acciones">
+        <button type="button" class="btn btn-secundario" id="btn-cancelar-editar-transaccion">Cancelar</button>
+        <button type="submit" form="form-editar-transaccion" class="btn btn-primario">Guardar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#btn-cancelar-editar-transaccion').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  overlay.querySelector('#form-editar-transaccion').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const payload = {
+      metodo_pago: form.get('metodo_pago'),
+      monto: Number(form.get('monto')),
+    };
+
+    const { error } = await supabase.from(ev.tabla).update(payload).eq('id', ev.id);
+    overlay.remove();
+
+    if (error) {
+      mostrarToast(`Error corrigiendo la transacción: ${error.message}`, 'error');
+      return;
+    }
+
+    mostrarToast('Transacción corregida.', 'exito');
+    await recargar();
   });
 }
 
