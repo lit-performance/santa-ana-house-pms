@@ -4,7 +4,17 @@
 
 export function formatFechaCorta(fechaISO) {
   if (!fechaISO) return '—';
-  const d = new Date(fechaISO);
+  // CORRECCIÓN (ver 106): si `fechaISO` es una fecha simple sin hora
+  // ("2026-08-01"), hacer `new Date("2026-08-01")` directo hace que
+  // JavaScript la interprete como medianoche UTC — y como Colombia está
+  // 5 horas detrás de UTC, esa medianoche cae en la tarde del día
+  // ANTERIOR en hora local, así que se mostraba la fecha un día antes
+  // de la real (ej. un consumo del 1 de agosto aparecía como "31 de
+  // jul"). Igual que ya hace `addDays` más abajo, si el texto no trae
+  // hora (largo 10, "YYYY-MM-DD") le agregamos "T00:00:00" para que se
+  // interprete en hora LOCAL, no en UTC. Si ya viene con hora completa
+  // (por ejemplo de una columna `creado_en`), se deja igual.
+  const d = fechaISO.length <= 10 ? new Date(`${fechaISO}T00:00:00`) : new Date(fechaISO);
   return d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
