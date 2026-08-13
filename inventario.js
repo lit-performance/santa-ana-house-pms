@@ -39,6 +39,18 @@
 // para el cierre del día, sin tener que rebuscar en "Movimientos
 // recientes" (que mezcla todos los tipos y solo trae los últimos 25).
 //
+// Nota sobre la cantidad editable en "Reponer" de Pendientes (ver 100):
+// antes "Reponer ahora" siempre movía la cantidad "falta" COMPLETA — si a
+// la bodega no le alcanzaba, preguntaba si continuar y, si decías que sí,
+// igual restaba todo eso de bodega (podía dejarla en negativo). Ahora hay
+// un campo de cantidad editable al lado del botón (parte de la cantidad
+// que falta, precargada pero se puede bajar) y SIEMPRE se topa a lo que
+// realmente haya en bodega — nunca deja bodega en negativo. Así puedes
+// repartir a mano lo poco que quede de un producto (ej. media botella de
+// aguardiente) entre varias habitaciones, dejando el resto pendiente y
+// visible en esta misma tabla para cuando llegue más stock. No cambia
+// "Reabastecer habitación" (la del formulario aparte), que sigue igual.
+//
 // Nota sobre "Inventario por habitación" (edición directa, ver 096):
 // "Actual" ahora es editable directamente ahí para quien puede gestionar
 // inventario — a diferencia de "Reabastecer habitación", que SIEMPRE
@@ -406,6 +418,49 @@ async function trasladarSinConfirmar(habitacionId, productoId, cantidadDeseada) 
   return { trasladado: aTrasladar };
 }
 
+// Repone una cantidad ELEGIDA (no necesariamente toda la que falta) de
+// bodega a una habitación, SIEMPRE topada a lo que realmente haya en
+// bodega — nunca pregunta para dejarla en negativo, nunca la deja en
+// negativo. Si la bodega no alcanza para lo pedido, avisa exactamente
+// cuánto quedó pendiente. Usada solo por "Reponer" en la tabla de
+// Pendientes (ver nota al inicio del archivo, 100).
+async function reponerCantidadParcial(habitacionId, productoId, cantidadDeseada) {
+  const usuario = getUsuarioActual();
+
+  const { data: filaBodega, error } = await supabase
+    .from('inventario_bodega')
+    .select('id, cantidad_actual')
+    .eq('producto_id', productoId)
+    .maybeSingle();
+  if (error) {
+    mostrarToast(`Error: ${error.message}`, 'error');
+    return { trasladado: 0 };
+  }
+
+  const stockBodega = filaBodega?.cantidad_actual || 0;
+  const aTrasladar = Math.min(cantidadDeseada, stockBodega);
+
+  if (aTrasladar <= 0) {
+    mostrarToast('No hay stock disponible en bodega para este producto — queda pendiente.', 'error');
+    return { trasladado: 0 };
+  }
+
+  await supabase
+    .from('inventario_bodega')
+    .update({ cantidad_actual: stockBodega - aTrasladar, actualizado_en: new Date().toISOString() })
+    .eq('id', filaBodega.id);
+
+  await ajustarInventarioHabitacion(habitacionId, productoId, aTrasladar, usuario?.id || null, 'reabastecimiento');
+
+  if (aTrasladar < cantidadDeseada) {
+    mostrarToast(`Se repusieron ${aTrasladar} de ${cantidadDeseada} pedidas — quedan ${cantidadDeseada - aTrasladar} pendiente(s) por falta de stock en bodega.`, 'error');
+  } else {
+    mostrarToast(`Repuesto: ${aTrasladar} unidad(es).`, 'exito');
+  }
+
+  return { trasladado: aTrasladar };
+}
+
 // Refresca todas las secciones que dependen del stock (bodega, pendientes
 // de reponer, inventario por habitación, reposiciones de hoy y el log de
 // movimientos) después de cualquier traslado bodega → habitación.
@@ -606,7 +661,14 @@ async function cargarPendientesReponer(elemento) {
                 <td>${x.actual}</td>
                 <td>${x.estandar}</td>
                 <td style="font-weight:700; color:var(--color-rojo-oscuro);">${x.falta}</td>
-                ${permitido ? `<td><button type="button" class="btn-editar btn-reponer-ahora">Reponer ahora</button></td>` : ''}
+                ${
+                  permitido
+                    ? `<td style="white-space:nowrap;">
+                        <input type="number" class="input-cantidad-reponer" min="1" value="${x.falta}" style="width:55px; margin-right:0.4rem;" title="Cantidad a reponer (puedes bajarla si no hay suficiente en bodega)" />
+                        <button type="button" class="btn-editar btn-reponer-ahora">Reponer</button>
+                      </td>`
+                    : ''
+                }
               </tr>`
                 )
                 .join('')}
@@ -640,9 +702,11 @@ async function cargarPendientesReponer(elemento) {
       const fila = e.target.closest('tr');
       const habitacionId = Number(fila.dataset.habitacionId);
       const productoId = Number(fila.dataset.productoId);
-      const cantidad = Number(fila.dataset.falta);
-      const ok = await ejecutarReabastecimiento(habitacionId, productoId, cantidad);
-      if (ok) await refrescarTrasReabastecer();
+      const inputCantidad = fila.querySelector('.input-cantidad-reponer');
+      const cantidad = Math.max(1, Number(inputCantidad.value) || 0);
+      btn.disabled = true;
+      await reponerCantidadParcial(habitacionId, productoId, cantidad);
+      await refrescarTrasReabastecer();
     });
   });
 
