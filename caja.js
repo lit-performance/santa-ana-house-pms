@@ -67,7 +67,7 @@
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
-import { formatCOP } from './currency.js';
+import { formatCOP, activarInputDinero, valorNumericoInput } from './currency.js';
 import { formatFechaHora, toISODate, addDays } from './dates.js';
 import { getUsuarioActual } from './auth.js';
 import { calcularHabitacionesEnUso } from './cuentas.js';
@@ -805,7 +805,7 @@ async function abrirModalMovimiento(container) {
           </label>
           <p class="mensaje-vacio" style="grid-column:1/-1; margin:-0.5rem 0 0; font-size:0.72rem;">Evita usar aquí nombres de categorías de Gastos (Agua, Luz, Gas…) o "Compras" — esos se registran desde esos módulos para que aparezcan en su propia tarjeta.</p>
           <label>Monto
-            <input type="number" name="monto" step="1000" min="1" required />
+            <input type="text" name="monto" id="input-monto-movimiento" placeholder="$0" required />
           </label>
           <label>Método de pago
             <select name="metodo_pago">
@@ -830,6 +830,9 @@ async function abrirModalMovimiento(container) {
   `;
   document.body.appendChild(overlay);
 
+  const inputMontoMovimiento = overlay.querySelector('#input-monto-movimiento');
+  activarInputDinero(inputMontoMovimiento);
+
   overlay.querySelector('#btn-cancelar-movimiento').addEventListener('click', () => overlay.remove());
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) overlay.remove();
@@ -837,6 +840,12 @@ async function abrirModalMovimiento(container) {
 
   overlay.querySelector('#form-movimiento').addEventListener('submit', async (e) => {
     e.preventDefault();
+
+    const montoValor = valorNumericoInput(inputMontoMovimiento);
+    if (montoValor <= 0) {
+      mostrarToast('Ingresa un monto válido.', 'error');
+      return;
+    }
 
     let turno;
     try {
@@ -853,7 +862,7 @@ async function abrirModalMovimiento(container) {
       turno_id: turno.id,
       tipo: form.get('tipo'),
       categoria: form.get('categoria').trim() || null,
-      monto: Number(form.get('monto')),
+      monto: montoValor,
       metodo_pago: form.get('metodo_pago'),
       descripcion: form.get('descripcion').trim() || null,
       registrado_por: usuario.id,
@@ -1065,7 +1074,7 @@ async function abrirModalTransferencia(container, saldosActuales) {
               </select>
             </label>
             <label>Monto
-              <input type="number" name="monto" step="1000" min="1" required />
+              <input type="text" name="monto" id="input-monto-transferencia" placeholder="$0" required />
             </label>
           </div>
           <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
@@ -1082,6 +1091,9 @@ async function abrirModalTransferencia(container, saldosActuales) {
   `;
   document.body.appendChild(overlay);
 
+  const inputMontoTransferencia = overlay.querySelector('#input-monto-transferencia');
+  activarInputDinero(inputMontoTransferencia);
+
   overlay.querySelector('#btn-cancelar-transferencia').addEventListener('click', () => overlay.remove());
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) overlay.remove();
@@ -1092,7 +1104,12 @@ async function abrirModalTransferencia(container, saldosActuales) {
     const form = new FormData(e.target);
     const cuentaOrigen = form.get('cuenta_origen');
     const cuentaDestino = form.get('cuenta_destino');
-    const monto = Number(form.get('monto'));
+    const monto = valorNumericoInput(inputMontoTransferencia);
+
+    if (monto <= 0) {
+      mostrarToast('Ingresa un monto válido.', 'error');
+      return;
+    }
 
     if (cuentaOrigen === cuentaDestino) {
       mostrarToast('La cuenta de origen y destino no pueden ser la misma.', 'error');
