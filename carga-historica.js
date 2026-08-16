@@ -44,6 +44,12 @@
 // "Documentos" de placeholders.js. Por el id equivocado, esta pantalla
 // quedaba registrada pero huérfana: no aparecía ni como pestaña
 // principal ni como subpestaña de nada. Ya corregido abajo.
+//
+// Oculto temporalmente (roles: []) desde 161 — ya se cargaron a mano los
+// ingresos de agosto y no es una pantalla de uso diario. El código, los
+// permisos internos (ROLES_PERMITIDOS/puedeUsar(), sin tocar) y los datos
+// ya cargados siguen intactos; reactivar es solo devolverle su lista de
+// roles al registerModule() de más abajo.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -432,7 +438,7 @@ registerModule({
   id: 'carga-historica',
   label: 'Carga histórica',
   icono: '🗓️',
-  roles: ROLES_PERMITIDOS,
+  roles: [],
   parentId: 'configuracion',
   render,
 });
