@@ -119,6 +119,26 @@
 // minibar_productos, no de inventario_bodega) y, si el usuario puede
 // gestionar inventario, un botón "✏️ Editar" adentro de la misma
 // tarjeta para corregir precio costo/proveedor/cantidad/mínimo.
+//
+// Nota (129): tres cambios más.
+//  1. "Bodega" tiene botón "⬇ Excel" (mismo patrón que Pendientes de
+//     reponer).
+//  2. "Registrar compra" ya NO trae un producto ni una cantidad
+//     preseleccionados (antes el navegador dejaba marcado el primer
+//     producto de la lista y cantidad=1 por defecto, así que un envío
+//     accidental del formulario registraba una compra real sin querer)
+//     — ahora hay que elegir producto y escribir cantidad a propósito.
+//     También se puede dar de alta un producto nuevo sin salir del
+//     formulario (opción "➕ Es un producto nuevo"). Para comprar VARIOS
+//     productos a la vez, el formulario ahora indica que se use el
+//     módulo Compras (orden de compra con varios ítems).
+//  3. "Movimientos recientes" tiene un botón "🗑" SOLO en las entradas
+//     de tipo "Compra a bodega", para poder deshacer una que se haya
+//     registrado por error — pide confirmación y, al eliminar, también
+//     resta esa cantidad de la bodega (nunca la deja negativa). Los
+//     demás tipos de movimiento no tienen este botón todavía (revertir
+//     un reabastecimiento o un consumo es más delicado, toca más de una
+//     tabla o afecta a una habitación específica).
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -303,7 +323,10 @@ async function cargarInventarioBodega(elemento) {
 
   elemento.innerHTML = `
     <div class="tarjeta">
-      <h3>Bodega — existencias y proveedor</h3>
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.25rem;">
+        <h3 style="margin:0;">Bodega — existencias y proveedor</h3>
+        <button type="button" id="btn-exportar-bodega" class="btn btn-secundario btn-chico">⬇ Excel</button>
+      </div>
       <p class="texto-ayuda">Dale "👁️ Ver" a un producto para ver el detalle completo (costo, proveedor, mínimo, última actualización) y editarlo ahí. Producto en rojo = existencia por debajo del mínimo definido (recompra sugerida).</p>
       <div class="tabla-scroll">
         <table class="tabla-simple">
@@ -338,6 +361,25 @@ async function cargarInventarioBodega(elemento) {
       </div>
     </div>
   `;
+
+  elemento.querySelector('#btn-exportar-bodega').addEventListener('click', () => {
+    descargarCSV(`bodega_existencias_${toISODate(new Date())}.csv`, [
+      ['Bodega — existencias y proveedor — Santa Ana House 21'],
+      ['Generado', formatFechaHora(new Date().toISOString())],
+      [],
+      ['Categoría', 'Producto', 'Precio de venta', 'Precio costo', 'Proveedor', 'En bodega', 'Mínimo', 'Actualizado'],
+      ...(inventario || []).map((f) => [
+        f.minibar_productos?.categoria || '—',
+        f.minibar_productos?.nombre || '—',
+        f.minibar_productos?.precio || 0,
+        f.precio_costo || 0,
+        (proveedores || []).find((p) => p.id === f.proveedor_id)?.nombre_comercial || '—',
+        f.cantidad_actual,
+        f.cantidad_minima,
+        f.actualizado_en ? formatFechaHora(f.actualizado_en) : '—',
+      ]),
+    ]);
+  });
 
   // Un solo listener delegado, asignado con `onclick` (no
   // addEventListener) para que cada recarga de esta tarjeta REEMPLACE
@@ -450,7 +492,13 @@ function abrirModalDetalleBodega(f, proveedores, elemento, permitido) {
 }
 
 // =========================================================
-// Registrar compra (entrada a bodega)
+// Registrar compra (entrada a bodega) — ver nota 129 al inicio del
+// archivo: sin producto ni cantidad preseleccionados (para que un envío
+// accidental no registre una entrada real por error), y con la opción
+// de dar de alta un producto nuevo sin salir de este formulario.
+// Pensada para UNA entrada rápida a la vez; para comprar VARIOS
+// productos de un tirón usa el módulo "Compras" (orden de compra con
+// varios ítems y seguimiento de proveedor).
 // =========================================================
 async function cargarSeccionCompra(elemento) {
   if (!puedeGestionar()) {
@@ -468,9 +516,12 @@ async function cargarSeccionCompra(elemento) {
   elemento.innerHTML = `
     <div class="tarjeta">
       <h3>Registrar compra (entrada a bodega)</h3>
+      <p class="texto-ayuda">Para UN producto a la vez. ¿Vas a comprar varios productos juntos? Usa el módulo <strong>Compras</strong> (orden de compra con varios ítems).</p>
       <form id="form-compra" class="form-grid">
         <label>Producto
-          <select name="producto_id" required>
+          <select name="producto_id" id="select-producto-compra" required>
+            <option value="" disabled selected>— Selecciona un producto —</option>
+            <option value="__nuevo__">➕ Es un producto nuevo (no está en el catálogo)</option>
             ${categorias
               .map(
                 (cat) => `
@@ -485,8 +536,17 @@ async function cargarSeccionCompra(elemento) {
               .join('')}
           </select>
         </label>
+        <div id="campos-producto-nuevo" style="display:none;">
+          <label>Nombre del producto nuevo
+            <input type="text" name="nombre_nuevo" placeholder="Ej: Papas Margarita" />
+          </label>
+          <label>Categoría
+            <input type="text" name="categoria_nuevo" list="lista-categorias-compra" placeholder="Ej: Snacks" />
+            <datalist id="lista-categorias-compra">${categorias.map((c) => `<option value="${escaparHTML(c)}"></option>`).join('')}</datalist>
+          </label>
+        </div>
         <label>Cantidad que ingresa
-          <input type="number" name="cantidad" min="1" value="1" required />
+          <input type="number" name="cantidad" min="1" placeholder="Ej: 10" required />
         </label>
         <label>Precio de costo (opcional, actualiza el costo)
           <input type="number" name="precio_costo" min="0" placeholder="Dejar vacío para no cambiarlo" />
@@ -505,14 +565,40 @@ async function cargarSeccionCompra(elemento) {
     </div>
   `;
 
+  const selectProducto = elemento.querySelector('#select-producto-compra');
+  const camposNuevo = elemento.querySelector('#campos-producto-nuevo');
+  selectProducto.addEventListener('change', () => {
+    camposNuevo.style.display = selectProducto.value === '__nuevo__' ? 'block' : 'none';
+  });
+
   elemento.querySelector('#form-compra').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
-    const productoId = Number(form.get('producto_id'));
+    const usuario = getUsuarioActual();
+    let productoId = form.get('producto_id') === '__nuevo__' ? null : Number(form.get('producto_id'));
+
+    if (form.get('producto_id') === '__nuevo__') {
+      const nombreNuevo = (form.get('nombre_nuevo') || '').trim();
+      const categoriaNuevo = (form.get('categoria_nuevo') || '').trim();
+      if (!nombreNuevo || !categoriaNuevo) {
+        mostrarToast('Escribe el nombre y la categoría del producto nuevo.', 'error');
+        return;
+      }
+      const { data: nuevoProducto, error: errNuevo } = await supabase
+        .from('minibar_productos')
+        .insert({ nombre: nombreNuevo, categoria: categoriaNuevo, precio: 0, activo: true })
+        .select('id')
+        .single();
+      if (errNuevo) {
+        mostrarToast(`Error creando el producto: ${errNuevo.message}`, 'error');
+        return;
+      }
+      productoId = nuevoProducto.id;
+    }
+
     const cantidad = Number(form.get('cantidad'));
     const precioCosto = form.get('precio_costo') ? Number(form.get('precio_costo')) : null;
     const proveedorId = form.get('proveedor_id') ? Number(form.get('proveedor_id')) : null;
-    const usuario = getUsuarioActual();
 
     const { data: fila, error: errFila } = await supabase
       .from('inventario_bodega')
@@ -553,11 +639,14 @@ async function cargarSeccionCompra(elemento) {
 
     mostrarToast('Entrada registrada en bodega.', 'exito');
     e.target.reset();
+    camposNuevo.style.display = 'none';
     document.dispatchEvent(new CustomEvent('inventario:actualizado'));
     const wrapBodega = document.querySelector('#inv-bodega-wrap');
     if (wrapBodega) await cargarInventarioBodega(wrapBodega);
     const wrapMov = document.querySelector('#inv-movimientos-wrap');
     if (wrapMov) await cargarMovimientos(wrapMov);
+    const wrapCompra = document.querySelector('#inv-compra-wrap');
+    if (wrapCompra) await cargarSeccionCompra(wrapCompra);
   });
 }
 
@@ -1262,10 +1351,18 @@ async function cargarInventarioHabitacion(elemento) {
 }
 
 // =========================================================
-// Movimientos recientes
+// Movimientos recientes (ver nota 129 al inicio del archivo): las
+// entradas de tipo "Compra a bodega" tienen un botón "🗑" para
+// eliminarlas si se registraron por error — a diferencia de solo
+// borrar el registro del historial, esto TAMBIÉN resta de bodega la
+// cantidad que esa compra había sumado (con tope en 0, nunca negativo),
+// para que el stock quede consistente. Los demás tipos de movimiento no
+// tienen esta opción todavía (son más delicados de revertir: tocan dos
+// tablas a la vez o afectan a una habitación específica).
 // =========================================================
 async function cargarMovimientos(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+  const permitido = puedeGestionar();
 
   const { data: movimientos, error } = await supabase
     .from('inventario_movimientos')
@@ -1277,6 +1374,8 @@ async function cargarMovimientos(elemento) {
     elemento.innerHTML = `<p class="mensaje-vacio">Error cargando movimientos: ${error.message}</p>`;
     return;
   }
+
+  const porId = new Map((movimientos || []).map((m) => [m.id, m]));
 
   const etiquetasTipo = {
     compra_bodega: 'Compra a bodega',
@@ -1299,27 +1398,79 @@ async function cargarMovimientos(elemento) {
               <th>Habitación</th>
               <th>Cantidad</th>
               <th>Fecha</th>
+              ${permitido ? '<th></th>' : ''}
             </tr>
           </thead>
           <tbody>
             ${
               (movimientos || [])
                 .map(
-                  (m) => `<tr>
+                  (m) => `<tr data-id="${m.id}">
                 <td>${etiquetasTipo[m.tipo] || m.tipo}</td>
                 <td>${escaparHTML(m.minibar_productos?.nombre || '—')}</td>
                 <td>${m.habitaciones ? escaparHTML(m.habitaciones.numero) : '—'}</td>
                 <td>${m.cantidad}</td>
                 <td>${formatFechaHora(m.creado_en)}</td>
+                ${permitido ? `<td>${m.tipo === 'compra_bodega' ? '<button type="button" class="btn-editar btn-eliminar-compra">🗑</button>' : ''}</td>` : ''}
               </tr>`
                 )
-                .join('') || '<tr><td colspan="5" class="mensaje-vacio">Sin movimientos registrados todavía.</td></tr>'
+                .join('') || `<tr><td colspan="${permitido ? 6 : 5}" class="mensaje-vacio">Sin movimientos registrados todavía.</td></tr>`
             }
           </tbody>
         </table>
       </div>
     </div>
   `;
+
+  if (!permitido) return;
+
+  elemento.onclick = async (e) => {
+    const btn = e.target.closest('.btn-eliminar-compra');
+    if (!btn) return;
+    const fila = btn.closest('tr');
+    const m = porId.get(Number(fila.dataset.id));
+    if (!m) return;
+
+    const ok = await mostrarConfirmacion({
+      titulo: 'Eliminar entrada de compra',
+      contenidoHTML: `Vas a eliminar la compra de <strong>${m.cantidad} unidad(es)</strong> de <strong>${escaparHTML(m.minibar_productos?.nombre || 'este producto')}</strong> registrada el ${formatFechaHora(m.creado_en)}. Esto también resta esa cantidad de la bodega (sin dejarla negativa). ¿Confirmas?`,
+      textoConfirmar: 'Sí, eliminar',
+    });
+    if (!ok) return;
+
+    btn.disabled = true;
+
+    const { data: filaBodega, error: errBodega } = await supabase
+      .from('inventario_bodega')
+      .select('id, cantidad_actual')
+      .eq('producto_id', m.producto_id)
+      .maybeSingle();
+    if (errBodega) {
+      mostrarToast(`Error: ${errBodega.message}`, 'error');
+      btn.disabled = false;
+      return;
+    }
+    if (filaBodega) {
+      const nuevaCantidad = Math.max(0, Number(filaBodega.cantidad_actual) - Number(m.cantidad));
+      await supabase.from('inventario_bodega').update({ cantidad_actual: nuevaCantidad, actualizado_en: new Date().toISOString() }).eq('id', filaBodega.id);
+    }
+
+    const { error: errDelete } = await supabase.from('inventario_movimientos').delete().eq('id', m.id);
+    if (errDelete) {
+      mostrarToast(`Error eliminando el movimiento: ${errDelete.message}`, 'error');
+      btn.disabled = false;
+      return;
+    }
+
+    mostrarToast('Entrada de compra eliminada y bodega corregida.', 'exito');
+    await cargarMovimientos(elemento);
+    const wrapBodega = document.querySelector('#inv-bodega-wrap');
+    if (wrapBodega) await cargarInventarioBodega(wrapBodega);
+    const wrapMapa = document.querySelector('#inv-mapa-wrap');
+    if (wrapMapa) await cargarMapaMinibares(wrapMapa);
+    const wrapPendientes = document.querySelector('#inv-pendientes-wrap');
+    if (wrapPendientes) await cargarPendientesReponer(wrapPendientes);
+  };
 }
 
 registerModule({
