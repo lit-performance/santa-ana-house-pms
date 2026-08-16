@@ -110,6 +110,15 @@
 // "Actualizado" (fecha/hora del último guardado real de esa fila) como
 // evidencia visual de que el dato es real. Ver 125_verificar_
 // inventario_bodega.sql para confirmar por SQL lo mismo.
+//
+// Nota (128): la edición inline de Bodega (fila que se abría ancha con
+// varios inputs) se reemplazó por una tarjeta emergente. La tabla ahora
+// solo muestra 5 columnas (Producto, Precio de venta, Cantidad en
+// stock, Estado, Ver) — "👁️ Ver" abre `abrirModalDetalleBodega` con
+// TODO el detalle (incluye precio de venta, que viene de
+// minibar_productos, no de inventario_bodega) y, si el usuario puede
+// gestionar inventario, un botón "✏️ Editar" adentro de la misma
+// tarjeta para corregir precio costo/proveedor/cantidad/mínimo.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -266,13 +275,11 @@ async function cargarMapaMinibares(elemento) {
 }
 
 // =========================================================
-// Bodega (ver nota 124 al inicio del archivo): SOLO LECTURA por
-// defecto, con un botón "✏️ Editar" explícito por fila que abre esa
-// fila para edición — igual que el número que se ve es exactamente lo
-// que hay guardado ahora mismo en inventario_bodega (no algo que
-// alguien escribió y quizás no guardó). Se muestra también "Actualizado"
-// (fecha/hora del último guardado real de esa fila) como evidencia de
-// que el número corresponde a un cambio efectivamente persistido.
+// Bodega (ver nota 128 al inicio del archivo): tabla reducida a 5
+// columnas (Producto, Precio de venta, Cantidad en stock, Estado, Ver)
+// — el detalle completo y la edición viven en una tarjeta emergente que
+// abre el botón "👁️ Ver" (ver `abrirModalDetalleBodega`), en vez de
+// filas editables inline (que quedaban demasiado anchas/incómodas).
 // =========================================================
 async function cargarInventarioBodega(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
@@ -281,7 +288,7 @@ async function cargarInventarioBodega(elemento) {
   const [{ data: inventario, error: errInv }, { data: proveedores, error: errProv }] = await Promise.all([
     supabase
       .from('inventario_bodega')
-      .select('*, minibar_productos(nombre, categoria)')
+      .select('*, minibar_productos(nombre, categoria, precio)')
       .order('minibar_productos(categoria)')
       .order('minibar_productos(nombre)'),
     supabase.from('proveedores').select('id, nombre_comercial').eq('activo', true).order('nombre_comercial'),
@@ -294,123 +301,152 @@ async function cargarInventarioBodega(elemento) {
 
   const porId = new Map((inventario || []).map((f) => [f.id, f]));
 
-  function filaSoloLectura(f) {
-    const bajoMinimo = f.cantidad_minima > 0 && f.cantidad_actual <= f.cantidad_minima;
-    return `
-      <tr data-id="${f.id}" style="${bajoMinimo ? 'background:var(--color-alerta-fondo, #fdecea);' : ''}">
-        <td>${escaparHTML(f.minibar_productos?.categoria || '—')}</td>
-        <td>${escaparHTML(f.minibar_productos?.nombre || '—')}</td>
-        <td>${formatCOP(f.precio_costo || 0)}</td>
-        <td>${escaparHTML((proveedores || []).find((p) => p.id === f.proveedor_id)?.nombre_comercial || '—')}</td>
-        <td>${f.cantidad_actual}</td>
-        <td>${f.cantidad_minima}</td>
-        <td style="white-space:nowrap;">${f.actualizado_en ? formatFechaHora(f.actualizado_en) : '—'}</td>
-        <td>${bajoMinimo ? '⚠️ Reponer' : '✅'}</td>
-        ${permitido ? `<td><button type="button" class="btn-editar btn-editar-bodega">✏️ Editar</button></td>` : ''}
-      </tr>
-    `;
-  }
-
-  function filaEditable(f) {
-    return `
-      <tr data-id="${f.id}">
-        <td>${escaparHTML(f.minibar_productos?.categoria || '—')}</td>
-        <td>${escaparHTML(f.minibar_productos?.nombre || '—')}</td>
-        <td><input type="number" class="input-bodega" data-campo="precio_costo" value="${f.precio_costo ?? ''}" style="width:100px" /></td>
-        <td>
-          <select class="input-bodega" data-campo="proveedor_id" style="width:150px">
-            <option value="">— Sin asignar —</option>
-            ${(proveedores || [])
-              .map((p) => `<option value="${p.id}" ${f.proveedor_id === p.id ? 'selected' : ''}>${escaparHTML(p.nombre_comercial)}</option>`)
-              .join('')}
-          </select>
-        </td>
-        <td><input type="number" class="input-bodega" data-campo="cantidad_actual" value="${f.cantidad_actual}" style="width:70px" /></td>
-        <td><input type="number" class="input-bodega" data-campo="cantidad_minima" value="${f.cantidad_minima}" style="width:70px" /></td>
-        <td>—</td>
-        <td>—</td>
-        <td style="white-space:nowrap;">
-          <button type="button" class="btn btn-primario btn-chico btn-guardar-bodega">Guardar</button>
-          <button type="button" class="btn btn-secundario btn-chico btn-cancelar-bodega">Cancelar</button>
-        </td>
-      </tr>
-    `;
-  }
-
   elemento.innerHTML = `
     <div class="tarjeta">
       <h3>Bodega — existencias y proveedor</h3>
-      <p class="texto-ayuda">Vista de solo lectura — lo que ves aquí es exactamente lo que está guardado. Dale "✏️ Editar" a una fila para corregirla; producto en rojo = existencia por debajo del mínimo definido (recompra sugerida).</p>
+      <p class="texto-ayuda">Dale "👁️ Ver" a un producto para ver el detalle completo (costo, proveedor, mínimo, última actualización) y editarlo ahí. Producto en rojo = existencia por debajo del mínimo definido (recompra sugerida).</p>
       <div class="tabla-scroll">
         <table class="tabla-simple">
           <thead>
             <tr>
-              <th>Categoría</th>
               <th>Producto</th>
-              <th>Precio costo</th>
-              <th>Proveedor</th>
-              <th>En bodega</th>
-              <th>Mínimo</th>
-              <th>Actualizado</th>
+              <th>Precio de venta</th>
+              <th>Cantidad en stock</th>
               <th>Estado</th>
-              ${permitido ? '<th></th>' : ''}
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            ${(inventario || []).map((f) => filaSoloLectura(f)).join('') || `<tr><td colspan="${permitido ? 9 : 8}" class="mensaje-vacio">Sin productos en inventario.</td></tr>`}
+            ${
+              (inventario || [])
+                .map((f) => {
+                  const bajoMinimo = f.cantidad_minima > 0 && f.cantidad_actual <= f.cantidad_minima;
+                  return `
+              <tr data-id="${f.id}" style="${bajoMinimo ? 'background:var(--color-alerta-fondo, #fdecea);' : ''}">
+                <td>${escaparHTML(f.minibar_productos?.nombre || '—')} <span class="mensaje-vacio">(${escaparHTML(f.minibar_productos?.categoria || '—')})</span></td>
+                <td>${formatCOP(f.minibar_productos?.precio || 0)}</td>
+                <td>${f.cantidad_actual}</td>
+                <td>${bajoMinimo ? '⚠️ Reponer' : '✅'}</td>
+                <td><button type="button" class="btn-editar btn-ver-bodega">👁️ Ver</button></td>
+              </tr>
+            `;
+                })
+                .join('') || `<tr><td colspan="5" class="mensaje-vacio">Sin productos en inventario.</td></tr>`
+            }
           </tbody>
         </table>
       </div>
     </div>
   `;
 
-  if (!permitido) return;
-
   // Un solo listener delegado, asignado con `onclick` (no
   // addEventListener) para que cada recarga de esta tarjeta REEMPLACE
-  // el listener anterior en vez de acumularlo — evita que, tras varios
-  // guardados, un clic dispare la acción varias veces.
-  elemento.onclick = async (e) => {
-    const btnEditar = e.target.closest('.btn-editar-bodega');
-    if (btnEditar) {
-      const fila = btnEditar.closest('tr');
+  // el listener anterior en vez de acumularlo.
+  elemento.onclick = (e) => {
+    const btnVer = e.target.closest('.btn-ver-bodega');
+    if (btnVer) {
+      const fila = btnVer.closest('tr');
       const f = porId.get(Number(fila.dataset.id));
-      if (f) fila.outerHTML = filaEditable(f);
-      return;
+      if (f) abrirModalDetalleBodega(f, proveedores, elemento, permitido);
     }
+  };
+}
 
-    const btnCancelar = e.target.closest('.btn-cancelar-bodega');
-    if (btnCancelar) {
-      const fila = btnCancelar.closest('tr');
-      const f = porId.get(Number(fila.dataset.id));
-      if (f) fila.outerHTML = filaSoloLectura(f);
-      return;
-    }
+// Tarjeta emergente de detalle de un producto de bodega: muestra toda
+// la información (precio de venta, costo, proveedor, cantidad, mínimo,
+// última actualización, estado). Si el usuario puede gestionar
+// inventario, tiene un botón "✏️ Editar" que cambia la misma tarjeta a
+// modo edición (precio costo, proveedor, cantidad, mínimo) sin volver a
+// la tabla — al guardar, cierra y recarga la tarjeta de Bodega.
+function abrirModalDetalleBodega(f, proveedores, elemento, permitido) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
 
-    const btnGuardar = e.target.closest('.btn-guardar-bodega');
-    if (btnGuardar) {
-      const fila = btnGuardar.closest('tr');
-      const id = Number(fila.dataset.id);
-      const payload = { actualizado_en: new Date().toISOString() };
-      fila.querySelectorAll('.input-bodega').forEach((input) => {
-        const campo = input.dataset.campo;
-        if (campo === 'proveedor_id') {
-          payload[campo] = input.value ? Number(input.value) : null;
-        } else if (campo === 'precio_costo') {
-          payload[campo] = input.value ? Number(input.value) : null;
-        } else {
-          payload[campo] = Number(input.value) || 0;
-        }
-      });
-      const { error } = await supabase.from('inventario_bodega').update(payload).eq('id', id);
+  function pintarVista() {
+    const bajoMinimo = f.cantidad_minima > 0 && f.cantidad_actual <= f.cantidad_minima;
+    const proveedorNombre = (proveedores || []).find((p) => p.id === f.proveedor_id)?.nombre_comercial || '—';
+    overlay.innerHTML = `
+      <div class="modal-caja">
+        <h3>${escaparHTML(f.minibar_productos?.nombre || '—')}</h3>
+        <p class="mensaje-vacio" style="margin-top:-0.5rem;">${escaparHTML(f.minibar_productos?.categoria || '—')}</p>
+        <div class="modal-contenido" style="display:grid; grid-template-columns:1fr 1fr; gap:0.9rem 1.5rem;">
+          <div><span class="texto-ayuda">Precio de venta</span><br /><strong>${formatCOP(f.minibar_productos?.precio || 0)}</strong></div>
+          <div><span class="texto-ayuda">Precio costo</span><br /><strong>${formatCOP(f.precio_costo || 0)}</strong></div>
+          <div><span class="texto-ayuda">Cantidad en bodega</span><br /><strong>${f.cantidad_actual}</strong></div>
+          <div><span class="texto-ayuda">Cantidad mínima</span><br /><strong>${f.cantidad_minima}</strong></div>
+          <div><span class="texto-ayuda">Proveedor</span><br /><strong>${escaparHTML(proveedorNombre)}</strong></div>
+          <div><span class="texto-ayuda">Estado</span><br /><strong>${bajoMinimo ? '⚠️ Reponer' : '✅ OK'}</strong></div>
+          <div style="grid-column:1 / -1;"><span class="texto-ayuda">Última actualización</span><br />${f.actualizado_en ? formatFechaHora(f.actualizado_en) : '—'}</div>
+        </div>
+        <div class="modal-acciones" style="margin-top:1.25rem;">
+          <button type="button" class="btn btn-secundario" id="btn-cerrar-detalle-bodega">Cerrar</button>
+          ${permitido ? '<button type="button" class="btn btn-primario" id="btn-editar-detalle-bodega">✏️ Editar</button>' : ''}
+        </div>
+      </div>
+    `;
+    overlay.querySelector('#btn-cerrar-detalle-bodega').addEventListener('click', () => overlay.remove());
+    const btnEditar = overlay.querySelector('#btn-editar-detalle-bodega');
+    if (btnEditar) btnEditar.addEventListener('click', pintarEdicion);
+  }
+
+  function pintarEdicion() {
+    overlay.innerHTML = `
+      <div class="modal-caja">
+        <h3>Editar — ${escaparHTML(f.minibar_productos?.nombre || '—')}</h3>
+        <form id="form-editar-bodega">
+          <div class="form-grid">
+            <label>Precio costo
+              <input type="number" name="precio_costo" min="0" value="${f.precio_costo ?? ''}" />
+            </label>
+            <label>Proveedor
+              <select name="proveedor_id">
+                <option value="">— Sin asignar —</option>
+                ${(proveedores || [])
+                  .map((p) => `<option value="${p.id}" ${f.proveedor_id === p.id ? 'selected' : ''}>${escaparHTML(p.nombre_comercial)}</option>`)
+                  .join('')}
+              </select>
+            </label>
+            <label>Cantidad en bodega
+              <input type="number" name="cantidad_actual" min="0" value="${f.cantidad_actual}" required />
+            </label>
+            <label>Cantidad mínima
+              <input type="number" name="cantidad_minima" min="0" value="${f.cantidad_minima}" required />
+            </label>
+          </div>
+          <div class="modal-acciones" style="margin-top:1.25rem;">
+            <button type="button" class="btn btn-secundario" id="btn-cancelar-edicion-bodega">Cancelar</button>
+            <button type="submit" class="btn btn-primario">Guardar</button>
+          </div>
+        </form>
+      </div>
+    `;
+    overlay.querySelector('#btn-cancelar-edicion-bodega').addEventListener('click', pintarVista);
+    overlay.querySelector('#form-editar-bodega').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = new FormData(e.target);
+      const payload = {
+        precio_costo: form.get('precio_costo') ? Number(form.get('precio_costo')) : null,
+        proveedor_id: form.get('proveedor_id') ? Number(form.get('proveedor_id')) : null,
+        cantidad_actual: Number(form.get('cantidad_actual')) || 0,
+        cantidad_minima: Number(form.get('cantidad_minima')) || 0,
+        actualizado_en: new Date().toISOString(),
+      };
+      const { error } = await supabase.from('inventario_bodega').update(payload).eq('id', f.id);
       if (error) {
         mostrarToast(`Error: ${error.message}`, 'error');
         return;
       }
       mostrarToast('Inventario de bodega actualizado.', 'exito');
+      overlay.remove();
       await cargarInventarioBodega(elemento);
-    }
-  };
+    });
+  }
+
+  pintarVista();
 }
 
 // =========================================================
