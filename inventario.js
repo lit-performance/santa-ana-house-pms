@@ -177,12 +177,21 @@
 // lo que hace) — se dejó solo ahí para no tener el mismo botón delicado
 // repetido en dos lugares distintos. La función `vaciarMinibarHabitacion`
 // sigue viviendo aquí (exportada) porque config-habitaciones.js la usa.
+//
+// Nota (136): se integraron las dos secciones de Compras ("+ Nueva orden
+// de compra" y "Órdenes de compra") como dos mini-tarjetas más del
+// tablero — "📝 Nueva orden de compra" y "📦 Órdenes de compra". Compras
+// solo tenía esas 2 secciones y ya vivía en el mismo grupo de menú que
+// Inventario, así que separarlas en una pestaña aparte era más
+// navegación de la necesaria. compras.js ya no se registra como módulo
+// propio (ver nota ahí); este archivo solo importa sus dos funciones.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
 import { formatFechaHora, toISODate } from './dates.js';
 import { getUsuarioActual } from './auth.js';
+import { cargarFormNuevaOrden, cargarListaOrdenes } from './compras.js';
 
 const ROLES_GESTIONAN = ['propietario', 'administrador', 'bodega'];
 
@@ -294,6 +303,11 @@ async function calcularResumenReposicionesHoy() {
   return { total };
 }
 
+async function calcularResumenOrdenes() {
+  const { data } = await supabase.from('ordenes_compra').select('id').in('estado', ['solicitado', 'en_camino']);
+  return { pendientes: (data || []).length };
+}
+
 // Cada sección conserva su wrapId de siempre (#inv-mapa-wrap,
 // #inv-bodega-wrap, etc.) — así, al abrirse dentro de la tarjeta
 // emergente, todo el código existente que refresca esa sección o a sus
@@ -306,6 +320,8 @@ const SECCIONES_INVENTARIO = {
   bodega: { wrapId: 'inv-bodega-wrap', cargar: cargarInventarioBodega },
   'stock-total': { wrapId: 'inv-stock-total-wrap', cargar: cargarStockTotal },
   compra: { wrapId: 'inv-compra-wrap', cargar: cargarSeccionCompra },
+  'compra-orden': { wrapId: 'inv-orden-nueva-wrap', cargar: cargarFormNuevaOrden },
+  ordenes: { wrapId: 'inv-ordenes-wrap', cargar: cargarListaOrdenes },
   reabastecer: { wrapId: 'inv-reabastecer-wrap', cargar: cargarSeccionReabastecer },
   'reposiciones-hoy': { wrapId: 'inv-reposiciones-hoy-wrap', cargar: cargarReposicionesHoy },
   movimientos: { wrapId: 'inv-movimientos-wrap', cargar: cargarMovimientos },
@@ -344,11 +360,12 @@ async function cargarResumenInventario(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando resumen…</p>';
   const permitido = puedeGestionar();
 
-  const [resumenMapa, resumenPendientes, resumenBodega, resumenStockTotal, resumenReposicionesHoy] = await Promise.all([
+  const [resumenMapa, resumenPendientes, resumenBodega, resumenStockTotal, resumenOrdenes, resumenReposicionesHoy] = await Promise.all([
     calcularResumenMapa(),
     calcularResumenPendientes(),
     calcularResumenBodega(),
     calcularResumenStockTotal(),
+    calcularResumenOrdenes(),
     calcularResumenReposicionesHoy(),
   ]);
 
@@ -385,7 +402,18 @@ async function cargarResumenInventario(elemento) {
       titulo: 'Stock total (bodega + minibares)',
       resumen: `${resumenStockTotal.total} unidad(es) en total`,
     },
-    permitido ? { id: 'compra', icono: '🛒', titulo: 'Registrar compra', resumen: 'Entrada rápida de un producto a bodega' } : null,
+    permitido ? { id: 'compra', icono: '🛒', titulo: 'Registrar compra', resumen: 'Entrada rápida de UN producto a bodega' } : null,
+    permitido
+      ? { id: 'compra-orden', icono: '📝', titulo: 'Nueva orden de compra', resumen: 'Pedido formal con varios productos y proveedor' }
+      : null,
+    permitido
+      ? {
+          id: 'ordenes',
+          icono: '📦',
+          titulo: 'Órdenes de compra',
+          resumen: resumenOrdenes.pendientes > 0 ? `${resumenOrdenes.pendientes} orden(es) en camino o solicitadas` : '✅ Sin órdenes pendientes',
+        }
+      : null,
     permitido ? { id: 'reabastecer', icono: '🔁', titulo: 'Reabastecer habitación', resumen: 'Traslada stock de bodega a una habitación' } : null,
     {
       id: 'reposiciones-hoy',
@@ -506,7 +534,7 @@ async function cargarMapaMinibares(elemento) {
         <div class="stat-card"><div class="stat-card-label">Valor a precio de costo</div><div class="stat-card-valor">${formatCOP(valorCostoTotal)}</div></div>
         <div class="stat-card"><div class="stat-card-label">Valor a precio de venta</div><div class="stat-card-valor">${formatCOP(valorVentaTotal)}</div></div>
       </div>
-      <p class="mensaje-vacio" style="margin-top:-0.2rem;">De un vistazo: qué hay y qué falta en cada minibar. El número en cada celda es la cantidad actual; "Estándar" es la referencia con la que se compara (no incluye habitaciones sin minibar). Para reponer, usa "Pendientes de reponer" más abajo. Para desactivar el minibar de una habitación (arriendo sin minibar) y devolver su stock a bodega, usa Configuración → Habitaciones → "🧹 Vaciar minibar y desactivar".</p>
+      <p class="mensaje-vacio" style="margin-top:-0.2rem;">De un vistazo: qué hay y qué falta en cada minibar (no incluye habitaciones sin minibar). El número en cada celda es la cantidad actual; "Estándar" es la referencia con la que se compara. Para reponer, abre la tarjeta "Pendientes de reponer" desde el tablero de Inventario. Para desactivar el minibar de una habitación (arriendo sin minibar) y devolver su stock a bodega, usa Configuración → Habitaciones → "🧹 Vaciar minibar y desactivar".</p>
       <div class="tabla-scroll" style="max-height:520px; overflow:auto;">
         <table class="tabla-simple" style="border-collapse:collapse;">
           <thead>
@@ -968,9 +996,9 @@ function abrirModalProductoNuevo(categorias, { onCreado, onCancelar }) {
 // accidental no registre una entrada real por error), y con la opción
 // de dar de alta un producto nuevo en una tarjeta emergente aparte, sin
 // mezclarlo con el resto del formulario. Pensada para UNA entrada
-// rápida a la vez; para comprar VARIOS productos de un tirón usa el
-// módulo "Compras" (orden de compra con varios ítems y seguimiento de
-// proveedor).
+// rápida a la vez; para comprar VARIOS productos de un tirón usa la
+// tarjeta "📝 Nueva orden de compra" (pedido con varios ítems y
+// seguimiento de proveedor, ver compras.js).
 // =========================================================
 async function cargarSeccionCompra(elemento) {
   if (!puedeGestionar()) {
@@ -988,7 +1016,7 @@ async function cargarSeccionCompra(elemento) {
   elemento.innerHTML = `
     <div class="tarjeta">
       <h3>Registrar compra (entrada a bodega)</h3>
-      <p class="texto-ayuda">Para UN producto a la vez. ¿Vas a comprar varios productos juntos? Usa el módulo <strong>Compras</strong> (orden de compra con varios ítems).</p>
+      <p class="texto-ayuda">Para UN producto a la vez. ¿Vas a comprar varios productos juntos? Usa la tarjeta <strong>"📝 Nueva orden de compra"</strong> del tablero de Inventario (pedido con varios ítems y proveedor).</p>
       <form id="form-compra" class="form-grid">
         <label>Producto
           <select name="producto_id" id="select-producto-compra" required>
