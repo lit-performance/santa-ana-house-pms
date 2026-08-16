@@ -46,6 +46,13 @@
 // 'placeholders.js' — así "Configuración" queda como la última pestaña
 // del menú (se usa pocas veces, no debe distraer al lado de las pantallas
 // de uso diario).
+//
+// Nota (136): 'compras.js' YA NO se importa aquí como módulo propio — sus
+// dos secciones se integraron como mini-tarjetas dentro del tablero de
+// Inventario ('inventario.js' las importa directamente). El archivo
+// compras.js se deja en el repo (su lógica no cambió), solo dejó de
+// registrarse como pestaña independiente — por eso ya no necesita su
+// propia línea de import aquí; 'inventario.js' lo carga por su cuenta.
 
 import { iniciarSesion, cerrarSesion, restaurarSesion } from './auth.js';
 import { initRouter, renderPrimerModuloDisponible } from './router.js';
@@ -60,7 +67,6 @@ import './indicadores.js';
 import './minibar.js';
 import './inventario.js';
 import './proveedores.js';
-import './compras.js';
 import './facturacion.js';
 import './contabilidad.js';
 import './auditoria.js';
