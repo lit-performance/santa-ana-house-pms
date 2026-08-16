@@ -228,7 +228,15 @@
 // el directorio — abre la misma tarjeta emergente de proveedores.js
 // (143, `abrirModalProveedorNuevo`, ahora exportada) sin salir del
 // formulario de compra; al crearlo, queda agregado al selector y
-// seleccionado de una vez.
+// seleccionado de una vez. Ese import es DINÁMICO (`await import(...)`
+// dentro del propio click, no arriba con los demás) a propósito: si se
+// importa aquí arriba, proveedores.js quedaría como dependencia de
+// inventario.js, y como minibar.js YA depende de inventario.js, el orden
+// de registro de pestañas se altera (Proveedores terminaba registrándose
+// ANTES que Inventario y Minibar, aunque app.js las liste en el orden
+// correcto — ver nota en app.js). Con import dinámico, proveedores.js
+// solo se carga cuando de verdad se necesita (el usuario da clic en
+// "➕"), sin afectar el orden de las pestañas al arrancar la app.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -236,7 +244,6 @@ import { formatCOP } from './currency.js';
 import { formatFechaHora, toISODate } from './dates.js';
 import { getUsuarioActual } from './auth.js';
 import { obtenerOCrearTurnoDeHoy } from './caja.js';
-import { abrirModalProveedorNuevo } from './proveedores.js';
 
 // Mismas cuentas/medios de pago que ya usan gastos.js y caja.js — "de
 // dónde salió el dinero" de esta compra.
@@ -1077,6 +1084,262 @@ function estiloContenidoAcento(acento) {
   return `border-left:5px solid ${acento.borde}; background:${acento.fondo}; border-radius:0 8px 8px 0; padding:1rem; box-shadow:0 1px 5px ${acento.borde}26;`;
 }
 
+function generarGrupoCompra() {
+  return (crypto.randomUUID && crypto.randomUUID()) || `compra-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+// Construye el bloque de líneas de producto (producto + cantidad + costo)
+// — lo usan tanto el formulario principal de "Registrar compra" como la
+// tarjeta emergente de "✏️ Editar" de una compra ya registrada, para no
+// duplicar esta lógica dos veces. `leerLineas()` valida y devuelve las
+// líneas actuales, o null (y avisa con un toast) si falta algo.
+function construirEditorLineasCompra({ wrapLineas, btnAgregar, elTotal, productos, categorias, lineasIniciales, onNuevoProducto }) {
+  function actualizarTotal() {
+    let total = 0;
+    wrapLineas.querySelectorAll('.fila-linea-compra').forEach((fila) => {
+      const cantidad = Number(fila.querySelector('.input-cantidad-linea').value) || 0;
+      const costo = Number(fila.querySelector('.input-costo-linea').value) || 0;
+      total += cantidad * costo;
+    });
+    if (elTotal) elTotal.textContent = formatCOP(total);
+  }
+
+  function crearFila(lineaInicial) {
+    const fila = document.createElement('div');
+    fila.className = 'form-grid fila-linea-compra';
+    fila.style.cssText = 'grid-template-columns:2fr 1fr 1fr auto; align-items:end; margin-bottom:0.6rem;';
+    fila.innerHTML = `
+      <label>Producto
+        <select class="select-producto-linea" required>
+          <option value="" disabled ${lineaInicial ? '' : 'selected'}>— Selecciona —</option>
+          <option value="__nuevo__">➕ Producto nuevo</option>
+          ${categorias
+            .map(
+              (cat) => `
+            <optgroup label="${escaparHTML(cat)}">
+              ${productos
+                .filter((p) => p.categoria === cat)
+                .map((p) => `<option value="${p.id}" ${lineaInicial?.producto_id === p.id ? 'selected' : ''}>${escaparHTML(p.nombre)}</option>`)
+                .join('')}
+            </optgroup>
+          `
+            )
+            .join('')}
+        </select>
+      </label>
+      <label>Cantidad
+        <input type="number" class="input-cantidad-linea" min="1" placeholder="Ej: 10" value="${lineaInicial ? lineaInicial.cantidad : ''}" required />
+      </label>
+      <label>Costo unit.
+        <input type="number" class="input-costo-linea" min="0" step="100" placeholder="Ej: 3000" value="${lineaInicial ? lineaInicial.precio_costo : ''}" required />
+      </label>
+      <button type="button" class="btn-editar btn-quitar-linea">Quitar</button>
+    `;
+
+    const select = fila.querySelector('.select-producto-linea');
+    select.addEventListener('change', () => {
+      if (select.value !== '__nuevo__') {
+        actualizarTotal();
+        return;
+      }
+      onNuevoProducto(
+        (nuevoProducto) => {
+          wrapLineas.querySelectorAll('.select-producto-linea').forEach((s) => {
+            if ([...s.options].some((o) => o.value === String(nuevoProducto.id))) return;
+            const nuevaOpcion = document.createElement('option');
+            nuevaOpcion.value = String(nuevoProducto.id);
+            nuevaOpcion.textContent = `${nuevoProducto.nombre} (recién creado)`;
+            s.insertBefore(nuevaOpcion, s.querySelector('option[value="__nuevo__"]'));
+          });
+          select.value = String(nuevoProducto.id);
+          actualizarTotal();
+        },
+        () => {
+          select.value = '';
+        }
+      );
+    });
+
+    fila.querySelector('.input-cantidad-linea').addEventListener('input', actualizarTotal);
+    fila.querySelector('.input-costo-linea').addEventListener('input', actualizarTotal);
+    fila.querySelector('.btn-quitar-linea').addEventListener('click', () => {
+      if (wrapLineas.querySelectorAll('.fila-linea-compra').length <= 1) {
+        mostrarToast('Debe quedar al menos un producto en la compra.', 'error');
+        return;
+      }
+      fila.remove();
+      actualizarTotal();
+    });
+
+    return fila;
+  }
+
+  (lineasIniciales && lineasIniciales.length > 0 ? lineasIniciales : [null]).forEach((li) => wrapLineas.appendChild(crearFila(li)));
+  actualizarTotal();
+
+  if (btnAgregar) {
+    btnAgregar.addEventListener('click', () => {
+      wrapLineas.appendChild(crearFila(null));
+      actualizarTotal();
+    });
+  }
+
+  return {
+    leerLineas() {
+      const filas = [...wrapLineas.querySelectorAll('.fila-linea-compra')];
+      const lineas = [];
+      for (const fila of filas) {
+        const valorSelect = fila.querySelector('.select-producto-linea').value;
+        const cantidad = Number(fila.querySelector('.input-cantidad-linea').value);
+        const costo = Number(fila.querySelector('.input-costo-linea').value);
+        if (!valorSelect || valorSelect === '__nuevo__') {
+          mostrarToast('Falta elegir un producto en una de las líneas (si es nuevo, complétalo en la ventana emergente primero).', 'error');
+          return null;
+        }
+        if (!cantidad || cantidad <= 0) {
+          mostrarToast('Falta una cantidad válida en una de las líneas.', 'error');
+          return null;
+        }
+        const producto = productos.find((p) => p.id === Number(valorSelect));
+        lineas.push({
+          productoId: Number(valorSelect),
+          cantidad,
+          costo: costo || 0,
+          nombre: producto ? producto.nombre : fila.querySelector('.select-producto-linea').selectedOptions[0]?.textContent || 'Producto',
+        });
+      }
+      return lineas;
+    },
+  };
+}
+
+// Tarjeta emergente de doble confirmación (142.1): antes de guardar de
+// verdad, se ve un resumen (productos, proveedor, cuenta de pago, total)
+// — "← Volver a editar" cierra el resumen sin perder lo ya digitado
+// (el formulario de atrás sigue intacto); "Confirmar" ejecuta `onConfirmar`.
+function abrirModalResumenCompra({ lineas, proveedorNombre, metodoPago, textoConfirmar, onConfirmar }) {
+  const total = lineas.reduce((sum, l) => sum + l.cantidad * l.costo, 0);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja">
+      <h3>Confirmar compra</h3>
+      <p class="mensaje-vacio" style="margin-top:-0.5rem;">${proveedorNombre ? `Proveedor: ${escaparHTML(proveedorNombre)} — ` : ''}Pagado desde: ${escaparHTML(metodoPago)}</p>
+      <div class="modal-contenido">
+        <table class="tabla-simple">
+          <thead><tr><th>Producto</th><th>Cant.</th><th>Costo unit.</th><th>Subtotal</th></tr></thead>
+          <tbody>
+            ${lineas
+              .map(
+                (l) => `<tr><td>${escaparHTML(l.nombre)}</td><td>${l.cantidad}</td><td>${formatCOP(l.costo)}</td><td class="monto">${formatCOP(l.cantidad * l.costo)}</td></tr>`
+              )
+              .join('')}
+          </tbody>
+        </table>
+        <p style="text-align:right; font-size:1.15rem; font-weight:700; margin-top:0.5rem;">Total: ${formatCOP(total)}</p>
+      </div>
+      <div class="modal-acciones">
+        <button type="button" class="btn btn-secundario" id="btn-volver-resumen-compra">← Volver a editar</button>
+        <button type="button" class="btn btn-primario" id="btn-confirmar-resumen-compra">${textoConfirmar}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#btn-volver-resumen-compra').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  overlay.querySelector('#btn-confirmar-resumen-compra').addEventListener('click', async () => {
+    const btn = overlay.querySelector('#btn-confirmar-resumen-compra');
+    btn.disabled = true;
+    btn.textContent = 'Guardando…';
+    await onConfirmar();
+    overlay.remove();
+  });
+}
+
+// Ejecuta el guardado real de una compra NUEVA: suma cada línea a bodega,
+// deja registro en inventario_movimientos (con grupo_compra y
+// proveedor_id, ver nota 146/150) y un único egreso en caja_movimientos.
+async function guardarCompraNueva({ lineas, proveedorId, proveedorNombre, metodoPago, notas }) {
+  let turno;
+  try {
+    turno = await obtenerOCrearTurnoDeHoy();
+  } catch (errTurno) {
+    mostrarToast(`No se pudo registrar la compra: ${errTurno.message}`, 'error');
+    throw errTurno;
+  }
+
+  const usuario = getUsuarioActual();
+  const grupoCompra = generarGrupoCompra();
+  let totalCompra = 0;
+
+  for (const linea of lineas) {
+    totalCompra += linea.cantidad * linea.costo;
+
+    const { data: filaBodega, error: errFila } = await supabase
+      .from('inventario_bodega')
+      .select('id, cantidad_actual')
+      .eq('producto_id', linea.productoId)
+      .maybeSingle();
+    if (errFila) {
+      mostrarToast(`Error con "${linea.nombre}": ${errFila.message}`, 'error');
+      continue;
+    }
+
+    const payloadUpdate = {
+      cantidad_actual: (filaBodega?.cantidad_actual || 0) + linea.cantidad,
+      precio_costo: linea.costo,
+      actualizado_en: new Date().toISOString(),
+    };
+    if (proveedorId !== null) payloadUpdate.proveedor_id = proveedorId;
+
+    if (filaBodega) {
+      await supabase.from('inventario_bodega').update(payloadUpdate).eq('id', filaBodega.id);
+    } else {
+      await supabase.from('inventario_bodega').insert({
+        producto_id: linea.productoId,
+        cantidad_actual: linea.cantidad,
+        cantidad_minima: 0,
+        precio_costo: linea.costo,
+        proveedor_id: proveedorId,
+      });
+    }
+
+    await supabase.from('inventario_movimientos').insert({
+      tipo: 'compra_bodega',
+      producto_id: linea.productoId,
+      cantidad: linea.cantidad,
+      precio_costo: linea.costo,
+      proveedor_id: proveedorId,
+      notas: notas || null,
+      registrado_por: usuario?.id || null,
+      grupo_compra: grupoCompra,
+    });
+  }
+
+  const descripcion = [proveedorNombre ? `Proveedor: ${proveedorNombre}` : null, `Productos: ${lineas.map((l) => `${l.nombre} (${l.cantidad})`).join(', ')}`, notas || null]
+    .filter(Boolean)
+    .join(' — ');
+
+  const { error: errCaja } = await supabase.from('caja_movimientos').insert({
+    turno_id: turno.id,
+    tipo: 'egreso',
+    categoria: 'Compras',
+    monto: totalCompra,
+    metodo_pago: metodoPago,
+    descripcion,
+    registrado_por: usuario?.id || null,
+    grupo_compra: grupoCompra,
+  });
+
+  if (errCaja) {
+    mostrarToast(`La compra quedó registrada en bodega, pero hubo un error registrando el pago en Caja: ${errCaja.message}`, 'error');
+  }
+}
+
 async function cargarSeccionCompras(elemento) {
   if (!puedeGestionar()) {
     elemento.innerHTML = '<p class="mensaje-vacio">No tienes permiso para gestionar compras.</p>';
@@ -1093,7 +1356,7 @@ async function cargarSeccionCompras(elemento) {
   elemento.innerHTML = `
     <div class="tarjeta">
       <h3 style="margin-top:0;">🛒 Registrar compra</h3>
-      <p class="mensaje-vacio" style="margin-top:-0.3rem;">Para compras informales que llegan al mostrador (sin orden previa) — uno o varios productos a la vez, con la cuenta de la que salió el dinero.</p>
+      <p class="mensaje-vacio" style="margin-top:-0.3rem;">Para compras informales que llegan al mostrador (sin orden previa) — uno o varios productos a la vez, con la cuenta de la que salió el dinero. Antes de guardar te mostramos un resumen para confirmar.</p>
       <form id="form-compra">
         <div style="${estiloContenidoAcento(ACENTO_COMPRA_PRODUCTOS)} margin:0.75rem 0 1rem;">
           <h4 style="margin:0 0 0.75rem; color:${ACENTO_COMPRA_PRODUCTOS.texto};">📦 Productos</h4>
@@ -1127,23 +1390,38 @@ async function cargarSeccionCompras(elemento) {
 
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
           <div><span class="texto-ayuda">Total a pagar</span><br /><strong id="total-compra-vista" style="font-size:1.3rem;">${formatCOP(0)}</strong></div>
-          <button type="submit" class="btn btn-primario">Registrar compra</button>
+          <button type="submit" class="btn btn-primario">Continuar</button>
         </div>
       </form>
     </div>
+
+    <div id="compras-lista-wrap"></div>
   `;
 
   const wrapLineas = elemento.querySelector('#lineas-compra-wrap');
+  const btnAgregarLinea = elemento.querySelector('#btn-agregar-linea-compra');
+  const elTotal = elemento.querySelector('#total-compra-vista');
+
+  const editorLineas = construirEditorLineasCompra({
+    wrapLineas,
+    btnAgregar: btnAgregarLinea,
+    elTotal,
+    productos: productos || [],
+    categorias,
+    lineasIniciales: [],
+    onNuevoProducto: (onCreado, onCancelar) => {
+      abrirModalProductoNuevo(categorias, { onCreado, onCancelar });
+    },
+  });
 
   // Botón "➕" junto a Proveedor (144): crea un proveedor nuevo sin salir
-  // del formulario de compra — al crearlo, lo agrega al selector y lo
-  // deja seleccionado, y lo suma también al arreglo `proveedores` en
-  // memoria para que el envío del formulario (más abajo) lo encuentre al
-  // armar la descripción del movimiento en Caja.
+  // del formulario de compra — import dinámico a propósito, ver nota al
+  // inicio del archivo (evita alterar el orden de registro de pestañas).
   const selectProveedor = elemento.querySelector('#select-proveedor-compra');
   const btnNuevoProveedor = elemento.querySelector('#btn-nuevo-proveedor-compra');
   if (btnNuevoProveedor) {
-    btnNuevoProveedor.addEventListener('click', () => {
+    btnNuevoProveedor.addEventListener('click', async () => {
+      const { abrirModalProveedorNuevo } = await import('./proveedores.js');
       abrirModalProveedorNuevo({
         onCreado: (nuevoProveedor) => {
           proveedores.push(nuevoProveedor);
@@ -1157,112 +1435,11 @@ async function cargarSeccionCompras(elemento) {
     });
   }
 
-  function actualizarTotal() {
-    let total = 0;
-    wrapLineas.querySelectorAll('.fila-linea-compra').forEach((fila) => {
-      const cantidad = Number(fila.querySelector('.input-cantidad-linea').value) || 0;
-      const costo = Number(fila.querySelector('.input-costo-linea').value) || 0;
-      total += cantidad * costo;
-    });
-    const elTotal = elemento.querySelector('#total-compra-vista');
-    if (elTotal) elTotal.textContent = formatCOP(total);
-  }
-
-  function crearFilaCompra() {
-    const fila = document.createElement('div');
-    fila.className = 'form-grid fila-linea-compra';
-    fila.style.cssText = 'grid-template-columns:2fr 1fr 1fr auto; align-items:end; margin-bottom:0.6rem;';
-    fila.innerHTML = `
-      <label>Producto
-        <select class="select-producto-linea" required>
-          <option value="" disabled selected>— Selecciona —</option>
-          <option value="__nuevo__">➕ Producto nuevo</option>
-          ${categorias
-            .map(
-              (cat) => `
-            <optgroup label="${escaparHTML(cat)}">
-              ${(productos || [])
-                .filter((p) => p.categoria === cat)
-                .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)}</option>`)
-                .join('')}
-            </optgroup>
-          `
-            )
-            .join('')}
-        </select>
-      </label>
-      <label>Cantidad
-        <input type="number" class="input-cantidad-linea" min="1" placeholder="Ej: 10" required />
-      </label>
-      <label>Costo unit.
-        <input type="number" class="input-costo-linea" min="0" step="100" placeholder="Ej: 3000" required />
-      </label>
-      <button type="button" class="btn-editar btn-quitar-linea">Quitar</button>
-    `;
-
-    const select = fila.querySelector('.select-producto-linea');
-    select.addEventListener('change', () => {
-      if (select.value !== '__nuevo__') return;
-      abrirModalProductoNuevo(categorias, {
-        onCreado: (nuevoProducto) => {
-          elemento.querySelectorAll('.select-producto-linea').forEach((s) => {
-            if ([...s.options].some((o) => o.value === String(nuevoProducto.id))) return;
-            const nuevaOpcion = document.createElement('option');
-            nuevaOpcion.value = String(nuevoProducto.id);
-            nuevaOpcion.textContent = `${nuevoProducto.nombre} (recién creado)`;
-            s.insertBefore(nuevaOpcion, s.querySelector('option[value="__nuevo__"]'));
-          });
-          select.value = String(nuevoProducto.id);
-        },
-        onCancelar: () => {
-          select.value = '';
-        },
-      });
-    });
-
-    fila.querySelector('.input-cantidad-linea').addEventListener('input', actualizarTotal);
-    fila.querySelector('.input-costo-linea').addEventListener('input', actualizarTotal);
-    fila.querySelector('.btn-quitar-linea').addEventListener('click', () => {
-      if (wrapLineas.querySelectorAll('.fila-linea-compra').length <= 1) {
-        mostrarToast('Debe quedar al menos un producto en la compra.', 'error');
-        return;
-      }
-      fila.remove();
-      actualizarTotal();
-    });
-
-    return fila;
-  }
-
-  wrapLineas.appendChild(crearFilaCompra());
-  elemento.querySelector('#btn-agregar-linea-compra').addEventListener('click', () => {
-    wrapLineas.appendChild(crearFilaCompra());
-  });
-
-  elemento.querySelector('#form-compra').addEventListener('submit', async (e) => {
+  elemento.querySelector('#form-compra').addEventListener('submit', (e) => {
     e.preventDefault();
 
-    const filasDom = [...wrapLineas.querySelectorAll('.fila-linea-compra')];
-    const lineas = [];
-    for (const fila of filasDom) {
-      const valorSelect = fila.querySelector('.select-producto-linea').value;
-      const cantidad = Number(fila.querySelector('.input-cantidad-linea').value);
-      const costo = Number(fila.querySelector('.input-costo-linea').value);
-      if (!valorSelect || valorSelect === '__nuevo__') {
-        mostrarToast('Falta elegir un producto en una de las líneas (si es nuevo, complétalo en la ventana emergente primero).', 'error');
-        return;
-      }
-      if (!cantidad || cantidad <= 0) {
-        mostrarToast('Falta una cantidad válida en una de las líneas.', 'error');
-        return;
-      }
-      lineas.push({
-        productoId: Number(valorSelect),
-        cantidad,
-        costo: costo || 0,
-        nombre: fila.querySelector('.select-producto-linea').selectedOptions[0]?.textContent || 'Producto',
-      });
-    }
+    const lineas = editorLineas.leerLineas();
+    if (!lineas) return;
 
     const form = new FormData(e.target);
     const metodoPago = form.get('metodo_pago');
@@ -1271,94 +1448,301 @@ async function cargarSeccionCompras(elemento) {
       return;
     }
     const proveedorId = form.get('proveedor_id') ? Number(form.get('proveedor_id')) : null;
+    const proveedorNombre = (proveedores || []).find((p) => p.id === proveedorId)?.nombre_comercial || null;
     const notas = form.get('notas').trim();
 
-    let turno;
-    try {
-      turno = await obtenerOCrearTurnoDeHoy();
-    } catch (errTurno) {
-      mostrarToast(`No se pudo registrar la compra: ${errTurno.message}`, 'error');
-      return;
+    abrirModalResumenCompra({
+      lineas,
+      proveedorNombre,
+      metodoPago,
+      textoConfirmar: '✅ Confirmar compra',
+      onConfirmar: async () => {
+        await guardarCompraNueva({ lineas, proveedorId, proveedorNombre, metodoPago, notas });
+        const total = lineas.reduce((sum, l) => sum + l.cantidad * l.costo, 0);
+        mostrarToast(`Compra registrada: ${formatCOP(total)} pagados desde ${metodoPago}.`, 'exito');
+        document.dispatchEvent(new CustomEvent('inventario:actualizado'));
+        const wrapBodega = document.querySelector('#inv-bodega-wrap');
+        if (wrapBodega) await cargarInventarioBodega(wrapBodega);
+        const wrapMov = document.querySelector('#inv-movimientos-wrap');
+        if (wrapMov) await cargarMovimientos(wrapMov);
+        await cargarSeccionCompras(elemento);
+      },
+    });
+  });
+
+  await cargarListaComprasRegistradas(elemento.querySelector('#compras-lista-wrap'), elemento);
+}
+
+// Listado de compras ya registradas (agrupadas por grupo_compra, una fila
+// de caja_movimientos = una compra completa) con "✏️ Editar" / "🗑
+// Eliminar" — ambas reversan primero lo que la compra original sumó a
+// bodega antes de aplicar el cambio o borrarla del todo.
+async function cargarListaComprasRegistradas(elemento, elementoSeccionCompras) {
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+
+  const { data: compras, error } = await supabase
+    .from('caja_movimientos')
+    .select('*')
+    .eq('categoria', 'Compras')
+    .not('grupo_compra', 'is', null)
+    .order('creado_en', { ascending: false })
+    .limit(30);
+
+  if (error) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando compras registradas: ${error.message}</p>`;
+    return;
+  }
+
+  elemento.innerHTML = `
+    <div class="tarjeta">
+      <h3>📋 Compras registradas</h3>
+      ${
+        (compras || []).length === 0
+          ? '<p class="mensaje-vacio">Sin compras registradas todavía con este flujo (las de antes de este cambio se siguen viendo en "Movimientos recientes", pero no se pueden editar/eliminar como compra completa).</p>'
+          : `
+        <div class="tabla-scroll">
+          <table class="tabla-simple">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Detalle</th>
+                <th>Total</th>
+                <th>Pagado desde</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${compras
+                .map(
+                  (c) => `
+                <tr data-id="${c.id}">
+                  <td>${formatFechaHora(c.creado_en)}</td>
+                  <td>${escaparHTML(c.descripcion || '—')}</td>
+                  <td class="monto">${formatCOP(c.monto)}</td>
+                  <td>${escaparHTML(c.metodo_pago)}</td>
+                  <td style="white-space:nowrap;">
+                    <button type="button" class="btn-editar btn-editar-compra">✏️ Editar</button>
+                    <button type="button" class="btn-editar btn-eliminar-compra">🗑 Eliminar</button>
+                  </td>
+                </tr>
+              `
+                )
+                .join('')}
+            </tbody>
+          </table>
+        </div>
+      `
+      }
+    </div>
+  `;
+
+  elemento.querySelectorAll('.btn-eliminar-compra').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const compra = compras.find((c) => c.id === Number(btn.closest('tr').dataset.id));
+      if (compra) eliminarCompraRegistrada(compra, elementoSeccionCompras);
+    });
+  });
+  elemento.querySelectorAll('.btn-editar-compra').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const compra = compras.find((c) => c.id === Number(btn.closest('tr').dataset.id));
+      if (compra) abrirModalEditarCompra(compra, elementoSeccionCompras);
+    });
+  });
+}
+
+async function eliminarCompraRegistrada(compra, elementoSeccionCompras) {
+  const ok = await mostrarConfirmacion({
+    titulo: 'Eliminar compra',
+    contenidoHTML: `¿Eliminar esta compra de <strong>${formatCOP(compra.monto)}</strong> (pagada desde ${escaparHTML(compra.metodo_pago)})? Se revertirá lo sumado a bodega y el egreso en Caja. Esta acción no se puede deshacer.`,
+    textoConfirmar: 'Eliminar',
+  });
+  if (!ok) return;
+
+  const { data: lineas, error: errLineas } = await supabase.from('inventario_movimientos').select('*').eq('grupo_compra', compra.grupo_compra).eq('tipo', 'compra_bodega');
+  if (errLineas) {
+    mostrarToast(`Error leyendo las líneas de la compra: ${errLineas.message}`, 'error');
+    return;
+  }
+
+  for (const linea of lineas || []) {
+    const { data: filaBodega } = await supabase.from('inventario_bodega').select('id, cantidad_actual').eq('producto_id', linea.producto_id).maybeSingle();
+    if (filaBodega) {
+      const nuevaCantidad = Math.max(0, Number(filaBodega.cantidad_actual) - Number(linea.cantidad));
+      await supabase.from('inventario_bodega').update({ cantidad_actual: nuevaCantidad, actualizado_en: new Date().toISOString() }).eq('id', filaBodega.id);
     }
+  }
 
-    const usuario = getUsuarioActual();
-    let totalCompra = 0;
+  await supabase.from('inventario_movimientos').delete().eq('grupo_compra', compra.grupo_compra).eq('tipo', 'compra_bodega');
+  await supabase.from('caja_movimientos').delete().eq('id', compra.id);
 
-    for (const linea of lineas) {
-      totalCompra += linea.cantidad * linea.costo;
+  mostrarToast('Compra eliminada y revertida.', 'exito');
 
-      const { data: filaBodega, error: errFila } = await supabase
-        .from('inventario_bodega')
-        .select('id, cantidad_actual')
-        .eq('producto_id', linea.productoId)
-        .maybeSingle();
-      if (errFila) {
-        mostrarToast(`Error con "${linea.nombre}": ${errFila.message}`, 'error');
-        return;
-      }
+  const wrapBodega = document.querySelector('#inv-bodega-wrap');
+  if (wrapBodega) await cargarInventarioBodega(wrapBodega);
+  const wrapMov = document.querySelector('#inv-movimientos-wrap');
+  if (wrapMov) await cargarMovimientos(wrapMov);
+  await cargarSeccionCompras(elementoSeccionCompras);
+}
 
-      const payloadUpdate = {
-        cantidad_actual: (filaBodega?.cantidad_actual || 0) + linea.cantidad,
-        precio_costo: linea.costo,
-        actualizado_en: new Date().toISOString(),
-      };
-      if (proveedorId !== null) payloadUpdate.proveedor_id = proveedorId;
+// Guarda los cambios de una compra editada: primero revierte el efecto de
+// las líneas ANTERIORES sobre bodega, las borra, aplica las líneas NUEVAS
+// igual que una compra nueva (mismo grupo_compra) y ACTUALIZA (no
+// inserta) la fila de Caja de esa compra. Nota: las "Notas" originales no
+// se recuperan al editar (solo quedaban guardadas dentro del texto de la
+// descripción) — si hacían falta, se pueden volver a escribir.
+async function guardarEdicionCompra({ compra, lineasAnteriores, lineasNuevas, proveedorId, proveedorNombre, metodoPago }) {
+  const usuario = getUsuarioActual();
 
-      const { error: errUpdate } = filaBodega
-        ? await supabase.from('inventario_bodega').update(payloadUpdate).eq('id', filaBodega.id)
-        : await supabase.from('inventario_bodega').insert({
-            producto_id: linea.productoId,
-            cantidad_actual: linea.cantidad,
-            cantidad_minima: 0,
-            precio_costo: linea.costo,
-            proveedor_id: proveedorId,
-          });
-      if (errUpdate) {
-        mostrarToast(`Error con "${linea.nombre}": ${errUpdate.message}`, 'error');
-        return;
-      }
+  for (const linea of lineasAnteriores) {
+    const { data: filaBodega } = await supabase.from('inventario_bodega').select('id, cantidad_actual').eq('producto_id', linea.producto_id).maybeSingle();
+    if (filaBodega) {
+      const nuevaCantidad = Math.max(0, Number(filaBodega.cantidad_actual) - Number(linea.cantidad));
+      await supabase.from('inventario_bodega').update({ cantidad_actual: nuevaCantidad, actualizado_en: new Date().toISOString() }).eq('id', filaBodega.id);
+    }
+  }
+  await supabase.from('inventario_movimientos').delete().eq('grupo_compra', compra.grupo_compra).eq('tipo', 'compra_bodega');
 
-      await supabase.from('inventario_movimientos').insert({
-        tipo: 'compra_bodega',
+  let totalCompra = 0;
+  for (const linea of lineasNuevas) {
+    totalCompra += linea.cantidad * linea.costo;
+
+    const { data: filaBodega } = await supabase.from('inventario_bodega').select('id, cantidad_actual').eq('producto_id', linea.productoId).maybeSingle();
+    const payloadUpdate = {
+      cantidad_actual: (filaBodega?.cantidad_actual || 0) + linea.cantidad,
+      precio_costo: linea.costo,
+      actualizado_en: new Date().toISOString(),
+    };
+    if (proveedorId !== null) payloadUpdate.proveedor_id = proveedorId;
+
+    if (filaBodega) {
+      await supabase.from('inventario_bodega').update(payloadUpdate).eq('id', filaBodega.id);
+    } else {
+      await supabase.from('inventario_bodega').insert({
         producto_id: linea.productoId,
-        cantidad: linea.cantidad,
+        cantidad_actual: linea.cantidad,
+        cantidad_minima: 0,
         precio_costo: linea.costo,
-        notas: notas || null,
-        registrado_por: usuario?.id || null,
+        proveedor_id: proveedorId,
       });
     }
 
-    const proveedorNombre = (proveedores || []).find((p) => p.id === proveedorId)?.nombre_comercial;
-    const descripcion = [
-      proveedorNombre ? `Proveedor: ${proveedorNombre}` : null,
-      `Productos: ${lineas.map((l) => `${l.nombre} (${l.cantidad})`).join(', ')}`,
-      notas || null,
-    ]
-      .filter(Boolean)
-      .join(' — ');
-
-    const { error: errCaja } = await supabase.from('caja_movimientos').insert({
-      turno_id: turno.id,
-      tipo: 'egreso',
-      categoria: 'Compras',
-      monto: totalCompra,
-      metodo_pago: metodoPago,
-      descripcion,
+    await supabase.from('inventario_movimientos').insert({
+      tipo: 'compra_bodega',
+      producto_id: linea.productoId,
+      cantidad: linea.cantidad,
+      precio_costo: linea.costo,
+      proveedor_id: proveedorId,
       registrado_por: usuario?.id || null,
+      grupo_compra: compra.grupo_compra,
     });
+  }
 
-    if (errCaja) {
-      mostrarToast(`La compra quedó registrada en bodega, pero hubo un error registrando el pago en Caja: ${errCaja.message}`, 'error');
-    } else {
-      mostrarToast(`Compra registrada: ${formatCOP(totalCompra)} pagados desde ${metodoPago}.`, 'exito');
-    }
+  const descripcion = [proveedorNombre ? `Proveedor: ${proveedorNombre}` : null, `Productos: ${lineasNuevas.map((l) => `${l.nombre} (${l.cantidad})`).join(', ')}`]
+    .filter(Boolean)
+    .join(' — ');
 
-    document.dispatchEvent(new CustomEvent('inventario:actualizado'));
-    const wrapBodega = document.querySelector('#inv-bodega-wrap');
-    if (wrapBodega) await cargarInventarioBodega(wrapBodega);
-    const wrapMov = document.querySelector('#inv-movimientos-wrap');
-    if (wrapMov) await cargarMovimientos(wrapMov);
-    await cargarSeccionCompras(elemento);
+  await supabase.from('caja_movimientos').update({ monto: totalCompra, metodo_pago: metodoPago, descripcion }).eq('id', compra.id);
+}
+
+async function abrirModalEditarCompra(compra, elementoSeccionCompras) {
+  const [{ data: productos }, { data: proveedores }, { data: lineasDb, error: errLineas }] = await Promise.all([
+    supabase.from('minibar_productos').select('id, nombre, categoria').order('categoria').order('nombre'),
+    supabase.from('proveedores').select('id, nombre_comercial').eq('activo', true).order('nombre_comercial'),
+    supabase.from('inventario_movimientos').select('*').eq('grupo_compra', compra.grupo_compra).eq('tipo', 'compra_bodega'),
+  ]);
+
+  if (errLineas) {
+    mostrarToast(`Error cargando la compra: ${errLineas.message}`, 'error');
+    return;
+  }
+  if (!lineasDb || lineasDb.length === 0) {
+    mostrarToast('No se encontraron los productos de esta compra (puede ser de antes de este cambio).', 'error');
+    return;
+  }
+
+  const categorias = [...new Set((productos || []).map((p) => p.categoria))];
+  const proveedorIdOriginal = lineasDb[0].proveedor_id || null;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja modal-caja-ancha">
+      <h3>✏️ Editar compra</h3>
+      <div style="${estiloContenidoAcento(ACENTO_COMPRA_PRODUCTOS)} margin:0.75rem 0 1rem;">
+        <h4 style="margin:0 0 0.75rem; color:${ACENTO_COMPRA_PRODUCTOS.texto};">📦 Productos</h4>
+        <div id="lineas-editar-compra-wrap"></div>
+        <button type="button" id="btn-agregar-linea-editar-compra" class="btn btn-secundario btn-chico">+ Agregar producto</button>
+      </div>
+      <div style="${estiloContenidoAcento(ACENTO_COMPRA_PAGO)} margin-bottom:1.25rem;">
+        <h4 style="margin:0 0 0.75rem; color:${ACENTO_COMPRA_PAGO.texto};">💳 Pago</h4>
+        <div class="form-grid">
+          <label>Proveedor <span class="mensaje-vacio" style="font-size:0.7rem;">(opcional)</span>
+            <select id="select-proveedor-editar-compra">
+              <option value="">— Sin asignar —</option>
+              ${(proveedores || []).map((p) => `<option value="${p.id}" ${proveedorIdOriginal === p.id ? 'selected' : ''}>${escaparHTML(p.nombre_comercial)}</option>`).join('')}
+            </select>
+          </label>
+          <label>Pagado desde
+            <select id="select-metodo-editar-compra" required>
+              ${METODOS_PAGO.map((m) => `<option value="${m}" ${compra.metodo_pago === m ? 'selected' : ''}>${m}</option>`).join('')}
+            </select>
+          </label>
+        </div>
+      </div>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+        <div><span class="texto-ayuda">Total a pagar</span><br /><strong id="total-editar-compra-vista" style="font-size:1.3rem;">${formatCOP(0)}</strong></div>
+        <div style="display:flex; gap:0.5rem;">
+          <button type="button" class="btn btn-secundario" id="btn-cancelar-editar-compra">Cancelar</button>
+          <button type="button" class="btn btn-primario" id="btn-continuar-editar-compra">Continuar</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#btn-cancelar-editar-compra').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  const editorLineas = construirEditorLineasCompra({
+    wrapLineas: overlay.querySelector('#lineas-editar-compra-wrap'),
+    btnAgregar: overlay.querySelector('#btn-agregar-linea-editar-compra'),
+    elTotal: overlay.querySelector('#total-editar-compra-vista'),
+    productos: productos || [],
+    categorias,
+    lineasIniciales: lineasDb.map((l) => ({ producto_id: l.producto_id, cantidad: l.cantidad, precio_costo: l.precio_costo })),
+    onNuevoProducto: (onCreado, onCancelar) => {
+      abrirModalProductoNuevo(categorias, { onCreado, onCancelar });
+    },
+  });
+
+  overlay.querySelector('#btn-continuar-editar-compra').addEventListener('click', () => {
+    const lineas = editorLineas.leerLineas();
+    if (!lineas) return;
+
+    const selectProv = overlay.querySelector('#select-proveedor-editar-compra');
+    const proveedorId = selectProv.value ? Number(selectProv.value) : null;
+    const proveedorNombre = (proveedores || []).find((p) => p.id === proveedorId)?.nombre_comercial || null;
+    const metodoPago = overlay.querySelector('#select-metodo-editar-compra').value;
+
+    overlay.remove();
+
+    abrirModalResumenCompra({
+      lineas,
+      proveedorNombre,
+      metodoPago,
+      textoConfirmar: '✅ Guardar cambios',
+      onConfirmar: async () => {
+        await guardarEdicionCompra({ compra, lineasAnteriores: lineasDb, lineasNuevas: lineas, proveedorId, proveedorNombre, metodoPago });
+        mostrarToast('Compra actualizada.', 'exito');
+        document.dispatchEvent(new CustomEvent('inventario:actualizado'));
+        const wrapBodega = document.querySelector('#inv-bodega-wrap');
+        if (wrapBodega) await cargarInventarioBodega(wrapBodega);
+        const wrapMov = document.querySelector('#inv-movimientos-wrap');
+        if (wrapMov) await cargarMovimientos(wrapMov);
+        await cargarSeccionCompras(elementoSeccionCompras);
+      },
+    });
   });
 }
 
