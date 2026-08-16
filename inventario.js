@@ -139,6 +139,18 @@
 //     demás tipos de movimiento no tienen este botón todavía (revertir
 //     un reabastecimiento o un consumo es más delicado, toca más de una
 //     tabla o afecta a una habitación específica).
+//
+// Nota (130): dos ajustes más.
+//  1. Los CSV que se descargan ("⬇ Excel", en Bodega y en Pendientes de
+//     reponer) ahora separan columnas con punto y coma (;) en vez de
+//     coma — con la configuración regional en español de Excel en
+//     Colombia, la coma es el separador decimal, así que un CSV
+//     separado por comas se abría todo en una sola celda por fila.
+//  2. "Producto nuevo" en Registrar compra ya no aparece como campos
+//     sueltos dentro del mismo formulario — ahora abre una tarjeta
+//     emergente aparte (`abrirModalProductoNuevo`) para crear el
+//     producto; al crearlo, el formulario de compra sigue normal con
+//     ese producto ya seleccionado.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -160,8 +172,12 @@ function escaparHTML(texto) {
   return div.innerHTML;
 }
 
+// Separador ";" (no ",") — con la configuración regional en español que
+// usa Excel en Colombia, la coma es el separador decimal, así que un
+// CSV separado por comas lo abre TODO en una sola celda por fila. Con
+// punto y coma sí separa columna por columna correctamente.
 function descargarCSV(nombreArchivo, filas) {
-  const csv = filas.map((fila) => fila.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const csv = filas.map((fila) => fila.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(';')).join('\n');
   const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const enlace = document.createElement('a');
@@ -491,14 +507,80 @@ function abrirModalDetalleBodega(f, proveedores, elemento, permitido) {
   pintarVista();
 }
 
+// Tarjeta emergente para dar de alta un producto nuevo desde "Registrar
+// compra", sin mezclar los campos en la misma hoja del formulario (ver
+// nota 130 al inicio del archivo). Al crear el producto, llama a
+// onCreado(nuevoProducto); si cancela, llama a onCancelar().
+function abrirModalProductoNuevo(categorias, { onCreado, onCancelar }) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja">
+      <h3>➕ Producto nuevo</h3>
+      <form id="form-producto-nuevo" class="modal-contenido">
+        <div class="form-grid">
+          <label>Nombre del producto
+            <input type="text" name="nombre" required placeholder="Ej: Papas Margarita" />
+          </label>
+          <label>Categoría
+            <input type="text" name="categoria" required list="lista-categorias-producto-nuevo" placeholder="Ej: Snacks" />
+            <datalist id="lista-categorias-producto-nuevo">${categorias.map((c) => `<option value="${escaparHTML(c)}"></option>`).join('')}</datalist>
+          </label>
+        </div>
+        <div class="modal-acciones" style="margin-top:1.25rem;">
+          <button type="button" class="btn btn-secundario" id="btn-cancelar-producto-nuevo">Cancelar</button>
+          <button type="submit" class="btn btn-primario">Crear producto</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  function cerrar(cancelando) {
+    overlay.remove();
+    if (cancelando && onCancelar) onCancelar();
+  }
+
+  overlay.querySelector('#btn-cancelar-producto-nuevo').addEventListener('click', () => cerrar(true));
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) cerrar(true);
+  });
+
+  overlay.querySelector('#form-producto-nuevo').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const nombre = form.get('nombre').trim();
+    const categoria = form.get('categoria').trim();
+    if (!nombre || !categoria) {
+      mostrarToast('Escribe el nombre y la categoría del producto nuevo.', 'error');
+      return;
+    }
+
+    const { data: nuevoProducto, error } = await supabase
+      .from('minibar_productos')
+      .insert({ nombre, categoria, precio: 0, activo: true })
+      .select('id, nombre')
+      .single();
+    if (error) {
+      mostrarToast(`Error creando el producto: ${error.message}`, 'error');
+      return;
+    }
+
+    mostrarToast(`Producto "${nombre}" creado.`, 'exito');
+    overlay.remove();
+    onCreado(nuevoProducto);
+  });
+}
+
 // =========================================================
-// Registrar compra (entrada a bodega) — ver nota 129 al inicio del
+// Registrar compra (entrada a bodega) — ver nota 129/130 al inicio del
 // archivo: sin producto ni cantidad preseleccionados (para que un envío
 // accidental no registre una entrada real por error), y con la opción
-// de dar de alta un producto nuevo sin salir de este formulario.
-// Pensada para UNA entrada rápida a la vez; para comprar VARIOS
-// productos de un tirón usa el módulo "Compras" (orden de compra con
-// varios ítems y seguimiento de proveedor).
+// de dar de alta un producto nuevo en una tarjeta emergente aparte, sin
+// mezclarlo con el resto del formulario. Pensada para UNA entrada
+// rápida a la vez; para comprar VARIOS productos de un tirón usa el
+// módulo "Compras" (orden de compra con varios ítems y seguimiento de
+// proveedor).
 // =========================================================
 async function cargarSeccionCompra(elemento) {
   if (!puedeGestionar()) {
@@ -536,15 +618,6 @@ async function cargarSeccionCompra(elemento) {
               .join('')}
           </select>
         </label>
-        <div id="campos-producto-nuevo" style="display:none;">
-          <label>Nombre del producto nuevo
-            <input type="text" name="nombre_nuevo" placeholder="Ej: Papas Margarita" />
-          </label>
-          <label>Categoría
-            <input type="text" name="categoria_nuevo" list="lista-categorias-compra" placeholder="Ej: Snacks" />
-            <datalist id="lista-categorias-compra">${categorias.map((c) => `<option value="${escaparHTML(c)}"></option>`).join('')}</datalist>
-          </label>
-        </div>
         <label>Cantidad que ingresa
           <input type="number" name="cantidad" min="1" placeholder="Ej: 10" required />
         </label>
@@ -566,34 +639,31 @@ async function cargarSeccionCompra(elemento) {
   `;
 
   const selectProducto = elemento.querySelector('#select-producto-compra');
-  const camposNuevo = elemento.querySelector('#campos-producto-nuevo');
   selectProducto.addEventListener('change', () => {
-    camposNuevo.style.display = selectProducto.value === '__nuevo__' ? 'block' : 'none';
+    if (selectProducto.value !== '__nuevo__') return;
+    abrirModalProductoNuevo(categorias, {
+      onCreado: (nuevoProducto) => {
+        const nuevaOpcion = document.createElement('option');
+        nuevaOpcion.value = String(nuevoProducto.id);
+        nuevaOpcion.textContent = `${nuevoProducto.nombre} (recién creado)`;
+        selectProducto.insertBefore(nuevaOpcion, selectProducto.querySelector('option[value="__nuevo__"]'));
+        selectProducto.value = String(nuevoProducto.id);
+      },
+      onCancelar: () => {
+        selectProducto.value = '';
+      },
+    });
   });
 
   elemento.querySelector('#form-compra').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
     const usuario = getUsuarioActual();
-    let productoId = form.get('producto_id') === '__nuevo__' ? null : Number(form.get('producto_id'));
+    const productoId = Number(form.get('producto_id'));
 
-    if (form.get('producto_id') === '__nuevo__') {
-      const nombreNuevo = (form.get('nombre_nuevo') || '').trim();
-      const categoriaNuevo = (form.get('categoria_nuevo') || '').trim();
-      if (!nombreNuevo || !categoriaNuevo) {
-        mostrarToast('Escribe el nombre y la categoría del producto nuevo.', 'error');
-        return;
-      }
-      const { data: nuevoProducto, error: errNuevo } = await supabase
-        .from('minibar_productos')
-        .insert({ nombre: nombreNuevo, categoria: categoriaNuevo, precio: 0, activo: true })
-        .select('id')
-        .single();
-      if (errNuevo) {
-        mostrarToast(`Error creando el producto: ${errNuevo.message}`, 'error');
-        return;
-      }
-      productoId = nuevoProducto.id;
+    if (!productoId || form.get('producto_id') === '__nuevo__') {
+      mostrarToast('Selecciona un producto (si es nuevo, complétalo en la ventana emergente primero).', 'error');
+      return;
     }
 
     const cantidad = Number(form.get('cantidad'));
