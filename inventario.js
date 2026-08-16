@@ -193,15 +193,12 @@ async function cargarMapaMinibares(elemento) {
     const actual = Number(actualPorClave.get(`${habitacionId}_${producto.id}`) ?? 0);
     const estandar = Number(producto.cantidad_estandar);
     let estilo = ESTILO_COMPLETO;
-    let texto = '✓';
     if (actual <= 0) {
       estilo = ESTILO_FALTA;
-      texto = '✗';
     } else if (actual < estandar) {
       estilo = ESTILO_PARCIAL;
-      texto = `${actual}/${estandar}`;
     }
-    return `<td style="${ESTILO_CELDA_BASE}${estilo}" title="${escaparHTML(producto.nombre)}: ${actual} de ${estandar}">${texto}</td>`;
+    return `<td style="${ESTILO_CELDA_BASE}${estilo}" title="${escaparHTML(producto.nombre)}: ${actual} de ${estandar}">${actual}</td>`;
   }
 
   elemento.innerHTML = `
@@ -210,27 +207,29 @@ async function cargarMapaMinibares(elemento) {
         <h3 style="margin:0;">🗺️ Mapa de minibares</h3>
         <div style="display:flex; gap:1rem; align-items:center; flex-wrap:wrap; font-size:0.85rem;">
           <span><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:#e6f4ea;border:1px solid #1e7e34;margin-right:4px;vertical-align:middle;"></span>Completo</span>
-          <span><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:#fff4d6;border:1px solid #8a5a00;margin-right:4px;vertical-align:middle;"></span>A medias</span>
+          <span><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:#fff4d6;border:1px solid #8a5a00;margin-right:4px;vertical-align:middle;"></span>Reponer</span>
           <span><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--color-alerta-fondo, #fdecea);border:1px solid var(--color-rojo-oscuro, #c0392b);margin-right:4px;vertical-align:middle;"></span>Falta todo</span>
         </div>
       </div>
-      <p class="mensaje-vacio" style="margin-top:-0.2rem;">De un vistazo: qué hay y qué falta en cada minibar, comparado contra el estándar (no incluye habitaciones sin minibar). Para reponer, usa "Pendientes de reponer" más abajo.</p>
+      <p class="mensaje-vacio" style="margin-top:-0.2rem;">De un vistazo: qué hay y qué falta en cada minibar. El número en cada celda es la cantidad actual; "Estándar" es la referencia con la que se compara (no incluye habitaciones sin minibar). Para reponer, usa "Pendientes de reponer" más abajo.</p>
       <div class="tabla-scroll" style="max-height:520px; overflow:auto;">
         <table class="tabla-simple" style="border-collapse:collapse;">
           <thead>
             <tr>
               <th style="${ESTILO_COL_PRODUCTO} z-index:2;">Producto</th>
+              <th style="text-align:center; min-width:70px;">Estándar</th>
               ${(habitaciones || []).map((h) => `<th style="text-align:center; min-width:52px;">${escaparHTML(h.numero)}</th>`).join('')}
             </tr>
           </thead>
           <tbody>
             ${
               (productos || []).length === 0 || (habitaciones || []).length === 0
-                ? `<tr><td colspan="${(habitaciones || []).length + 1}" class="mensaje-vacio">Sin datos suficientes para mostrar el mapa.</td></tr>`
+                ? `<tr><td colspan="${(habitaciones || []).length + 2}" class="mensaje-vacio">Sin datos suficientes para mostrar el mapa.</td></tr>`
                 : (productos || [])
                     .map(
                       (p) => `<tr>
                 <td style="${ESTILO_COL_PRODUCTO}">${escaparHTML(p.nombre)} <span class="mensaje-vacio">(${escaparHTML(p.categoria)})</span></td>
+                <td style="text-align:center; font-weight:700;">${p.cantidad_estandar}</td>
                 ${(habitaciones || []).map((h) => celda(h.id, p)).join('')}
               </tr>`
                     )
