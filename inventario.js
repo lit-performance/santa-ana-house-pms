@@ -185,6 +185,15 @@
 // Inventario, así que separarlas en una pestaña aparte era más
 // navegación de la necesaria. compras.js ya no se registra como módulo
 // propio (ver nota ahí); este archivo solo importa sus dos funciones.
+//
+// Nota (139): las 3 mini-tarjetas de compras (Registrar compra, Nueva
+// orden de compra, Órdenes de compra) se consolidaron en UNA sola:
+// "🛒 Compras" — con dos pestañas internas ("Entrada rápida" / "Nueva
+// orden formal", solo una visible a la vez) y, siempre debajo, el
+// listado de órdenes (lo que sigue naturalmente después de crear una).
+// Esta tarjeta ahora vive bajo su propio subtítulo "Compras" en el
+// tablero, separada visualmente de las tarjetas operativas de
+// Inventario (Mapa, Pendientes, Bodega, etc.) — ver `cargarSeccionCompras`.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -319,9 +328,7 @@ const SECCIONES_INVENTARIO = {
   pendientes: { wrapId: 'inv-pendientes-wrap', cargar: cargarPendientesReponer },
   bodega: { wrapId: 'inv-bodega-wrap', cargar: cargarInventarioBodega },
   'stock-total': { wrapId: 'inv-stock-total-wrap', cargar: cargarStockTotal },
-  compra: { wrapId: 'inv-compra-wrap', cargar: cargarSeccionCompra },
-  'compra-orden': { wrapId: 'inv-orden-nueva-wrap', cargar: cargarFormNuevaOrden },
-  ordenes: { wrapId: 'inv-ordenes-wrap', cargar: cargarListaOrdenes },
+  compras: { wrapId: 'inv-compras-wrap', cargar: cargarSeccionCompras },
   reabastecer: { wrapId: 'inv-reabastecer-wrap', cargar: cargarSeccionReabastecer },
   'reposiciones-hoy': { wrapId: 'inv-reposiciones-hoy-wrap', cargar: cargarReposicionesHoy },
   movimientos: { wrapId: 'inv-movimientos-wrap', cargar: cargarMovimientos },
@@ -402,18 +409,6 @@ async function cargarResumenInventario(elemento) {
       titulo: 'Stock total (bodega + minibares)',
       resumen: `${resumenStockTotal.total} unidad(es) en total`,
     },
-    permitido ? { id: 'compra', icono: '🛒', titulo: 'Registrar compra', resumen: 'Entrada rápida de UN producto a bodega' } : null,
-    permitido
-      ? { id: 'compra-orden', icono: '📝', titulo: 'Nueva orden de compra', resumen: 'Pedido formal con varios productos y proveedor' }
-      : null,
-    permitido
-      ? {
-          id: 'ordenes',
-          icono: '📦',
-          titulo: 'Órdenes de compra',
-          resumen: resumenOrdenes.pendientes > 0 ? `${resumenOrdenes.pendientes} orden(es) en camino o solicitadas` : '✅ Sin órdenes pendientes',
-        }
-      : null,
     permitido ? { id: 'reabastecer', icono: '🔁', titulo: 'Reabastecer habitación', resumen: 'Traslada stock de bodega a una habitación' } : null,
     {
       id: 'reposiciones-hoy',
@@ -429,9 +424,24 @@ async function cargarResumenInventario(elemento) {
     },
   ].filter(Boolean);
 
-  elemento.innerHTML = `
+  // "Compras" queda como grupo aparte, bajo su propio subtítulo — ver
+  // nota 139: antes eran 3 mini-tarjetas sueltas mezcladas con las
+  // operativas de Inventario, ahora es 1 sola.
+  const tarjetasCompras = [
+    permitido
+      ? {
+          id: 'compras',
+          icono: '🛒',
+          titulo: 'Compras',
+          resumen: resumenOrdenes.pendientes > 0 ? `${resumenOrdenes.pendientes} orden(es) en camino o solicitadas` : '✅ Sin órdenes pendientes',
+        }
+      : null,
+  ].filter(Boolean);
+
+  function pintarGrid(lista) {
+    return `
     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:1rem;">
-      ${tarjetas
+      ${lista
         .map(
           (t) => `
         <div class="tarjeta" style="${t.alerta ? 'border:1.5px solid #f0a8a0; background:var(--color-alerta-fondo, #fdecea);' : ''}">
@@ -443,6 +453,12 @@ async function cargarResumenInventario(elemento) {
         )
         .join('')}
     </div>
+  `;
+  }
+
+  elemento.innerHTML = `
+    ${pintarGrid(tarjetas)}
+    ${tarjetasCompras.length > 0 ? `<h3 style="margin:1.5rem 0 0.75rem;">Compras</h3>${pintarGrid(tarjetasCompras)}` : ''}
   `;
 
   elemento.querySelectorAll('.btn-ver-seccion').forEach((btn) => {
@@ -997,8 +1013,8 @@ function abrirModalProductoNuevo(categorias, { onCreado, onCancelar }) {
 // de dar de alta un producto nuevo en una tarjeta emergente aparte, sin
 // mezclarlo con el resto del formulario. Pensada para UNA entrada
 // rápida a la vez; para comprar VARIOS productos de un tirón usa la
-// tarjeta "📝 Nueva orden de compra" (pedido con varios ítems y
-// seguimiento de proveedor, ver compras.js).
+// pestaña "Nueva orden formal" de la tarjeta "🛒 Compras" (ver nota 139
+// y `cargarSeccionCompras` más abajo).
 // =========================================================
 async function cargarSeccionCompra(elemento) {
   if (!puedeGestionar()) {
@@ -1014,9 +1030,7 @@ async function cargarSeccionCompra(elemento) {
   const categorias = [...new Set((productos || []).map((p) => p.categoria))];
 
   elemento.innerHTML = `
-    <div class="tarjeta">
-      <h3>Registrar compra (entrada a bodega)</h3>
-      <p class="texto-ayuda">Para UN producto a la vez. ¿Vas a comprar varios productos juntos? Usa la tarjeta <strong>"📝 Nueva orden de compra"</strong> del tablero de Inventario (pedido con varios ítems y proveedor).</p>
+      <p class="texto-ayuda">Para UN producto a la vez.</p>
       <form id="form-compra" class="form-grid">
         <label>Producto
           <select name="producto_id" id="select-producto-compra" required>
@@ -1053,7 +1067,6 @@ async function cargarSeccionCompra(elemento) {
         </label>
         <button type="submit" class="btn btn-primario">+ Registrar entrada</button>
       </form>
-    </div>
   `;
 
   const selectProducto = elemento.querySelector('#select-producto-compra');
@@ -1132,9 +1145,57 @@ async function cargarSeccionCompra(elemento) {
     if (wrapBodega) await cargarInventarioBodega(wrapBodega);
     const wrapMov = document.querySelector('#inv-movimientos-wrap');
     if (wrapMov) await cargarMovimientos(wrapMov);
-    const wrapCompra = document.querySelector('#inv-compra-wrap');
-    if (wrapCompra) await cargarSeccionCompra(wrapCompra);
+    await cargarSeccionCompra(elemento);
   });
+}
+
+// =========================================================
+// Compras (139): una sola tarjeta que agrupa lo que antes eran 3
+// mini-tarjetas sueltas — "Entrada rápida" (1 producto,
+// `cargarSeccionCompra`) y "Nueva orden formal" (varios productos +
+// proveedor, `cargarFormNuevaOrden` de compras.js) comparten esta
+// tarjeta como dos pestañas internas (solo una visible a la vez);
+// debajo, siempre visible, el listado de "Órdenes de compra"
+// (`cargarListaOrdenes` de compras.js) — es lo que sigue naturalmente
+// después de crear una orden formal.
+// =========================================================
+async function cargarSeccionCompras(elemento) {
+  if (!puedeGestionar()) {
+    elemento.innerHTML = '<p class="mensaje-vacio">No tienes permiso para gestionar compras.</p>';
+    return;
+  }
+
+  elemento.innerHTML = `
+    <div class="tarjeta">
+      <h3 style="margin-top:0;">🛒 Compras</h3>
+      <div class="acciones-tarjeta" style="margin-top:0; margin-bottom:0.75rem;">
+        <button type="button" class="btn btn-primario btn-chico btn-tab-compra" data-tab="rapida">Entrada rápida (1 producto)</button>
+        <button type="button" class="btn btn-secundario btn-chico btn-tab-compra" data-tab="orden">Nueva orden formal (varios productos)</button>
+      </div>
+      <div id="compras-form-wrap" style="margin-bottom:1.5rem;"></div>
+      <hr style="border:none; border-top:1px solid var(--color-borde); margin:1rem 0;" />
+      <div id="compras-lista-wrap"><p class="mensaje-vacio">Cargando…</p></div>
+    </div>
+  `;
+
+  const wrapForm = elemento.querySelector('#compras-form-wrap');
+  const wrapLista = elemento.querySelector('#compras-lista-wrap');
+  const botonesTab = elemento.querySelectorAll('.btn-tab-compra');
+
+  function activarTab(tab) {
+    botonesTab.forEach((b) => {
+      const activo = b.dataset.tab === tab;
+      b.classList.toggle('btn-primario', activo);
+      b.classList.toggle('btn-secundario', !activo);
+    });
+    if (tab === 'rapida') cargarSeccionCompra(wrapForm);
+    else cargarFormNuevaOrden(wrapForm);
+  }
+
+  botonesTab.forEach((b) => b.addEventListener('click', () => activarTab(b.dataset.tab)));
+  activarTab('rapida');
+
+  await cargarListaOrdenes(wrapLista);
 }
 
 // =========================================================
