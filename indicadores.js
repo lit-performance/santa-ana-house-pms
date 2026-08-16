@@ -11,14 +11,9 @@
 //   3. "💼 Saldos por cuenta" — el saldo acumulado histórico de cada medio
 //      de pago (Efectivo, Nequi, etc.), reutilizando calcularSaldosPorCuenta()
 //      de caja.js (no se duplica el cálculo — ver ARCHITECTURE.md).
-//   4. "🔁 Huéspedes recurrentes" — huéspedes con 2 o más estadías,
-//      histórico completo (no cambia con el rango de fechas de abajo).
-//   5. El reporte por rango de fechas que ya existía (día/semana/mes),
-//      ahora con tres secciones nuevas al final: cierres de caja del
-//      rango, rotación de inventario de minibar y habitaciones más
-//      apetecidas (por noches ocupadas, no por ingresos — para eso ya
-//      está el ranking de Estadísticas).
-//   6. El listado de Checkouts que ya existía — cada fila tiene "Ver
+//   4. El reporte por rango de fechas que ya existía (día/semana/mes), con
+//      la rotación de inventario de minibar al final.
+//   5. El listado de Checkouts que ya existía — cada fila tiene "Ver
 //      resumen" (abre la tarjeta completa) y "⬇ PDF" (descarga directa
 //      del PDF sin pasar por el modal, para volver a bajar un checkout ya
 //      hecho con un solo clic).
@@ -37,6 +32,17 @@
 // Todas las gráficas de barras son CSS puro (mismo patrón que
 // estadisticas.js) — sin librerías externas, para no depender de internet
 // el día de la demo.
+//
+// Nota (159): a pedido de Elssy se dejaron solo 8 mini-tarjetas/bloques
+// en este dashboard. Se quitaron tres bloques que existían antes:
+// "🔁 Huéspedes recurrentes" (con su propia función cargarHuespedesRecurrentes,
+// eliminada), "🔒 Cierres de caja del rango" (dentro de generarReporte,
+// junto con la función obtenerNombresUsuarios que solo servía para eso) y
+// "🛏️ Habitaciones más apetecidas" (también dentro de generarReporte). El
+// resto del cálculo (ocupación, ingresos por período, rotación de
+// minibar, checkouts) sigue exactamente igual. Si se quiere recuperar
+// alguno de los tres bloques quitados, están completos en el historial de
+// versiones del repo (ver el archivo indicadores.js anterior a este).
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -53,13 +59,6 @@ function escaparHTML(texto) {
   const div = document.createElement('div');
   div.textContent = texto || '';
   return div.innerHTML;
-}
-
-async function obtenerNombresUsuarios(ids) {
-  const idsUnicos = [...new Set((ids || []).filter(Boolean))];
-  if (idsUnicos.length === 0) return new Map();
-  const { data } = await supabase.from('usuarios').select('id, nombre').in('id', idsUnicos);
-  return new Map((data || []).map((u) => [u.id, u.nombre]));
 }
 
 function graficaBarras({ titulo, items, formatoValor, colorBarra }) {
@@ -128,12 +127,8 @@ async function render(container) {
       <p class="mensaje-vacio">Cargando…</p>
     </div>
 
-    <div id="panel-saldos-wrap" style="margin-bottom:1.25rem;">
+    <div id="panel-saldos-wrap" style="margin-bottom:1.5rem;">
       <p class="mensaje-vacio">Cargando saldos por cuenta…</p>
-    </div>
-
-    <div id="panel-recurrentes-wrap" style="margin-bottom:1.5rem;">
-      <p class="mensaje-vacio">Cargando huéspedes recurrentes…</p>
     </div>
 
     <div class="tarjeta">
@@ -179,7 +174,6 @@ async function render(container) {
   await Promise.all([
     cargarPanelPropietario(container),
     cargarSaldosCuentas(container),
-    cargarHuespedesRecurrentes(container),
     generarReporte(container, inicioDefault, hoyISO, 'dia'),
     cargarCheckouts(container, inicioDefault, hoyISO),
   ]);
@@ -349,75 +343,6 @@ async function cargarSaldosCuentas(container) {
 }
 
 // =========================================================
-// 3) Huéspedes recurrentes (histórico completo)
-// =========================================================
-async function cargarHuespedesRecurrentes(container) {
-  const wrap = container.querySelector('#panel-recurrentes-wrap');
-
-  const { data: reservas, error } = await supabase
-    .from('reservas')
-    .select('huesped_documento, huesped_nombre, fecha_checkin, monto_total, estado');
-
-  if (error) {
-    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando huéspedes recurrentes: ${error.message}</p>`;
-    return;
-  }
-
-  const activas = (reservas || []).filter((r) => !ESTADOS_NO_OCUPAN.includes(r.estado) && r.huesped_documento);
-  const porDocumento = new Map();
-  activas.forEach((r) => {
-    if (!porDocumento.has(r.huesped_documento)) {
-      porDocumento.set(r.huesped_documento, { nombre: r.huesped_nombre, visitas: 0, gastoTotal: 0, ultimaVisita: null });
-    }
-    const info = porDocumento.get(r.huesped_documento);
-    info.visitas += 1;
-    info.gastoTotal += Number(r.monto_total || 0);
-    info.nombre = r.huesped_nombre || info.nombre;
-    if (!info.ultimaVisita || r.fecha_checkin > info.ultimaVisita) info.ultimaVisita = r.fecha_checkin;
-  });
-
-  const recurrentes = Array.from(porDocumento.entries())
-    .filter(([, info]) => info.visitas >= 2)
-    .map(([documento, info]) => ({ documento, ...info }))
-    .sort((a, b) => b.visitas - a.visitas || b.gastoTotal - a.gastoTotal)
-    .slice(0, 10);
-
-  wrap.innerHTML = `
-    <div class="tarjeta">
-      <div class="acciones-tarjeta" style="justify-content:space-between; margin-bottom:0.25rem;">
-        <h3 style="margin:0;">🔁 Huéspedes recurrentes</h3>
-        <span class="stat-card-valor" style="font-size:1.3rem; color:var(--color-verde-oscuro);">${recurrentes.length}</span>
-      </div>
-      <p class="mensaje-vacio" style="margin-top:-0.2rem;">Huéspedes con 2 o más estadías — histórico completo, no cambia con el rango de fechas de abajo.</p>
-      ${
-        recurrentes.length === 0
-          ? '<p class="mensaje-vacio">Todavía no hay huéspedes con más de una estadía.</p>'
-          : `
-        <div class="tabla-scroll">
-          <table class="tabla-simple">
-            <thead><tr><th>Huésped</th><th>Documento</th><th>Visitas</th><th>Última visita</th><th>Gasto total</th></tr></thead>
-            <tbody>
-              ${recurrentes
-                .map(
-                  (r) => `<tr>
-                <td>${escaparHTML(r.nombre)}</td>
-                <td>${escaparHTML(r.documento)}</td>
-                <td style="font-weight:700;">${r.visitas}</td>
-                <td>${r.ultimaVisita ? formatFechaCorta(r.ultimaVisita) : '—'}</td>
-                <td>${formatCOP(r.gastoTotal)}</td>
-              </tr>`
-                )
-                .join('')}
-            </tbody>
-          </table>
-        </div>
-      `
-      }
-    </div>
-  `;
-}
-
-// =========================================================
 // Checkouts del rango (existente) — cada fila tiene "Ver resumen" (abre
 // el modal completo) y "⬇ PDF" (descarga directa sin pasar por el modal).
 // =========================================================
@@ -534,7 +459,6 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
     { data: ventasMostrador, error: errVentas },
     { data: reservas, error: errReservas },
     { data: consumosMinibar, error: errMinibar },
-    { data: cierresCaja, error: errCierres },
   ] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre'),
     supabase.from('reservas_pagos').select('fecha, monto, metodo_pago').gte('fecha', fechaInicioISO).lt('fecha', finExclusivoISO),
@@ -558,16 +482,9 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
       .select('cantidad, monto, creado_en, minibar_productos(nombre)')
       .gte('creado_en', fechaInicioISO)
       .lt('creado_en', finExclusivoISO),
-    supabase
-      .from('caja_turnos')
-      .select('id, cerrado_en, cerrado_por, saldo_esperado, saldo_contado, diferencia')
-      .eq('estado', 'cerrada')
-      .gte('cerrado_en', fechaInicioISO)
-      .lt('cerrado_en', finExclusivoISO)
-      .order('cerrado_en', { ascending: false }),
   ]);
 
-  const error = errHab || errPagos || errMov || errVentas || errReservas || errMinibar || errCierres;
+  const error = errHab || errPagos || errMov || errVentas || errReservas || errMinibar;
   if (error) {
     wrap.innerHTML = `<p class="mensaje-vacio">Error calculando indicadores: ${error.message}</p>`;
     return;
@@ -666,54 +583,6 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
   const capacidadTotalRango = totalHabitaciones * dias.length;
   const ocupacionPromedioRango = capacidadTotalRango > 0 ? (totalNochesOcupadasRango / capacidadTotalRango) * 100 : 0;
 
-  // --- Cierres de caja del rango ---
-  const nombresCierre = await obtenerNombresUsuarios((cierresCaja || []).map((c) => c.cerrado_por));
-  const cierresConDiferencia = (cierresCaja || []).filter((c) => Number(c.diferencia) !== 0).length;
-
-  const bloqueCierres = `
-    <div class="tarjeta">
-      <h3 style="margin-top:0;">🔒 Cierres de caja del rango</h3>
-      <div class="grid-tres-columnas" style="margin-bottom:1rem;">
-        <div class="stat-card stat-card-azul">
-          <div class="stat-card-label">Cierres realizados</div>
-          <div class="stat-card-valor">${(cierresCaja || []).length}</div>
-        </div>
-        <div class="stat-card ${cierresConDiferencia > 0 ? 'stat-card-naranja' : 'stat-card-verde'}">
-          <div class="stat-card-label">Con diferencia</div>
-          <div class="stat-card-valor">${cierresConDiferencia}</div>
-        </div>
-        <div class="stat-card stat-card-verde">
-          <div class="stat-card-label">Sin diferencia</div>
-          <div class="stat-card-valor">${(cierresCaja || []).length - cierresConDiferencia}</div>
-        </div>
-      </div>
-      ${
-        (cierresCaja || []).length === 0
-          ? '<p class="mensaje-vacio">Sin cierres de caja en este rango.</p>'
-          : `
-        <div class="tabla-scroll">
-          <table class="tabla-simple">
-            <thead><tr><th>Cerrado</th><th>Por</th><th>Esperado</th><th>Contado</th><th>Diferencia</th></tr></thead>
-            <tbody>
-              ${cierresCaja
-                .map(
-                  (c) => `<tr>
-                <td>${formatFechaHora(c.cerrado_en)}</td>
-                <td>${escaparHTML(nombresCierre.get(c.cerrado_por) || '—')}</td>
-                <td>${formatCOP(c.saldo_esperado)}</td>
-                <td>${formatCOP(c.saldo_contado)}</td>
-                <td style="font-weight:700; color:${Number(c.diferencia) !== 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'};">${formatCOP(c.diferencia)}</td>
-              </tr>`
-                )
-                .join('')}
-            </tbody>
-          </table>
-        </div>
-      `
-      }
-    </div>
-  `;
-
   // --- Rotación de inventario de minibar (top 8 por unidades consumidas) ---
   const porProductoMinibar = new Map();
   (consumosMinibar || []).forEach((c) => {
@@ -730,24 +599,6 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
     items: topMinibar,
     formatoValor: (v) => `${v}`,
     colorBarra: 'var(--color-pendiente)',
-  });
-
-  // --- Habitaciones más apetecidas (top 8 por noches ocupadas) ---
-  const porHabitacion = new Map();
-  reservasActivas.forEach((r) => {
-    const noches = dias.filter((d) => d >= r.fecha_checkin && d < r.fecha_checkout).length;
-    porHabitacion.set(r.habitacion_id, (porHabitacion.get(r.habitacion_id) || 0) + noches);
-  });
-  const topHabitaciones = (habitacionesRows || [])
-    .map((h) => ({ etiqueta: h.numero, valor: porHabitacion.get(h.id) || 0 }))
-    .sort((a, b) => b.valor - a.valor)
-    .slice(0, 8);
-
-  const bloqueHabitaciones = graficaBarras({
-    titulo: '🛏️ Habitaciones más apetecidas (noches ocupadas)',
-    items: topHabitaciones,
-    formatoValor: (v) => `${v}`,
-    colorBarra: '#6a3fb5',
   });
 
   wrap.innerHTML = `
@@ -802,11 +653,7 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
     </div>
 
     <div style="height:1rem;"></div>
-    ${bloqueCierres}
-    <div style="height:1rem;"></div>
     ${bloqueMinibar}
-    <div style="height:1rem;"></div>
-    ${bloqueHabitaciones}
   `;
 }
 
