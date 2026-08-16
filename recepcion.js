@@ -217,6 +217,7 @@ import { calcularHabitacionesEnUso } from './cuentas.js';
 import { getUsuarioActual } from './auth.js';
 import { ajustarInventarioHabitacion } from './inventario.js';
 import { mostrarResumenCheckout } from './resumen-checkout.js';
+import { abrirModalRegistrarConsumo } from './consumo-minibar.js';
 
 const TIPOS_DOCUMENTO = ['Cédula de ciudadanía', 'Cédula de extranjería', 'Pasaporte', 'Tarjeta de identidad', 'PEP', 'Otro'];
 const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
@@ -490,102 +491,27 @@ async function cargarVistaHoy(container) {
 }
 
 // --- "➕ Consumo": agregar un consumo de mostrador a una habitación
-// ocupada en cualquier momento de la estadía, sin pasar por el checkout. ---
-async function abrirModalAgregarConsumoRapido(container, item) {
+// ocupada en cualquier momento de la estadía, sin pasar por el checkout.
+// Nota (155): usa la misma tarjeta emergente de consumo-minibar.js que
+// Minibar → "Registrar consumo" — ya no es un formulario de una sola
+// línea con producto y cantidad=1 precargados por defecto; ahora permite
+// una o varias líneas, sin nada preseleccionado, y pide confirmar un
+// resumen antes de guardar. ---
+function abrirModalAgregarConsumoRapido(container, item) {
   if (!item.reservaId) {
     mostrarToast('Este check-in no tiene una reserva vinculada; no se puede agregar consumo desde aquí.', 'error');
     return;
   }
 
-  const { data: productos, error: errProductos } = await supabase
-    .from('minibar_productos')
-    .select('*')
-    .eq('activo', true)
-    .order('categoria')
-    .order('nombre');
-
-  if (errProductos) {
-    mostrarToast(`Error cargando productos: ${errProductos.message}`, 'error');
-    return;
-  }
-
-  const categorias = [...new Set((productos || []).map((p) => p.categoria))];
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal-caja">
-      <h3>➕ Agregar consumo</h3>
-      <p class="mensaje-vacio">${escaparHTML(item.huespedNombre)} — ${item.habitacionLabel}</p>
-      <form id="form-agregar-consumo-rapido" class="modal-contenido">
-        <div class="form-grid">
-          <label>Producto
-            <select name="producto_id" required>
-              ${categorias
-                .map(
-                  (cat) => `
-                <optgroup label="${escaparHTML(cat)}">
-                  ${(productos || [])
-                    .filter((p) => p.categoria === cat)
-                    .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)} — ${formatCOP(p.precio)}</option>`)
-                    .join('')}
-                </optgroup>
-              `
-                )
-                .join('')}
-            </select>
-          </label>
-          <label>Cantidad
-            <input type="number" name="cantidad" min="1" value="1" required />
-          </label>
-        </div>
-        <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">Este consumo queda sumado al saldo pendiente de la habitación de una vez, y aparecerá listo en la liquidación del check-out.</p>
-        <div class="modal-acciones" style="margin-top:1rem;">
-          <button type="button" class="btn btn-secundario" id="btn-cancelar-consumo-rapido">Cancelar</button>
-          <button type="submit" class="btn btn-primario">+ Agregar consumo</button>
-        </div>
-      </form>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-
-  overlay.querySelector('#btn-cancelar-consumo-rapido').addEventListener('click', () => overlay.remove());
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-
-  overlay.querySelector('#form-agregar-consumo-rapido').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const form = new FormData(e.target);
-    const productoId = Number(form.get('producto_id'));
-    const cantidad = Number(form.get('cantidad')) || 1;
-    const producto = (productos || []).find((p) => p.id === productoId);
-    if (!producto) return;
-
-    const usuario = getUsuarioActual();
-    const { error: errInsert } = await supabase.from('minibar_consumos').insert({
-      reserva_id: item.reservaId,
-      habitacion_id: item.habitacionId,
-      producto_id: productoId,
-      cantidad,
-      precio_unitario: producto.precio,
-      monto: producto.precio * cantidad,
-      registrado_por: usuario?.id || null,
-    });
-    if (errInsert) {
-      mostrarToast(`Error agregando el consumo: ${errInsert.message}`, 'error');
-      return;
-    }
-
-    try {
-      await ajustarInventarioHabitacion(item.habitacionId, productoId, -cantidad, usuario?.id || null, 'consumo');
-    } catch (errInv) {
-      mostrarToast('Consumo agregado, pero no se pudo actualizar el inventario de la habitación.', 'error');
-    }
-
-    mostrarToast(`Consumo agregado a ${item.habitacionLabel}.`, 'exito');
-    overlay.remove();
-    await vistaLista(container);
+  abrirModalRegistrarConsumo({
+    habitacionId: item.habitacionId,
+    reservaId: item.reservaId,
+    habitacionLabel: item.habitacionLabel,
+    huespedNombre: item.huespedNombre,
+    onGuardado: async () => {
+      mostrarToast(`Consumo agregado a ${item.habitacionLabel}.`, 'exito');
+      await vistaLista(container);
+    },
   });
 }
 
