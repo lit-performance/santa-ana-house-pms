@@ -62,6 +62,23 @@
 // de la bodega principal, que ya está donde debe estar. Muestra TODOS
 // los productos activos del catálogo (no solo los que ya tengan fila en
 // inventario_habitacion), igual que "Pendientes de reponer".
+//
+// Nota sobre "tiene_minibar" (ver 109/111): las habitaciones 301 y 303
+// son de uso administrativo y no tienen minibar — "Pendientes de
+// reponer", "Reabastecer habitación", el selector de "Inventario por
+// habitación" y el nuevo "Mapa de minibares" de abajo YA NO las
+// incluyen, filtrando siempre por `tiene_minibar = true`. Si en el
+// futuro se habilita el minibar en alguna de esas habitaciones, basta
+// con marcar la casilla correspondiente en Configuración → Habitaciones.
+//
+// Nota sobre "🗺️ Mapa de minibares" (nuevo, 111): vista de cuadrícula —
+// un producto por fila, una habitación por columna — inspirada en el
+// Excel de conteo físico que se usaba en papel, pero con números reales
+// en vez de solo ✓/X. Verde = completo, ámbar = a medias (muestra
+// "actual/estándar"), rojo = no queda nada. Pensada para verse todo el
+// panorama de un vistazo, sin tener que ir producto por producto o
+// habitación por habitación; "Pendientes de reponer" (más abajo) sigue
+// siendo la vista de trabajo para efectivamente reponer.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -99,6 +116,9 @@ function descargarCSV(nombreArchivo, filas) {
 async function render(container) {
   container.innerHTML = `
     <h2>Inventario</h2>
+    <div id="inv-mapa-wrap" style="margin-bottom:1.5rem;">
+      <p class="mensaje-vacio">Cargando mapa de minibares…</p>
+    </div>
     <div id="inv-pendientes-wrap" style="margin-bottom:1.5rem;">
       <p class="mensaje-vacio">Calculando pendientes de reponer…</p>
     </div>
@@ -118,6 +138,7 @@ async function render(container) {
     </div>
   `;
   await Promise.all([
+    cargarMapaMinibares(container.querySelector('#inv-mapa-wrap')),
     cargarPendientesReponer(container.querySelector('#inv-pendientes-wrap')),
     cargarInventarioBodega(container.querySelector('#inv-bodega-wrap')),
     cargarSeccionCompra(container.querySelector('#inv-compra-wrap')),
@@ -126,6 +147,87 @@ async function render(container) {
     cargarInventarioHabitacion(container.querySelector('#inv-habitacion-wrap')),
     cargarMovimientos(container.querySelector('#inv-movimientos-wrap')),
   ]);
+}
+
+// =========================================================
+// Mapa de minibares — cuadrícula producto × habitación (ver nota al
+// inicio del archivo, 111). Solo lectura; para reponer, usar la tabla
+// "Pendientes de reponer" o "Inventario por habitación" de más abajo.
+// =========================================================
+async function cargarMapaMinibares(elemento) {
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando mapa de minibares…</p>';
+
+  const [{ data: habitaciones, error: errHab }, { data: productos, error: errProd }, { data: filas, error: errFilas }] = await Promise.all([
+    supabase.from('habitaciones').select('id, numero, nombre').eq('tiene_minibar', true).order('numero'),
+    supabase.from('minibar_productos').select('id, nombre, categoria, cantidad_estandar').eq('activo', true).gt('cantidad_estandar', 0).order('categoria').order('nombre'),
+    supabase.from('inventario_habitacion').select('habitacion_id, producto_id, cantidad_actual'),
+  ]);
+
+  if (errHab || errProd || errFilas) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando el mapa de minibares: ${(errHab || errProd || errFilas).message}</p>`;
+    return;
+  }
+
+  const actualPorClave = new Map((filas || []).map((f) => [`${f.habitacion_id}_${f.producto_id}`, f.cantidad_actual]));
+
+  const ESTILO_COMPLETO = 'background:#e6f4ea; color:#1e7e34;';
+  const ESTILO_PARCIAL = 'background:#fff4d6; color:#8a5a00;';
+  const ESTILO_FALTA = 'background:var(--color-alerta-fondo, #fdecea); color:var(--color-rojo-oscuro, #c0392b);';
+  const ESTILO_CELDA_BASE = 'text-align:center; min-width:52px; font-weight:700; padding:0.4rem 0.3rem;';
+  const ESTILO_COL_PRODUCTO = 'position:sticky; left:0; background:var(--color-fondo-tarjeta, #fff); text-align:left; min-width:200px; z-index:1;';
+
+  function celda(habitacionId, producto) {
+    const actual = Number(actualPorClave.get(`${habitacionId}_${producto.id}`) ?? 0);
+    const estandar = Number(producto.cantidad_estandar);
+    let estilo = ESTILO_COMPLETO;
+    let texto = '✓';
+    if (actual <= 0) {
+      estilo = ESTILO_FALTA;
+      texto = '✗';
+    } else if (actual < estandar) {
+      estilo = ESTILO_PARCIAL;
+      texto = `${actual}/${estandar}`;
+    }
+    return `<td style="${ESTILO_CELDA_BASE}${estilo}" title="${escaparHTML(producto.nombre)}: ${actual} de ${estandar}">${texto}</td>`;
+  }
+
+  elemento.innerHTML = `
+    <div class="tarjeta">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.25rem; flex-wrap:wrap;">
+        <h3 style="margin:0;">🗺️ Mapa de minibares</h3>
+        <div style="display:flex; gap:1rem; align-items:center; flex-wrap:wrap; font-size:0.85rem;">
+          <span><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:#e6f4ea;border:1px solid #1e7e34;margin-right:4px;vertical-align:middle;"></span>Completo</span>
+          <span><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:#fff4d6;border:1px solid #8a5a00;margin-right:4px;vertical-align:middle;"></span>A medias</span>
+          <span><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--color-alerta-fondo, #fdecea);border:1px solid var(--color-rojo-oscuro, #c0392b);margin-right:4px;vertical-align:middle;"></span>Falta todo</span>
+        </div>
+      </div>
+      <p class="mensaje-vacio" style="margin-top:-0.2rem;">De un vistazo: qué hay y qué falta en cada minibar, comparado contra el estándar (no incluye 301/303, sin minibar). Para reponer, usa "Pendientes de reponer" más abajo.</p>
+      <div class="tabla-scroll" style="max-height:520px; overflow:auto;">
+        <table class="tabla-simple" style="border-collapse:collapse;">
+          <thead>
+            <tr>
+              <th style="${ESTILO_COL_PRODUCTO} z-index:2;">Producto</th>
+              ${(habitaciones || []).map((h) => `<th style="text-align:center; min-width:52px;">${escaparHTML(h.numero)}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              (productos || []).length === 0 || (habitaciones || []).length === 0
+                ? `<tr><td colspan="${(habitaciones || []).length + 1}" class="mensaje-vacio">Sin datos suficientes para mostrar el mapa.</td></tr>`
+                : (productos || [])
+                    .map(
+                      (p) => `<tr>
+                <td style="${ESTILO_COL_PRODUCTO}">${escaparHTML(p.nombre)} <span class="mensaje-vacio">(${escaparHTML(p.categoria)})</span></td>
+                ${(habitaciones || []).map((h) => celda(h.id, p)).join('')}
+              </tr>`
+                    )
+                    .join('')
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 // =========================================================
@@ -461,10 +563,12 @@ async function reponerCantidadParcial(habitacionId, productoId, cantidadDeseada)
   return { trasladado: aTrasladar };
 }
 
-// Refresca todas las secciones que dependen del stock (bodega, pendientes
-// de reponer, inventario por habitación, reposiciones de hoy y el log de
-// movimientos) después de cualquier traslado bodega → habitación.
+// Refresca todas las secciones que dependen del stock (mapa, bodega,
+// pendientes de reponer, inventario por habitación, reposiciones de hoy
+// y el log de movimientos) después de cualquier traslado bodega → habitación.
 async function refrescarTrasReabastecer() {
+  const wrapMapa = document.querySelector('#inv-mapa-wrap');
+  if (wrapMapa) await cargarMapaMinibares(wrapMapa);
   const wrapPendientes = document.querySelector('#inv-pendientes-wrap');
   if (wrapPendientes) await cargarPendientesReponer(wrapPendientes);
   const wrapBodega = document.querySelector('#inv-bodega-wrap');
@@ -487,7 +591,7 @@ async function cargarSeccionReabastecer(elemento) {
   }
 
   const [{ data: habitaciones }, { data: productos }] = await Promise.all([
-    supabase.from('habitaciones').select('id, numero, nombre').order('numero'),
+    supabase.from('habitaciones').select('id, numero, nombre').eq('tiene_minibar', true).order('numero'),
     supabase.from('minibar_productos').select('id, nombre, categoria').order('categoria').order('nombre'),
   ]);
 
@@ -580,14 +684,15 @@ export async function ajustarInventarioHabitacion(habitacionId, productoId, delt
 
 // =========================================================
 // Pendientes de reponer — vista consolidada de TODAS las habitaciones
-// (ver nota al inicio del archivo), con exportar a Excel y "Reponer todo".
+// con minibar (ver nota al inicio del archivo), con exportar a Excel y
+// "Reponer todo".
 // =========================================================
 async function cargarPendientesReponer(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Calculando pendientes de reponer…</p>';
   const permitido = puedeGestionar();
 
   const [{ data: habitaciones, error: errHab }, { data: productos, error: errProd }, { data: filas, error: errFilas }] = await Promise.all([
-    supabase.from('habitaciones').select('id, numero, nombre').order('numero'),
+    supabase.from('habitaciones').select('id, numero, nombre').eq('tiene_minibar', true).order('numero'),
     supabase.from('minibar_productos').select('id, nombre, categoria, cantidad_estandar').eq('activo', true).gt('cantidad_estandar', 0),
     supabase.from('inventario_habitacion').select('habitacion_id, producto_id, cantidad_actual'),
   ]);
@@ -830,12 +935,13 @@ async function cargarReposicionesHoy(elemento) {
 
 // =========================================================
 // Inventario por habitación (ver 096: "Actual" es editable directo,
-// sin tocar bodega — ver nota al inicio del archivo).
+// sin tocar bodega — ver nota al inicio del archivo). Solo muestra
+// habitaciones con minibar habilitado (ver 109/111).
 // =========================================================
 async function cargarInventarioHabitacion(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
 
-  const { data: habitaciones, error: errHab } = await supabase.from('habitaciones').select('id, numero, nombre').order('numero');
+  const { data: habitaciones, error: errHab } = await supabase.from('habitaciones').select('id, numero, nombre').eq('tiene_minibar', true).order('numero');
   if (errHab) {
     elemento.innerHTML = `<p class="mensaje-vacio">Error cargando habitaciones: ${errHab.message}</p>`;
     return;
@@ -950,6 +1056,8 @@ async function cargarInventarioHabitacion(elemento) {
         mostrarToast('Conteo de la habitación actualizado (no se tocó la bodega).', 'exito');
         await pintarDetalle(habitacionId);
 
+        const wrapMapa = document.querySelector('#inv-mapa-wrap');
+        if (wrapMapa) await cargarMapaMinibares(wrapMapa);
         const wrapPendientes = document.querySelector('#inv-pendientes-wrap');
         if (wrapPendientes) await cargarPendientesReponer(wrapPendientes);
         const wrapMov = document.querySelector('#inv-movimientos-wrap');
@@ -962,7 +1070,7 @@ async function cargarInventarioHabitacion(elemento) {
     await pintarDetalle(habitaciones[0].id);
     select.addEventListener('change', () => pintarDetalle(Number(select.value)));
   } else {
-    detalle.innerHTML = '<p class="mensaje-vacio">No hay habitaciones registradas.</p>';
+    detalle.innerHTML = '<p class="mensaje-vacio">No hay habitaciones con minibar habilitado.</p>';
   }
 }
 
