@@ -5,6 +5,14 @@
 // "Tarifas" viven en config-tipos.js y config-tarifas.js (prefijo "config-"
 // para que, al quedar todos los archivos sueltos en la raíz del repo, sea
 // obvio qué módulo agrupa a cuáles).
+//
+// Nota sobre "Minibar" (nueva columna/casilla, ver 112): algunas
+// habitaciones (ej. 301 y 303, de uso administrativo) no tienen minibar.
+// La casilla "Tiene minibar" controla la columna `tiene_minibar` de
+// `habitaciones`, que el módulo Inventario usa para excluirlas de
+// "Pendientes de reponer", "Reabastecer habitación", "Inventario por
+// habitación" y el "Mapa de minibares" — así no aparecen eternamente como
+// si les faltara todo el stock.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -62,6 +70,7 @@ async function cargarTabla(container) {
           <th>Tarifa</th>
           <th>Precio base</th>
           <th>Estado</th>
+          <th>Minibar</th>
           <th></th>
         </tr>
       </thead>
@@ -79,6 +88,7 @@ async function cargarTabla(container) {
                 <td>${tarifa ? tarifa.codigo : '—'}</td>
                 <td>${tarifa ? formatCOP(tarifa.precio_temporada_baja) : '—'}</td>
                 <td>${badgeEstadoHabitacion(h.estado)}</td>
+                <td>${h.tiene_minibar === false ? '— Sin minibar' : '✅ Sí'}</td>
                 <td><button type="button" class="btn-editar btn-editar-habitacion">Editar</button></td>
               </tr>
             `;
@@ -144,7 +154,12 @@ async function abrirModalHabitacion(habitacion) {
                 .join('')}
             </select>
           </label>
+          <label style="display:flex; align-items:center; gap:0.5rem; flex-direction:row;">
+            <input type="checkbox" name="tiene_minibar" style="width:auto;" ${!editando || habitacion.tiene_minibar !== false ? 'checked' : ''} />
+            Tiene minibar
+          </label>
         </div>
+        <p class="mensaje-vacio" style="margin-top:0.25rem;">Desmárcala para habitaciones de uso administrativo (ej. 301, 303) — dejan de aparecer en Inventario → Pendientes de reponer, Reabastecer y el Mapa de minibares.</p>
         <div class="modal-acciones" style="margin-top:1.25rem;">
           <button type="button" class="btn btn-secundario" id="btn-cancelar-habitacion">Cancelar</button>
           <button type="submit" class="btn btn-primario">${editando ? 'Guardar cambios' : 'Crear habitación'}</button>
@@ -170,6 +185,7 @@ async function abrirModalHabitacion(habitacion) {
       tipo_id: form.get('tipo_id') ? Number(form.get('tipo_id')) : null,
       tarifa_id: form.get('tarifa_id') ? Number(form.get('tarifa_id')) : null,
       estado: form.get('estado'),
+      tiene_minibar: form.get('tiene_minibar') === 'on',
     };
 
     const query = editando
