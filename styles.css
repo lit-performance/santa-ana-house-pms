@@ -15,7 +15,13 @@
    ese color. También corrige que la tarjeta emergente (`.modal-caja`) no
    tenía scroll propio: si el contenido era más alto que la pantalla, el
    scroll se lo "robaba" la página de atrás en vez de moverse dentro del
-   modal — ahora tiene su propio alto máximo y scroll interno. */
+   modal — ahora tiene su propio alto máximo y scroll interno.
+
+   Nota (158): se agregaron `.tarjeta-mini` y `.grid-tipos-habitacion` para
+   la cuadrícula de mini-tarjetas de "Tipos de habitación" dentro de
+   Tarifas (ver config-tarifas.js, 156) — mismo lenguaje visual de
+   `.tarjeta`/`.tarjeta-acento-*`, solo con menos relleno para que quepan
+   varias por fila. */
 
 :root {
   --color-rojo: #d32f2f;
@@ -441,6 +447,22 @@ h3 {
   padding: 1.35rem 1.5rem;
   margin-bottom: 1.25rem;
   box-shadow: 0 4px 18px rgba(30, 78, 140, 0.12);
+}
+
+/* Nota (158): versión compacta de `.tarjeta` para cuadrículas de
+   mini-tarjetas (ej. Tipos de habitación en config-tarifas.js) — menos
+   relleno y sin margen inferior propio (lo da el gap de la cuadrícula). */
+.tarjeta-mini {
+  padding: 0.9rem 1.1rem;
+  margin-bottom: 0;
+  border-radius: var(--radio-chico);
+}
+
+.grid-tipos-habitacion {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 0.9rem;
+  margin-bottom: 0.5rem;
 }
 
 .acciones-tarjeta {
