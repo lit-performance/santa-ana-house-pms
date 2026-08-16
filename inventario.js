@@ -197,20 +197,42 @@
 //
 // Nota (140): dentro de "🛒 Compras" las 3 zonas (Entrada rápida, Nueva
 // orden formal, Órdenes registradas) ya no se ven todas iguales/planas
-// — cada una tiene su propio color de acento (azul = entrada rápida,
-// morado = orden formal, verde azulado = órdenes registradas) en forma
-// de tarjeta-botón grande con borde y sombra del mismo color, y el
-// contenido activo se muestra dentro de un recuadro con ese mismo color
-// (franja de color a la izquierda + fondo tenue) — para identificar de
-// un vistazo en qué zona se está, en vez de un solo bloque de texto
-// corrido.
+// — cada una tiene su propio color de acento en forma de recuadro con
+// borde y sombra del mismo color — ver nota 141, que reemplaza este
+// diseño de pestañas por uno más simple.
+//
+// Nota (141): "Entrada rápida" y "Orden formal" se fusionaron en UN
+// SOLO formulario ("🛒 Registrar compra") — ya no hay que elegir entre
+// dos caminos que hacían casi lo mismo. Ahora siempre se pueden agregar
+// una o varias líneas de producto (para cargar de un tirón cosas como
+// Coca-Cola, cerveza, etc. cuando llegan al mostrador de forma informal,
+// sin orden previa). "Órdenes de compra" (el flujo con estados
+// solicitado/en camino/recibido de compras.js) se DESACTIVÓ — ya no se
+// usa desde aquí, pero el código de compras.js sigue intacto en el
+// repo, listo para reactivarse si hace falta más adelante.
+//
+// Además, esta compra ahora SIEMPRE pregunta "Pagado desde" (una de las
+// cuentas/medios de pago que ya usa el resto del sistema — Efectivo,
+// Nequi, Daviplata, QR, Transferencia Bancaria, Datáfono, Llave) y
+// registra un egreso real en `caja_movimientos` con categoría "Compras"
+// — la misma categoría que caja.js ya tenía reservada y excluida de
+// "Movimientos manuales" para este caso exacto (ver `CATEGORIA_COMPRAS`
+// en caja.js). Al ser un caja_movimientos más, esta compra automática-
+// mente resta del saldo de la cuenta usada (`calcularSaldosPorCuenta`),
+// aparece en el desglose de "Gastos" del día en Registro diario, y se ve
+// reflejada en Indicadores, Contabilidad y Auditoría — sin tocar esos
+// archivos, exactamente igual a como ya funciona un gasto (gastos.js).
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
 import { formatFechaHora, toISODate } from './dates.js';
 import { getUsuarioActual } from './auth.js';
-import { cargarFormNuevaOrden, cargarListaOrdenes } from './compras.js';
+import { obtenerOCrearTurnoDeHoy } from './caja.js';
+
+// Mismas cuentas/medios de pago que ya usan gastos.js y caja.js — "de
+// dónde salió el dinero" de esta compra.
+const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
 
 const ROLES_GESTIONAN = ['propietario', 'administrador', 'bodega'];
 
@@ -322,9 +344,18 @@ async function calcularResumenReposicionesHoy() {
   return { total };
 }
 
-async function calcularResumenOrdenes() {
-  const { data } = await supabase.from('ordenes_compra').select('id').in('estado', ['solicitado', 'en_camino']);
-  return { pendientes: (data || []).length };
+async function calcularResumenComprasHoy() {
+  const hoy = new Date();
+  const inicioHoy = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()).toISOString();
+  const inicioManana = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 1).toISOString();
+  const { data } = await supabase
+    .from('caja_movimientos')
+    .select('monto')
+    .eq('categoria', 'Compras')
+    .gte('creado_en', inicioHoy)
+    .lt('creado_en', inicioManana);
+  const total = (data || []).reduce((sum, m) => sum + Number(m.monto), 0);
+  return { total, cantidad: (data || []).length };
 }
 
 // Cada sección conserva su wrapId de siempre (#inv-mapa-wrap,
@@ -377,12 +408,12 @@ async function cargarResumenInventario(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando resumen…</p>';
   const permitido = puedeGestionar();
 
-  const [resumenMapa, resumenPendientes, resumenBodega, resumenStockTotal, resumenOrdenes, resumenReposicionesHoy] = await Promise.all([
+  const [resumenMapa, resumenPendientes, resumenBodega, resumenStockTotal, resumenCompras, resumenReposicionesHoy] = await Promise.all([
     calcularResumenMapa(),
     calcularResumenPendientes(),
     calcularResumenBodega(),
     calcularResumenStockTotal(),
-    calcularResumenOrdenes(),
+    calcularResumenComprasHoy(),
     calcularResumenReposicionesHoy(),
   ]);
 
@@ -435,15 +466,16 @@ async function cargarResumenInventario(elemento) {
   ].filter(Boolean);
 
   // "Compras" queda como grupo aparte, bajo su propio subtítulo — ver
-  // nota 139: antes eran 3 mini-tarjetas sueltas mezcladas con las
-  // operativas de Inventario, ahora es 1 sola.
+  // nota 139/141: antes eran 3 mini-tarjetas sueltas, ahora es 1 sola
+  // (Entrada rápida + Orden formal fusionadas, Órdenes de compra
+  // desactivado).
   const tarjetasCompras = [
     permitido
       ? {
           id: 'compras',
           icono: '🛒',
           titulo: 'Compras',
-          resumen: resumenOrdenes.pendientes > 0 ? `${resumenOrdenes.pendientes} orden(es) en camino o solicitadas` : '✅ Sin órdenes pendientes',
+          resumen: resumenCompras.cantidad > 0 ? `${formatCOP(resumenCompras.total)} en ${resumenCompras.cantidad} compra(s) hoy` : 'Sin compras registradas hoy',
         }
       : null,
   ].filter(Boolean);
@@ -1017,169 +1049,21 @@ function abrirModalProductoNuevo(categorias, { onCreado, onCancelar }) {
 }
 
 // =========================================================
-// Registrar compra (entrada a bodega) — ver nota 129/130 al inicio del
-// archivo: sin producto ni cantidad preseleccionados (para que un envío
-// accidental no registre una entrada real por error), y con la opción
-// de dar de alta un producto nuevo en una tarjeta emergente aparte, sin
-// mezclarlo con el resto del formulario. Pensada para UNA entrada
-// rápida a la vez; para comprar VARIOS productos de un tirón usa la
-// pestaña "Nueva orden formal" de la tarjeta "🛒 Compras" (ver nota 139
-// y `cargarSeccionCompras` más abajo).
+// Registrar compra (141): fusiona lo que antes eran "Entrada rápida" (1
+// producto) y "Orden formal" (varios productos) en UN SOLO formulario
+// — siempre se puede agregar una o varias líneas de producto, así que
+// sirve igual para cargar un solo producto o una compra grande e
+// informal (varios productos de un tirón, como cuando llega mercancía
+// al mostrador sin orden previa). Reemplaza también a "Órdenes de
+// compra" (desactivado, ver nota 141 al inicio del archivo).
+//
+// SIEMPRE pide "Pagado desde" (una cuenta real del sistema) y registra
+// un egreso en `caja_movimientos` con categoría "Compras" — así esta
+// compra resta del saldo de esa cuenta y se refleja en Registro diario,
+// Indicadores, Contabilidad y Auditoría, igual que un gasto.
 // =========================================================
-async function cargarSeccionCompra(elemento) {
-  if (!puedeGestionar()) {
-    elemento.innerHTML = '';
-    return;
-  }
-
-  const [{ data: productos }, { data: proveedores }] = await Promise.all([
-    supabase.from('minibar_productos').select('id, nombre, categoria').order('categoria').order('nombre'),
-    supabase.from('proveedores').select('id, nombre_comercial').eq('activo', true).order('nombre_comercial'),
-  ]);
-
-  const categorias = [...new Set((productos || []).map((p) => p.categoria))];
-
-  elemento.innerHTML = `
-      <p class="texto-ayuda">Para UN producto a la vez.</p>
-      <form id="form-compra" class="form-grid">
-        <label>Producto
-          <select name="producto_id" id="select-producto-compra" required>
-            <option value="" disabled selected>— Selecciona un producto —</option>
-            <option value="__nuevo__">➕ Es un producto nuevo (no está en el catálogo)</option>
-            ${categorias
-              .map(
-                (cat) => `
-              <optgroup label="${escaparHTML(cat)}">
-                ${(productos || [])
-                  .filter((p) => p.categoria === cat)
-                  .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)}</option>`)
-                  .join('')}
-              </optgroup>
-            `
-              )
-              .join('')}
-          </select>
-        </label>
-        <label>Cantidad que ingresa
-          <input type="number" name="cantidad" min="1" placeholder="Ej: 10" required />
-        </label>
-        <label>Precio de costo (opcional, actualiza el costo)
-          <input type="number" name="precio_costo" min="0" placeholder="Dejar vacío para no cambiarlo" />
-        </label>
-        <label>Proveedor (opcional)
-          <select name="proveedor_id">
-            <option value="">— Sin asignar —</option>
-            ${(proveedores || []).map((p) => `<option value="${p.id}">${escaparHTML(p.nombre_comercial)}</option>`).join('')}
-          </select>
-        </label>
-        <label>Notas
-          <input type="text" name="notas" placeholder="Opcional" />
-        </label>
-        <button type="submit" class="btn btn-primario">+ Registrar entrada</button>
-      </form>
-  `;
-
-  const selectProducto = elemento.querySelector('#select-producto-compra');
-  selectProducto.addEventListener('change', () => {
-    if (selectProducto.value !== '__nuevo__') return;
-    abrirModalProductoNuevo(categorias, {
-      onCreado: (nuevoProducto) => {
-        const nuevaOpcion = document.createElement('option');
-        nuevaOpcion.value = String(nuevoProducto.id);
-        nuevaOpcion.textContent = `${nuevoProducto.nombre} (recién creado)`;
-        selectProducto.insertBefore(nuevaOpcion, selectProducto.querySelector('option[value="__nuevo__"]'));
-        selectProducto.value = String(nuevoProducto.id);
-      },
-      onCancelar: () => {
-        selectProducto.value = '';
-      },
-    });
-  });
-
-  elemento.querySelector('#form-compra').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const form = new FormData(e.target);
-    const usuario = getUsuarioActual();
-    const productoId = Number(form.get('producto_id'));
-
-    if (!productoId || form.get('producto_id') === '__nuevo__') {
-      mostrarToast('Selecciona un producto (si es nuevo, complétalo en la ventana emergente primero).', 'error');
-      return;
-    }
-
-    const cantidad = Number(form.get('cantidad'));
-    const precioCosto = form.get('precio_costo') ? Number(form.get('precio_costo')) : null;
-    const proveedorId = form.get('proveedor_id') ? Number(form.get('proveedor_id')) : null;
-
-    const { data: fila, error: errFila } = await supabase
-      .from('inventario_bodega')
-      .select('id, cantidad_actual')
-      .eq('producto_id', productoId)
-      .maybeSingle();
-    if (errFila) {
-      mostrarToast(`Error: ${errFila.message}`, 'error');
-      return;
-    }
-
-    const payloadUpdate = { cantidad_actual: (fila?.cantidad_actual || 0) + cantidad, actualizado_en: new Date().toISOString() };
-    if (precioCosto !== null) payloadUpdate.precio_costo = precioCosto;
-    if (proveedorId !== null) payloadUpdate.proveedor_id = proveedorId;
-
-    const { error: errUpdate } = fila
-      ? await supabase.from('inventario_bodega').update(payloadUpdate).eq('id', fila.id)
-      : await supabase.from('inventario_bodega').insert({
-          producto_id: productoId,
-          cantidad_actual: cantidad,
-          cantidad_minima: 0,
-          precio_costo: precioCosto,
-          proveedor_id: proveedorId,
-        });
-    if (errUpdate) {
-      mostrarToast(`Error: ${errUpdate.message}`, 'error');
-      return;
-    }
-
-    await supabase.from('inventario_movimientos').insert({
-      tipo: 'compra_bodega',
-      producto_id: productoId,
-      cantidad,
-      precio_costo: precioCosto,
-      notas: form.get('notas').trim() || null,
-      registrado_por: usuario?.id || null,
-    });
-
-    mostrarToast('Entrada registrada en bodega.', 'exito');
-    e.target.reset();
-    document.dispatchEvent(new CustomEvent('inventario:actualizado'));
-    const wrapBodega = document.querySelector('#inv-bodega-wrap');
-    if (wrapBodega) await cargarInventarioBodega(wrapBodega);
-    const wrapMov = document.querySelector('#inv-movimientos-wrap');
-    if (wrapMov) await cargarMovimientos(wrapMov);
-    await cargarSeccionCompra(elemento);
-  });
-}
-
-// =========================================================
-// Compras (139): una sola tarjeta que agrupa lo que antes eran 3
-// mini-tarjetas sueltas — "Entrada rápida" (1 producto,
-// `cargarSeccionCompra`) y "Nueva orden formal" (varios productos +
-// proveedor, `cargarFormNuevaOrden` de compras.js) comparten esta
-// tarjeta como dos pestañas internas (solo una visible a la vez);
-// debajo, siempre visible, el listado de "Órdenes de compra"
-// (`cargarListaOrdenes` de compras.js) — es lo que sigue naturalmente
-// después de crear una orden formal.
-// =========================================================
-// Colores de acento por zona (ver nota 140): cada una se identifica por
-// su propio color en vez de que todo se vea plano/igual — no se
-// reutilizan los colores que ya tienen significado en el resto del
-// módulo (verde=completo, ámbar=reponer, rojo=alerta en Mapa/Pendientes).
-const ACENTO_COMPRA_RAPIDA = { borde: '#1c5fa8', fondo: '#e7f1fd', texto: '#154a86' };
-const ACENTO_COMPRA_ORDEN = { borde: '#7443ad', fondo: '#f2ecfc', texto: '#5f3690' };
-const ACENTO_COMPRA_LISTA = { borde: '#2f7a78', fondo: '#eaf5f4', texto: '#25605e' };
-
-function estiloTarjetaAcento(acento, activa) {
-  return `text-align:left; cursor:pointer; border-radius:10px; padding:0.85rem 1rem; border:2px solid ${acento.borde}; background:${activa ? acento.fondo : '#fff'}; box-shadow:${activa ? `0 3px 10px ${acento.borde}40` : '0 1px 3px rgba(0,0,0,0.06)'}; transition:box-shadow 0.15s, background 0.15s;`;
-}
+const ACENTO_COMPRA_PRODUCTOS = { borde: '#1c5fa8', fondo: '#e7f1fd', texto: '#154a86' };
+const ACENTO_COMPRA_PAGO = { borde: '#1e8a5f', fondo: '#e3f6ec', texto: '#166b49' };
 
 function estiloContenidoAcento(acento) {
   return `border-left:5px solid ${acento.borde}; background:${acento.fondo}; border-radius:0 8px 8px 0; padding:1rem; box-shadow:0 1px 5px ${acento.borde}26;`;
@@ -1191,49 +1075,258 @@ async function cargarSeccionCompras(elemento) {
     return;
   }
 
+  const [{ data: productos }, { data: proveedores }] = await Promise.all([
+    supabase.from('minibar_productos').select('id, nombre, categoria').order('categoria').order('nombre'),
+    supabase.from('proveedores').select('id, nombre_comercial').eq('activo', true).order('nombre_comercial'),
+  ]);
+
+  const categorias = [...new Set((productos || []).map((p) => p.categoria))];
+
   elemento.innerHTML = `
     <div class="tarjeta">
-      <h3 style="margin-top:0;">🛒 Compras</h3>
-      <p class="mensaje-vacio" style="margin-top:-0.3rem;">Elige cómo vas a registrar la entrada — cada opción queda marcada con su color para identificarla fácil.</p>
-      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:0.75rem; margin:0.75rem 0 1rem;">
-        <button type="button" class="btn-tab-compra" data-tab="rapida" style="${estiloTarjetaAcento(ACENTO_COMPRA_RAPIDA, true)}">
-          <strong style="color:${ACENTO_COMPRA_RAPIDA.texto};">⚡ Entrada rápida</strong>
-          <div class="mensaje-vacio" style="margin-top:0.2rem;">Un producto, directo a bodega</div>
-        </button>
-        <button type="button" class="btn-tab-compra" data-tab="orden" style="${estiloTarjetaAcento(ACENTO_COMPRA_ORDEN, false)}">
-          <strong style="color:${ACENTO_COMPRA_ORDEN.texto};">📝 Orden formal</strong>
-          <div class="mensaje-vacio" style="margin-top:0.2rem;">Varios productos + proveedor</div>
-        </button>
-      </div>
-      <div id="compras-form-wrap" style="margin-bottom:1.5rem;"></div>
-      <h4 style="display:flex; align-items:center; gap:0.5rem; margin:1.5rem 0 0.6rem;">
-        <span style="display:inline-block; width:12px; height:12px; border-radius:3px; background:${ACENTO_COMPRA_LISTA.borde};"></span>
-        📦 Órdenes registradas
-      </h4>
-      <div id="compras-lista-wrap" style="${estiloContenidoAcento(ACENTO_COMPRA_LISTA)}"><p class="mensaje-vacio">Cargando…</p></div>
+      <h3 style="margin-top:0;">🛒 Registrar compra</h3>
+      <p class="mensaje-vacio" style="margin-top:-0.3rem;">Para compras informales que llegan al mostrador (sin orden previa) — uno o varios productos a la vez, con la cuenta de la que salió el dinero.</p>
+      <form id="form-compra">
+        <div style="${estiloContenidoAcento(ACENTO_COMPRA_PRODUCTOS)} margin:0.75rem 0 1rem;">
+          <h4 style="margin:0 0 0.75rem; color:${ACENTO_COMPRA_PRODUCTOS.texto};">📦 Productos</h4>
+          <div id="lineas-compra-wrap"></div>
+          <button type="button" id="btn-agregar-linea-compra" class="btn btn-secundario btn-chico">+ Agregar producto</button>
+        </div>
+
+        <div style="${estiloContenidoAcento(ACENTO_COMPRA_PAGO)} margin-bottom:1.25rem;">
+          <h4 style="margin:0 0 0.75rem; color:${ACENTO_COMPRA_PAGO.texto};">💳 Pago</h4>
+          <div class="form-grid">
+            <label>Proveedor <span class="mensaje-vacio" style="font-size:0.7rem;">(opcional)</span>
+              <select name="proveedor_id">
+                <option value="">— Sin asignar —</option>
+                ${(proveedores || []).map((p) => `<option value="${p.id}">${escaparHTML(p.nombre_comercial)}</option>`).join('')}
+              </select>
+            </label>
+            <label>Pagado desde
+              <select name="metodo_pago" required>
+                <option value="" disabled selected>— Selecciona una cuenta —</option>
+                ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
+              </select>
+            </label>
+            <label>Notas <span class="mensaje-vacio" style="font-size:0.7rem;">(opcional)</span>
+              <input type="text" name="notas" placeholder="Opcional" />
+            </label>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+          <div><span class="texto-ayuda">Total a pagar</span><br /><strong id="total-compra-vista" style="font-size:1.3rem;">${formatCOP(0)}</strong></div>
+          <button type="submit" class="btn btn-primario">Registrar compra</button>
+        </div>
+      </form>
     </div>
   `;
 
-  const wrapForm = elemento.querySelector('#compras-form-wrap');
-  const wrapLista = elemento.querySelector('#compras-lista-wrap');
-  const botonesTab = elemento.querySelectorAll('.btn-tab-compra');
+  const wrapLineas = elemento.querySelector('#lineas-compra-wrap');
 
-  function activarTab(tab) {
-    const acento = tab === 'rapida' ? ACENTO_COMPRA_RAPIDA : ACENTO_COMPRA_ORDEN;
-    botonesTab.forEach((b) => {
-      const activo = b.dataset.tab === tab;
-      const suAcento = b.dataset.tab === 'rapida' ? ACENTO_COMPRA_RAPIDA : ACENTO_COMPRA_ORDEN;
-      b.setAttribute('style', estiloTarjetaAcento(suAcento, activo));
+  function actualizarTotal() {
+    let total = 0;
+    wrapLineas.querySelectorAll('.fila-linea-compra').forEach((fila) => {
+      const cantidad = Number(fila.querySelector('.input-cantidad-linea').value) || 0;
+      const costo = Number(fila.querySelector('.input-costo-linea').value) || 0;
+      total += cantidad * costo;
     });
-    wrapForm.setAttribute('style', `margin-bottom:1.5rem; ${estiloContenidoAcento(acento)}`);
-    if (tab === 'rapida') cargarSeccionCompra(wrapForm);
-    else cargarFormNuevaOrden(wrapForm);
+    const elTotal = elemento.querySelector('#total-compra-vista');
+    if (elTotal) elTotal.textContent = formatCOP(total);
   }
 
-  botonesTab.forEach((b) => b.addEventListener('click', () => activarTab(b.dataset.tab)));
-  activarTab('rapida');
+  function crearFilaCompra() {
+    const fila = document.createElement('div');
+    fila.className = 'form-grid fila-linea-compra';
+    fila.style.cssText = 'grid-template-columns:2fr 1fr 1fr auto; align-items:end; margin-bottom:0.6rem;';
+    fila.innerHTML = `
+      <label>Producto
+        <select class="select-producto-linea" required>
+          <option value="" disabled selected>— Selecciona —</option>
+          <option value="__nuevo__">➕ Producto nuevo</option>
+          ${categorias
+            .map(
+              (cat) => `
+            <optgroup label="${escaparHTML(cat)}">
+              ${(productos || [])
+                .filter((p) => p.categoria === cat)
+                .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)}</option>`)
+                .join('')}
+            </optgroup>
+          `
+            )
+            .join('')}
+        </select>
+      </label>
+      <label>Cantidad
+        <input type="number" class="input-cantidad-linea" min="1" placeholder="Ej: 10" required />
+      </label>
+      <label>Costo unit.
+        <input type="number" class="input-costo-linea" min="0" step="100" placeholder="Ej: 3000" required />
+      </label>
+      <button type="button" class="btn-editar btn-quitar-linea">Quitar</button>
+    `;
 
-  await cargarListaOrdenes(wrapLista);
+    const select = fila.querySelector('.select-producto-linea');
+    select.addEventListener('change', () => {
+      if (select.value !== '__nuevo__') return;
+      abrirModalProductoNuevo(categorias, {
+        onCreado: (nuevoProducto) => {
+          elemento.querySelectorAll('.select-producto-linea').forEach((s) => {
+            if ([...s.options].some((o) => o.value === String(nuevoProducto.id))) return;
+            const nuevaOpcion = document.createElement('option');
+            nuevaOpcion.value = String(nuevoProducto.id);
+            nuevaOpcion.textContent = `${nuevoProducto.nombre} (recién creado)`;
+            s.insertBefore(nuevaOpcion, s.querySelector('option[value="__nuevo__"]'));
+          });
+          select.value = String(nuevoProducto.id);
+        },
+        onCancelar: () => {
+          select.value = '';
+        },
+      });
+    });
+
+    fila.querySelector('.input-cantidad-linea').addEventListener('input', actualizarTotal);
+    fila.querySelector('.input-costo-linea').addEventListener('input', actualizarTotal);
+    fila.querySelector('.btn-quitar-linea').addEventListener('click', () => {
+      if (wrapLineas.querySelectorAll('.fila-linea-compra').length <= 1) {
+        mostrarToast('Debe quedar al menos un producto en la compra.', 'error');
+        return;
+      }
+      fila.remove();
+      actualizarTotal();
+    });
+
+    return fila;
+  }
+
+  wrapLineas.appendChild(crearFilaCompra());
+  elemento.querySelector('#btn-agregar-linea-compra').addEventListener('click', () => {
+    wrapLineas.appendChild(crearFilaCompra());
+  });
+
+  elemento.querySelector('#form-compra').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const filasDom = [...wrapLineas.querySelectorAll('.fila-linea-compra')];
+    const lineas = [];
+    for (const fila of filasDom) {
+      const valorSelect = fila.querySelector('.select-producto-linea').value;
+      const cantidad = Number(fila.querySelector('.input-cantidad-linea').value);
+      const costo = Number(fila.querySelector('.input-costo-linea').value);
+      if (!valorSelect || valorSelect === '__nuevo__') {
+        mostrarToast('Falta elegir un producto en una de las líneas (si es nuevo, complétalo en la ventana emergente primero).', 'error');
+        return;
+      }
+      if (!cantidad || cantidad <= 0) {
+        mostrarToast('Falta una cantidad válida en una de las líneas.', 'error');
+        return;
+      }
+      lineas.push({
+        productoId: Number(valorSelect),
+        cantidad,
+        costo: costo || 0,
+        nombre: fila.querySelector('.select-producto-linea').selectedOptions[0]?.textContent || 'Producto',
+      });
+    }
+
+    const form = new FormData(e.target);
+    const metodoPago = form.get('metodo_pago');
+    if (!metodoPago) {
+      mostrarToast('Selecciona de qué cuenta salió el dinero.', 'error');
+      return;
+    }
+    const proveedorId = form.get('proveedor_id') ? Number(form.get('proveedor_id')) : null;
+    const notas = form.get('notas').trim();
+
+    let turno;
+    try {
+      turno = await obtenerOCrearTurnoDeHoy();
+    } catch (errTurno) {
+      mostrarToast(`No se pudo registrar la compra: ${errTurno.message}`, 'error');
+      return;
+    }
+
+    const usuario = getUsuarioActual();
+    let totalCompra = 0;
+
+    for (const linea of lineas) {
+      totalCompra += linea.cantidad * linea.costo;
+
+      const { data: filaBodega, error: errFila } = await supabase
+        .from('inventario_bodega')
+        .select('id, cantidad_actual')
+        .eq('producto_id', linea.productoId)
+        .maybeSingle();
+      if (errFila) {
+        mostrarToast(`Error con "${linea.nombre}": ${errFila.message}`, 'error');
+        return;
+      }
+
+      const payloadUpdate = {
+        cantidad_actual: (filaBodega?.cantidad_actual || 0) + linea.cantidad,
+        precio_costo: linea.costo,
+        actualizado_en: new Date().toISOString(),
+      };
+      if (proveedorId !== null) payloadUpdate.proveedor_id = proveedorId;
+
+      const { error: errUpdate } = filaBodega
+        ? await supabase.from('inventario_bodega').update(payloadUpdate).eq('id', filaBodega.id)
+        : await supabase.from('inventario_bodega').insert({
+            producto_id: linea.productoId,
+            cantidad_actual: linea.cantidad,
+            cantidad_minima: 0,
+            precio_costo: linea.costo,
+            proveedor_id: proveedorId,
+          });
+      if (errUpdate) {
+        mostrarToast(`Error con "${linea.nombre}": ${errUpdate.message}`, 'error');
+        return;
+      }
+
+      await supabase.from('inventario_movimientos').insert({
+        tipo: 'compra_bodega',
+        producto_id: linea.productoId,
+        cantidad: linea.cantidad,
+        precio_costo: linea.costo,
+        notas: notas || null,
+        registrado_por: usuario?.id || null,
+      });
+    }
+
+    const proveedorNombre = (proveedores || []).find((p) => p.id === proveedorId)?.nombre_comercial;
+    const descripcion = [
+      proveedorNombre ? `Proveedor: ${proveedorNombre}` : null,
+      `Productos: ${lineas.map((l) => `${l.nombre} (${l.cantidad})`).join(', ')}`,
+      notas || null,
+    ]
+      .filter(Boolean)
+      .join(' — ');
+
+    const { error: errCaja } = await supabase.from('caja_movimientos').insert({
+      turno_id: turno.id,
+      tipo: 'egreso',
+      categoria: 'Compras',
+      monto: totalCompra,
+      metodo_pago: metodoPago,
+      descripcion,
+      registrado_por: usuario?.id || null,
+    });
+
+    if (errCaja) {
+      mostrarToast(`La compra quedó registrada en bodega, pero hubo un error registrando el pago en Caja: ${errCaja.message}`, 'error');
+    } else {
+      mostrarToast(`Compra registrada: ${formatCOP(totalCompra)} pagados desde ${metodoPago}.`, 'exito');
+    }
+
+    document.dispatchEvent(new CustomEvent('inventario:actualizado'));
+    const wrapBodega = document.querySelector('#inv-bodega-wrap');
+    if (wrapBodega) await cargarInventarioBodega(wrapBodega);
+    const wrapMov = document.querySelector('#inv-movimientos-wrap');
+    if (wrapMov) await cargarMovimientos(wrapMov);
+    await cargarSeccionCompras(elemento);
+  });
 }
 
 // =========================================================
