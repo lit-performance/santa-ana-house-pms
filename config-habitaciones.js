@@ -21,7 +21,12 @@
 // función `vaciarMinibarHabitacion` de inventario.js que también está
 // disponible desde Inventario → Inventario por habitación (ver 115).
 // Pensado para el momento de arrendar una habitación sin minibar (ej.
-// tarifa libre / mensual, ver config-tarifas.js).
+// tarifa por días, ver config-tarifas.js).
+//
+// Nota (123): el precio mostrado junto a cada tarifa (en la tabla y en
+// el selector del modal) ahora distingue tarifas diarias (muestra
+// temporada baja) de tarifas "por días" (muestra el valor convenido
+// total y el número de días) — ver `etiquetaPrecioTarifa` y 121/122.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -30,6 +35,17 @@ import { formatCOP } from './currency.js';
 import { badgeEstadoHabitacion, opcionesEstadoHabitacion } from './badges.js';
 import { getUsuarioActual } from './auth.js';
 import { vaciarMinibarHabitacion } from './inventario.js';
+
+// Muestra el precio correcto según el tipo de tarifa (ver 121/122):
+// "diaria" usa temporada baja como referencia; "por_dias" usa el valor
+// convenido total y el número de días contratados.
+function etiquetaPrecioTarifa(tarifa) {
+  if (!tarifa) return '—';
+  if (tarifa.tipo === 'por_dias') {
+    return `${formatCOP(tarifa.valor_convenido || 0)} / ${tarifa.numero_dias || 0} días`;
+  }
+  return formatCOP(tarifa.precio_temporada_baja);
+}
 
 async function render(container) {
   container.innerHTML = `
@@ -97,7 +113,7 @@ async function cargarTabla(container) {
                 <td>${h.piso ?? '—'}</td>
                 <td>${h.capacidad}</td>
                 <td>${tarifa ? tarifa.codigo : '—'}</td>
-                <td>${tarifa ? formatCOP(tarifa.precio_temporada_baja) : '—'}</td>
+                <td>${etiquetaPrecioTarifa(tarifa)}</td>
                 <td>${badgeEstadoHabitacion(h.estado)}</td>
                 <td>${h.tiene_minibar === false ? '— Sin minibar' : '✅ Sí'}</td>
                 <td><button type="button" class="btn-editar btn-editar-habitacion">Editar</button></td>
@@ -154,7 +170,7 @@ async function abrirModalHabitacion(habitacion) {
             <select name="tarifa_id">
               <option value="">—</option>
               ${(tarifas || [])
-                .map((t) => `<option value="${t.id}" ${editando && habitacion.tarifa_id === t.id ? 'selected' : ''}>${t.codigo} — ${formatCOP(t.precio_temporada_baja)}</option>`)
+                .map((t) => `<option value="${t.id}" ${editando && habitacion.tarifa_id === t.id ? 'selected' : ''}>${t.codigo} — ${etiquetaPrecioTarifa(t)}</option>`)
                 .join('')}
             </select>
           </label>
