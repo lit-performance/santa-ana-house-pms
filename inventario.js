@@ -51,25 +51,13 @@
 // visible en esta misma tabla para cuando llegue más stock. No cambia
 // "Reabastecer habitación" (la del formulario aparte), que sigue igual.
 //
-// Nota sobre "Inventario por habitación" (edición directa, ver 096):
-// "Actual" ahora es editable directamente ahí para quien puede gestionar
-// inventario — a diferencia de "Reabastecer habitación", que SIEMPRE
-// mueve stock real de la bodega, esta edición SOLO corrige el número de
-// la habitación (usa `ajustarInventarioHabitacion` con tipo
-// 'ajuste_habitacion', que nunca toca inventario_bodega). Es lo que se
-// usa para cargar el conteo físico real de cada minibar (por ejemplo,
-// después de poner todo en 0 con un reinicio) sin que eso se descuente
-// de la bodega principal, que ya está donde debe estar. Muestra TODOS
-// los productos activos del catálogo (no solo los que ya tengan fila en
-// inventario_habitacion), igual que "Pendientes de reponer".
-//
 // Nota sobre "tiene_minibar" (ver 109/111): las habitaciones marcadas
 // como sin minibar (uso administrativo, arriendo mensual, etc.) no
-// aparecen en "Pendientes de reponer", "Reabastecer habitación", el
-// selector de "Inventario por habitación" ni el "Mapa de minibares" de
-// abajo — se filtran siempre por `tiene_minibar = true`. Para reactivar
-// el minibar de una habitación cuando corresponda, basta con marcar la
-// casilla correspondiente en Configuración → Habitaciones.
+// aparecen en "Pendientes de reponer", "Reabastecer habitación" ni el
+// "Mapa de minibares" de abajo — se filtran siempre por
+// `tiene_minibar = true`. Para reactivar el minibar de una habitación
+// cuando corresponda, basta con marcar la casilla correspondiente en
+// Configuración → Habitaciones.
 //
 // Nota sobre "🗺️ Mapa de minibares" (111): vista de cuadrícula — un
 // producto por fila, una habitación por columna — inspirada en el Excel
@@ -80,27 +68,25 @@
 // habitación por habitación; "Pendientes de reponer" (más abajo) sigue
 // siendo la vista de trabajo para efectivamente reponer.
 //
-// Nota sobre "🧹 Vaciar minibar" (nuevo, 115): para habitaciones que se
-// arriendan sin minibar (ej. tarifa libre / mensual, ver config-
-// tarifas.js). Un solo botón que: (1) devuelve TODO el stock actual del
-// minibar de esa habitación a la bodega (inventario_bodega suma, la
-// habitación queda en 0 — cada movimiento queda registrado con tipo
-// 'vaciado_a_bodega'), y (2) desactiva `tiene_minibar` en esa habitación
-// automáticamente, para que deje de aparecer en Pendientes/Mapa hasta
-// que alguien la reactive manualmente desde Configuración. Disponible
-// aquí (Inventario → Inventario por habitación) y también en
-// Configuración → Habitaciones, junto a la casilla "Tiene minibar" — es
-// la misma función (`vaciarMinibarHabitacion`, exportada), usada desde
-// los dos lugares.
+// Nota sobre "🧹 Vaciar minibar" (115, ver también 133): para
+// habitaciones que se arriendan sin minibar (ej. tarifa libre / mensual,
+// ver config-tarifas.js). Devuelve TODO el stock actual del minibar de
+// esa habitación a la bodega (inventario_bodega suma, la habitación
+// queda en 0 — cada movimiento queda registrado con tipo
+// 'vaciado_a_bodega') y desactiva `tiene_minibar` en esa habitación
+// automáticamente. La función (`vaciarMinibarHabitacion`, exportada)
+// vive en este archivo porque también la usa config-habitaciones.js —
+// pero el ÚNICO botón para usarla está en Configuración → Habitaciones
+// (junto a la casilla "Tiene minibar", donde el contexto deja claro qué
+// hace). Antes también había un botón igual en Inventario → "Inventario
+// por habitación"; se quitó en 133 por duplicado (ver nota 133).
 //
 // Nota (119): (1) el "Mapa de minibares" ahora fija también la fila de
 // encabezado (números de habitación) al hacer scroll hacia abajo, no
 // solo la columna de producto — así siempre se ve a qué habitación
 // corresponde cada columna, sin importar qué tan abajo se haya
-// scrolleado. (2) "Inventario por habitación" pasó a ser de SOLO
-// LECTURA — se quitó la edición manual de "Actual" (el conteo ya se
-// carga completo desde el mapa/Excel y no hacía falta corregirlo aquí a
-// mano); el botón "🧹 Vaciar minibar" se mantiene igual.
+// scrolleado. (2) "Inventario por habitación" (quitado en 133, ver nota
+// más abajo) pasó en su momento a ser de solo lectura.
 //
 // Nota (124): "Bodega — existencias y proveedor" pasó a ser de solo
 // lectura por defecto, con un botón "✏️ Editar" explícito por fila (en
@@ -152,20 +138,45 @@
 //     producto; al crearlo, el formulario de compra sigue normal con
 //     ese producto ya seleccionado.
 //
-// Nota (131): la pestaña de Inventario pasó de 8 tarjetas siempre
-// abiertas y apiladas (mucho scroll para llegar a las últimas) a un
-// tablero de mini-tarjetas: cada sección ahora es un resumen corto
-// (título + el dato más relevante, por ejemplo "12 unidad(es) en 4
-// habitación(es)" para Pendientes) con un botón "👁️ Ver" que abre esa
-// misma sección — completa, con toda su funcionalidad de siempre intacta
-// (Reponer, Editar, Excel, Vaciar minibar, etc.) — dentro de una tarjeta
-// emergente. Al cerrar la emergente, el tablero de resúmenes se vuelve a
-// calcular para reflejar cualquier cambio hecho adentro. Ninguna sección
-// cambió por dentro — cada `cargarXxx` es exactamente la misma función
-// de antes, solo que ahora se monta dentro de la emergente en vez de
-// quedar siempre visible en la página. "Registrar compra" y "Reabastecer
-// habitación" (formularios, no tienen un "estado" que mostrar) solo
-// aparecen en el tablero para quien puede gestionar inventario.
+// Nota (131): la pestaña de Inventario pasó de tarjetas siempre abiertas
+// y apiladas (mucho scroll para llegar a las últimas) a un tablero de
+// mini-tarjetas: cada sección ahora es un resumen corto (título + el
+// dato más relevante) con un botón "👁️ Ver" que abre esa misma sección
+// — completa, con toda su funcionalidad de siempre intacta — dentro de
+// una tarjeta emergente. Ninguna sección cambió por dentro.
+//
+// Nota (132): cinco ajustes sobre lo que se pidió al revisar la 131.
+//  1. Las tarjetas emergentes eran angostas en algunas secciones —
+//     ahora TODAS las emergentes de sección son igual de anchas (hasta
+//     1100px / 95% del ancho de pantalla).
+//  2. "Mapa de minibares" tiene botón "⬇ Excel": exporta habitación ×
+//     producto con cantidad actual, estándar, precio de venta, precio
+//     de costo y proveedor (los dos últimos vienen de Bodega, ya que el
+//     costo/proveedor se maneja a nivel de producto, no por habitación).
+//  3. Tarjeta nueva "📊 Stock total (bodega + minibares)": suma, por
+//     producto, lo que hay en bodega más lo que hay repartido en todos
+//     los minibares — con precio de venta, precio de costo, proveedor y
+//     el valor total a cada precio. Tiene su propio "⬇ Excel".
+//  4. "Bodega" y "Mapa de minibares" muestran 3 mini-tarjetas fijas
+//     arriba (Cantidad de productos, Valor a precio de costo, Valor a
+//     precio de venta). En Bodega, además, la tabla ordena primero los
+//     productos por debajo del mínimo.
+//  5. "Reabastecer habitación" ya no deja elegir cualquier combinación:
+//     solo aparecen habitaciones con algo pendiente, el selector de
+//     producto se llena según la habitación elegida mostrando SOLO lo
+//     que le falta, y la cantidad viene precargada con lo que falta y
+//     no se puede subir más de eso.
+//
+// Nota (133): se QUITÓ la tarjeta "Inventario por habitación". Su tabla
+// de solo lectura (producto/actual/estándar/estado de UNA habitación a
+// la vez) mostraba exactamente la misma información que ya se ve en
+// "Mapa de minibares" (que además la muestra de TODAS las habitaciones
+// a la vez, no una por una) — era redundante. Su único botón propio,
+// "🧹 Vaciar minibar", YA existía también en Configuración →
+// Habitaciones (junto a la casilla "Tiene minibar", con más contexto de
+// lo que hace) — se dejó solo ahí para no tener el mismo botón delicado
+// repetido en dos lugares distintos. La función `vaciarMinibarHabitacion`
+// sigue viviendo aquí (exportada) porque config-habitaciones.js la usa.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -214,11 +225,12 @@ async function render(container) {
 }
 
 // =========================================================
-// Tablero de resumen (ver nota 131 al inicio del archivo): mini-tarjeta
-// por sección con el dato más relevante y un botón "👁️ Ver" que abre esa
-// sección completa — reutilizando exactamente las mismas funciones
-// cargarXxx de siempre — dentro de una tarjeta emergente. Los cálculos
-// de resumen son consultas livianas, separadas de la carga completa.
+// Tablero de resumen (ver nota 131/132/133 al inicio del archivo):
+// mini-tarjeta por sección con el dato más relevante y un botón "👁️ Ver"
+// que abre esa sección completa — reutilizando exactamente las mismas
+// funciones cargarXxx de siempre — dentro de una tarjeta emergente ancha
+// (ver nota 132.1). Los cálculos de resumen son consultas livianas,
+// separadas de la carga completa.
 // =========================================================
 
 async function calcularResumenMapa() {
@@ -258,6 +270,16 @@ async function calcularResumenBodega() {
   return { total, bajoMinimo };
 }
 
+async function calcularResumenStockTotal() {
+  const [{ data: bodega }, { data: habitacionRows }] = await Promise.all([
+    supabase.from('inventario_bodega').select('cantidad_actual'),
+    supabase.from('inventario_habitacion').select('cantidad_actual'),
+  ]);
+  const enBodega = (bodega || []).reduce((sum, f) => sum + Number(f.cantidad_actual || 0), 0);
+  const enMinibares = (habitacionRows || []).reduce((sum, f) => sum + Number(f.cantidad_actual || 0), 0);
+  return { total: enBodega + enMinibares };
+}
+
 async function calcularResumenReposicionesHoy() {
   const hoy = new Date();
   const inicioHoy = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()).toISOString();
@@ -272,24 +294,20 @@ async function calcularResumenReposicionesHoy() {
   return { total };
 }
 
-async function calcularResumenHabitacion() {
-  const { count } = await supabase.from('habitaciones').select('id', { count: 'exact', head: true }).eq('tiene_minibar', true);
-  return { habitaciones: count || 0 };
-}
-
 // Cada sección conserva su wrapId de siempre (#inv-mapa-wrap,
 // #inv-bodega-wrap, etc.) — así, al abrirse dentro de la tarjeta
 // emergente, todo el código existente que refresca esa sección o a sus
 // vecinas buscando ese mismo id (por ejemplo `refrescarTrasReabastecer`)
-// sigue funcionando exactamente igual, sin tener que tocarlo.
+// sigue funcionando exactamente igual, sin tener que tocarlo. Todas las
+// emergentes usan el mismo ancho generoso (ver nota 132.1).
 const SECCIONES_INVENTARIO = {
-  mapa: { wrapId: 'inv-mapa-wrap', cargar: cargarMapaMinibares, ancho: true },
-  pendientes: { wrapId: 'inv-pendientes-wrap', cargar: cargarPendientesReponer, ancho: true },
-  bodega: { wrapId: 'inv-bodega-wrap', cargar: cargarInventarioBodega, ancho: true },
+  mapa: { wrapId: 'inv-mapa-wrap', cargar: cargarMapaMinibares },
+  pendientes: { wrapId: 'inv-pendientes-wrap', cargar: cargarPendientesReponer },
+  bodega: { wrapId: 'inv-bodega-wrap', cargar: cargarInventarioBodega },
+  'stock-total': { wrapId: 'inv-stock-total-wrap', cargar: cargarStockTotal },
   compra: { wrapId: 'inv-compra-wrap', cargar: cargarSeccionCompra },
   reabastecer: { wrapId: 'inv-reabastecer-wrap', cargar: cargarSeccionReabastecer },
   'reposiciones-hoy': { wrapId: 'inv-reposiciones-hoy-wrap', cargar: cargarReposicionesHoy },
-  habitacion: { wrapId: 'inv-habitacion-wrap', cargar: cargarInventarioHabitacion },
   movimientos: { wrapId: 'inv-movimientos-wrap', cargar: cargarMovimientos },
 };
 
@@ -300,7 +318,7 @@ function abrirModalSeccion(id, elementoResumen) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
-    <div class="modal-caja modal-caja-ancha" style="max-width:${config.ancho ? '1100px' : '600px'}; width:95vw; max-height:88vh; overflow:auto;">
+    <div class="modal-caja modal-caja-ancha" style="max-width:1100px; width:95vw; max-height:88vh; overflow:auto;">
       <div style="display:flex; justify-content:flex-end; margin-bottom:0.5rem;">
         <button type="button" class="btn btn-secundario btn-chico" id="btn-cerrar-modal-seccion">✕ Cerrar</button>
       </div>
@@ -326,12 +344,12 @@ async function cargarResumenInventario(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando resumen…</p>';
   const permitido = puedeGestionar();
 
-  const [resumenMapa, resumenPendientes, resumenBodega, resumenReposicionesHoy, resumenHabitacion] = await Promise.all([
+  const [resumenMapa, resumenPendientes, resumenBodega, resumenStockTotal, resumenReposicionesHoy] = await Promise.all([
     calcularResumenMapa(),
     calcularResumenPendientes(),
     calcularResumenBodega(),
+    calcularResumenStockTotal(),
     calcularResumenReposicionesHoy(),
-    calcularResumenHabitacion(),
   ]);
 
   const tarjetas = [
@@ -361,6 +379,12 @@ async function cargarResumenInventario(elemento) {
           : `${resumenBodega.total} producto(s) · ✅ ninguno bajo mínimo`,
       alerta: resumenBodega.bajoMinimo > 0,
     },
+    {
+      id: 'stock-total',
+      icono: '📊',
+      titulo: 'Stock total (bodega + minibares)',
+      resumen: `${resumenStockTotal.total} unidad(es) en total`,
+    },
     permitido ? { id: 'compra', icono: '🛒', titulo: 'Registrar compra', resumen: 'Entrada rápida de un producto a bodega' } : null,
     permitido ? { id: 'reabastecer', icono: '🔁', titulo: 'Reabastecer habitación', resumen: 'Traslada stock de bodega a una habitación' } : null,
     {
@@ -368,12 +392,6 @@ async function cargarResumenInventario(elemento) {
       icono: '📤',
       titulo: 'Reposiciones de hoy',
       resumen: `${resumenReposicionesHoy.total} unidad(es) repuestas hoy`,
-    },
-    {
-      id: 'habitacion',
-      icono: '🏨',
-      titulo: 'Inventario por habitación',
-      resumen: `${resumenHabitacion.habitaciones} habitación(es) con minibar`,
     },
     {
       id: 'movimientos',
@@ -407,23 +425,47 @@ async function cargarResumenInventario(elemento) {
 // =========================================================
 // Mapa de minibares — cuadrícula producto × habitación (ver nota al
 // inicio del archivo, 111). Solo lectura; para reponer, usar la tabla
-// "Pendientes de reponer" o "Inventario por habitación" de más abajo.
+// "Pendientes de reponer" de más abajo. Nota 132: además de la
+// cuadrícula, trae precio de costo y proveedor (desde Bodega, ya que
+// ese dato vive a nivel de producto, no por habitación) para las 3
+// mini-tarjetas de valor y para el botón "⬇ Excel".
 // =========================================================
 async function cargarMapaMinibares(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando mapa de minibares…</p>';
 
-  const [{ data: habitaciones, error: errHab }, { data: productos, error: errProd }, { data: filas, error: errFilas }] = await Promise.all([
+  const [
+    { data: habitaciones, error: errHab },
+    { data: productos, error: errProd },
+    { data: filas, error: errFilas },
+    { data: bodega, error: errBodega },
+    { data: proveedores, error: errProv },
+  ] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre').eq('tiene_minibar', true).order('numero'),
-    supabase.from('minibar_productos').select('id, nombre, categoria, cantidad_estandar').eq('activo', true).gt('cantidad_estandar', 0).order('categoria').order('nombre'),
+    supabase.from('minibar_productos').select('id, nombre, categoria, cantidad_estandar, precio').eq('activo', true).gt('cantidad_estandar', 0).order('categoria').order('nombre'),
     supabase.from('inventario_habitacion').select('habitacion_id, producto_id, cantidad_actual'),
+    supabase.from('inventario_bodega').select('producto_id, precio_costo, proveedor_id'),
+    supabase.from('proveedores').select('id, nombre_comercial'),
   ]);
 
-  if (errHab || errProd || errFilas) {
-    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando el mapa de minibares: ${(errHab || errProd || errFilas).message}</p>`;
+  if (errHab || errProd || errFilas || errBodega || errProv) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando el mapa de minibares: ${(errHab || errProd || errFilas || errBodega || errProv).message}</p>`;
     return;
   }
 
   const actualPorClave = new Map((filas || []).map((f) => [`${f.habitacion_id}_${f.producto_id}`, f.cantidad_actual]));
+  const bodegaPorProducto = new Map((bodega || []).map((b) => [b.producto_id, b]));
+
+  let valorCostoTotal = 0;
+  let valorVentaTotal = 0;
+  (productos || []).forEach((p) => {
+    const costo = Number(bodegaPorProducto.get(p.id)?.precio_costo || 0);
+    const venta = Number(p.precio || 0);
+    (habitaciones || []).forEach((h) => {
+      const actual = Number(actualPorClave.get(`${h.id}_${p.id}`) ?? 0);
+      valorCostoTotal += actual * costo;
+      valorVentaTotal += actual * venta;
+    });
+  });
 
   const ESTILO_COMPLETO = 'background:#e6f4ea; color:#1e7e34;';
   const ESTILO_PARCIAL = 'background:#fff4d6; color:#8a5a00;';
@@ -456,9 +498,15 @@ async function cargarMapaMinibares(elemento) {
           <span><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:#e6f4ea;border:1px solid #1e7e34;margin-right:4px;vertical-align:middle;"></span>Completo</span>
           <span><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:#fff4d6;border:1px solid #8a5a00;margin-right:4px;vertical-align:middle;"></span>Reponer</span>
           <span><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--color-alerta-fondo, #fdecea);border:1px solid var(--color-rojo-oscuro, #c0392b);margin-right:4px;vertical-align:middle;"></span>Falta todo</span>
+          <button type="button" id="btn-exportar-mapa" class="btn btn-secundario btn-chico">⬇ Excel</button>
         </div>
       </div>
-      <p class="mensaje-vacio" style="margin-top:-0.2rem;">De un vistazo: qué hay y qué falta en cada minibar. El número en cada celda es la cantidad actual; "Estándar" es la referencia con la que se compara (no incluye habitaciones sin minibar). Para reponer, usa "Pendientes de reponer" más abajo.</p>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:0.75rem; margin:0.5rem 0 1rem;">
+        <div class="stat-card"><div class="stat-card-label">Cantidad de productos</div><div class="stat-card-valor">${(productos || []).length}</div></div>
+        <div class="stat-card"><div class="stat-card-label">Valor a precio de costo</div><div class="stat-card-valor">${formatCOP(valorCostoTotal)}</div></div>
+        <div class="stat-card"><div class="stat-card-label">Valor a precio de venta</div><div class="stat-card-valor">${formatCOP(valorVentaTotal)}</div></div>
+      </div>
+      <p class="mensaje-vacio" style="margin-top:-0.2rem;">De un vistazo: qué hay y qué falta en cada minibar. El número en cada celda es la cantidad actual; "Estándar" es la referencia con la que se compara (no incluye habitaciones sin minibar). Para reponer, usa "Pendientes de reponer" más abajo. Para desactivar el minibar de una habitación (arriendo sin minibar) y devolver su stock a bodega, usa Configuración → Habitaciones → "🧹 Vaciar minibar y desactivar".</p>
       <div class="tabla-scroll" style="max-height:520px; overflow:auto;">
         <table class="tabla-simple" style="border-collapse:collapse;">
           <thead>
@@ -487,6 +535,28 @@ async function cargarMapaMinibares(elemento) {
       </div>
     </div>
   `;
+
+  elemento.querySelector('#btn-exportar-mapa').addEventListener('click', () => {
+    const filasExport = [];
+    (productos || []).forEach((p) => {
+      const infoBodega = bodegaPorProducto.get(p.id);
+      const costo = infoBodega?.precio_costo || 0;
+      const proveedorNombre = (proveedores || []).find((pr) => pr.id === infoBodega?.proveedor_id)?.nombre_comercial || '—';
+      (habitaciones || []).forEach((h) => {
+        const actual = Number(actualPorClave.get(`${h.id}_${p.id}`) ?? 0);
+        filasExport.push([p.categoria, p.nombre, h.numero, actual, p.cantidad_estandar, p.precio || 0, costo, proveedorNombre]);
+      });
+    });
+    descargarCSV(`mapa_minibares_${toISODate(new Date())}.csv`, [
+      ['Mapa de minibares — stock, precios y proveedor — Santa Ana House 21'],
+      ['Generado', formatFechaHora(new Date().toISOString())],
+      ['Valor total a precio de costo', valorCostoTotal],
+      ['Valor total a precio de venta', valorVentaTotal],
+      [],
+      ['Categoría', 'Producto', 'Habitación', 'Cantidad en minibar', 'Estándar', 'Precio de venta', 'Precio de costo', 'Proveedor'],
+      ...filasExport,
+    ]);
+  });
 }
 
 // =========================================================
@@ -495,6 +565,10 @@ async function cargarMapaMinibares(elemento) {
 // — el detalle completo y la edición viven en una tarjeta emergente que
 // abre el botón "👁️ Ver" (ver `abrirModalDetalleBodega`), en vez de
 // filas editables inline (que quedaban demasiado anchas/incómodas).
+// Nota 132: se agregaron 3 mini-tarjetas fijas arriba (cantidad de
+// productos, valor a precio de costo, valor a precio de venta) y la
+// tabla ahora ordena primero los productos por debajo del mínimo, para
+// no tener que bajar a buscarlos.
 // =========================================================
 async function cargarInventarioBodega(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
@@ -516,13 +590,34 @@ async function cargarInventarioBodega(elemento) {
 
   const porId = new Map((inventario || []).map((f) => [f.id, f]));
 
+  const cantidadProductos = (inventario || []).length;
+  const valorCostoTotal = (inventario || []).reduce((sum, f) => sum + Number(f.cantidad_actual || 0) * Number(f.precio_costo || 0), 0);
+  const valorVentaTotal = (inventario || []).reduce((sum, f) => sum + Number(f.cantidad_actual || 0) * Number(f.minibar_productos?.precio || 0), 0);
+
+  // Pendientes de reponer (bajo mínimo) primero, luego orden alfabético
+  // dentro de cada grupo — antes quedaba el orden crudo de la consulta
+  // (categoría/nombre) sin distinguir los que sí necesitan atención.
+  const inventarioOrdenado = [...(inventario || [])].sort((a, b) => {
+    const aBajo = a.cantidad_minima > 0 && a.cantidad_actual <= a.cantidad_minima;
+    const bBajo = b.cantidad_minima > 0 && b.cantidad_actual <= b.cantidad_minima;
+    if (aBajo !== bBajo) return aBajo ? -1 : 1;
+    const catCompare = (a.minibar_productos?.categoria || '').localeCompare(b.minibar_productos?.categoria || '');
+    if (catCompare !== 0) return catCompare;
+    return (a.minibar_productos?.nombre || '').localeCompare(b.minibar_productos?.nombre || '');
+  });
+
   elemento.innerHTML = `
     <div class="tarjeta">
       <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.25rem;">
         <h3 style="margin:0;">Bodega — existencias y proveedor</h3>
         <button type="button" id="btn-exportar-bodega" class="btn btn-secundario btn-chico">⬇ Excel</button>
       </div>
-      <p class="texto-ayuda">Dale "👁️ Ver" a un producto para ver el detalle completo (costo, proveedor, mínimo, última actualización) y editarlo ahí. Producto en rojo = existencia por debajo del mínimo definido (recompra sugerida).</p>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:0.75rem; margin-bottom:0.75rem;">
+        <div class="stat-card"><div class="stat-card-label">Cantidad de productos</div><div class="stat-card-valor">${cantidadProductos}</div></div>
+        <div class="stat-card"><div class="stat-card-label">Valor a precio de costo</div><div class="stat-card-valor">${formatCOP(valorCostoTotal)}</div></div>
+        <div class="stat-card"><div class="stat-card-label">Valor a precio de venta</div><div class="stat-card-valor">${formatCOP(valorVentaTotal)}</div></div>
+      </div>
+      <p class="texto-ayuda">Los productos que necesitan reponerse aparecen primero. Dale "👁️ Ver" a un producto para ver el detalle completo (costo, proveedor, mínimo, última actualización) y editarlo ahí.</p>
       <div class="tabla-scroll">
         <table class="tabla-simple">
           <thead>
@@ -536,7 +631,7 @@ async function cargarInventarioBodega(elemento) {
           </thead>
           <tbody>
             ${
-              (inventario || [])
+              inventarioOrdenado
                 .map((f) => {
                   const bajoMinimo = f.cantidad_minima > 0 && f.cantidad_actual <= f.cantidad_minima;
                   return `
@@ -561,9 +656,12 @@ async function cargarInventarioBodega(elemento) {
     descargarCSV(`bodega_existencias_${toISODate(new Date())}.csv`, [
       ['Bodega — existencias y proveedor — Santa Ana House 21'],
       ['Generado', formatFechaHora(new Date().toISOString())],
+      ['Cantidad de productos', cantidadProductos],
+      ['Valor total a precio de costo', valorCostoTotal],
+      ['Valor total a precio de venta', valorVentaTotal],
       [],
       ['Categoría', 'Producto', 'Precio de venta', 'Precio costo', 'Proveedor', 'En bodega', 'Mínimo', 'Actualizado'],
-      ...(inventario || []).map((f) => [
+      ...inventarioOrdenado.map((f) => [
         f.minibar_productos?.categoria || '—',
         f.minibar_productos?.nombre || '—',
         f.minibar_productos?.precio || 0,
@@ -684,6 +782,119 @@ function abrirModalDetalleBodega(f, proveedores, elemento, permitido) {
   }
 
   pintarVista();
+}
+
+// =========================================================
+// Stock total (132): consolida bodega + minibares por producto — para
+// ver de un vistazo TODO lo que hay de cada producto sin importar dónde
+// está físicamente, con su valor a precio de costo y de venta.
+// =========================================================
+async function cargarStockTotal(elemento) {
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+
+  const [{ data: productos, error: errProd }, { data: bodega, error: errBodega }, { data: habitacionRows, error: errHab }, { data: proveedores, error: errProv }] = await Promise.all([
+    supabase.from('minibar_productos').select('id, nombre, categoria, precio').eq('activo', true).order('categoria').order('nombre'),
+    supabase.from('inventario_bodega').select('producto_id, cantidad_actual, precio_costo, proveedor_id'),
+    supabase.from('inventario_habitacion').select('producto_id, cantidad_actual'),
+    supabase.from('proveedores').select('id, nombre_comercial'),
+  ]);
+
+  if (errProd || errBodega || errHab || errProv) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando el stock total: ${(errProd || errBodega || errHab || errProv).message}</p>`;
+    return;
+  }
+
+  const bodegaPorProducto = new Map((bodega || []).map((b) => [b.producto_id, b]));
+  const enMinibaresPorProducto = new Map();
+  (habitacionRows || []).forEach((f) => {
+    enMinibaresPorProducto.set(f.producto_id, (enMinibaresPorProducto.get(f.producto_id) || 0) + Number(f.cantidad_actual || 0));
+  });
+
+  const filas = (productos || []).map((p) => {
+    const infoBodega = bodegaPorProducto.get(p.id);
+    const enBodega = Number(infoBodega?.cantidad_actual || 0);
+    const enMinibares = Number(enMinibaresPorProducto.get(p.id) || 0);
+    const total = enBodega + enMinibares;
+    const precioVenta = Number(p.precio || 0);
+    const precioCosto = Number(infoBodega?.precio_costo || 0);
+    const proveedorNombre = (proveedores || []).find((pr) => pr.id === infoBodega?.proveedor_id)?.nombre_comercial || '—';
+    return {
+      categoria: p.categoria,
+      nombre: p.nombre,
+      enBodega,
+      enMinibares,
+      total,
+      precioVenta,
+      precioCosto,
+      proveedorNombre,
+      valorCosto: total * precioCosto,
+      valorVenta: total * precioVenta,
+    };
+  });
+
+  const totalUnidades = filas.reduce((sum, f) => sum + f.total, 0);
+  const valorCostoTotal = filas.reduce((sum, f) => sum + f.valorCosto, 0);
+  const valorVentaTotal = filas.reduce((sum, f) => sum + f.valorVenta, 0);
+
+  elemento.innerHTML = `
+    <div class="tarjeta">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.25rem;">
+        <h3 style="margin:0;">📊 Stock total (bodega + minibares)</h3>
+        <button type="button" id="btn-exportar-stock-total" class="btn btn-secundario btn-chico">⬇ Excel</button>
+      </div>
+      <p class="mensaje-vacio" style="margin-top:-0.2rem;">Suma lo que hay en bodega más lo que hay repartido en todos los minibares, producto por producto, con su valor a precio de costo y de venta.</p>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:0.75rem; margin-bottom:1rem;">
+        <div class="stat-card"><div class="stat-card-label">Unidades totales</div><div class="stat-card-valor">${totalUnidades}</div></div>
+        <div class="stat-card"><div class="stat-card-label">Valor a precio de costo</div><div class="stat-card-valor">${formatCOP(valorCostoTotal)}</div></div>
+        <div class="stat-card"><div class="stat-card-label">Valor a precio de venta</div><div class="stat-card-valor">${formatCOP(valorVentaTotal)}</div></div>
+      </div>
+      <div class="tabla-scroll">
+        <table class="tabla-simple">
+          <thead>
+            <tr>
+              <th>Producto</th>
+              <th>En bodega</th>
+              <th>En minibares</th>
+              <th>Total</th>
+              <th>Precio venta</th>
+              <th>Precio costo</th>
+              <th>Proveedor</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              filas
+                .map(
+                  (f) => `<tr>
+                <td>${escaparHTML(f.nombre)} <span class="mensaje-vacio">(${escaparHTML(f.categoria)})</span></td>
+                <td>${f.enBodega}</td>
+                <td>${f.enMinibares}</td>
+                <td style="font-weight:700;">${f.total}</td>
+                <td>${formatCOP(f.precioVenta)}</td>
+                <td>${formatCOP(f.precioCosto)}</td>
+                <td>${escaparHTML(f.proveedorNombre)}</td>
+              </tr>`
+                )
+                .join('') || `<tr><td colspan="7" class="mensaje-vacio">Sin productos activos.</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  elemento.querySelector('#btn-exportar-stock-total').addEventListener('click', () => {
+    descargarCSV(`stock_total_${toISODate(new Date())}.csv`, [
+      ['Stock total (bodega + minibares) — Santa Ana House 21'],
+      ['Generado', formatFechaHora(new Date().toISOString())],
+      ['Unidades totales', totalUnidades],
+      ['Valor total a precio de costo', valorCostoTotal],
+      ['Valor total a precio de venta', valorVentaTotal],
+      [],
+      ['Categoría', 'Producto', 'En bodega', 'En minibares', 'Total', 'Precio de venta', 'Precio de costo', 'Proveedor'],
+      ...filas.map((f) => [f.categoria, f.nombre, f.enBodega, f.enMinibares, f.total, f.precioVenta, f.precioCosto, f.proveedorNombre]),
+    ]);
+  });
 }
 
 // Tarjeta emergente para dar de alta un producto nuevo desde "Registrar
@@ -1021,8 +1232,9 @@ async function reponerCantidadParcial(habitacionId, productoId, cantidadDeseada)
 // bodega (suma inventario_bodega, deja la habitación en 0, registra cada
 // movimiento con tipo 'vaciado_a_bodega') y desactiva `tiene_minibar` en
 // esa habitación. Pensada para habitaciones que se arriendan sin minibar
-// (ver nota al inicio del archivo, 115). Exportada porque también se usa
-// desde config-habitaciones.js.
+// (ver nota al inicio del archivo). Exportada porque la usa
+// config-habitaciones.js — es el ÚNICO lugar con botón para esta acción
+// desde 133 (ver nota 133 al inicio del archivo).
 // =========================================================
 export async function vaciarMinibarHabitacion(habitacionId, usuarioId) {
   const { data: filas, error } = await supabase
@@ -1080,8 +1292,8 @@ export async function vaciarMinibarHabitacion(habitacionId, usuarioId) {
 }
 
 // Refresca todas las secciones que dependen del stock (mapa, bodega,
-// pendientes de reponer, inventario por habitación, reposiciones de hoy
-// y el log de movimientos) después de cualquier traslado bodega → habitación.
+// pendientes de reponer, reposiciones de hoy y el log de movimientos)
+// después de cualquier traslado bodega → habitación.
 async function refrescarTrasReabastecer() {
   const wrapMapa = document.querySelector('#inv-mapa-wrap');
   if (wrapMapa) await cargarMapaMinibares(wrapMapa);
@@ -1089,8 +1301,6 @@ async function refrescarTrasReabastecer() {
   if (wrapPendientes) await cargarPendientesReponer(wrapPendientes);
   const wrapBodega = document.querySelector('#inv-bodega-wrap');
   if (wrapBodega) await cargarInventarioBodega(wrapBodega);
-  const wrapHab = document.querySelector('#inv-habitacion-wrap');
-  if (wrapHab) await cargarInventarioHabitacion(wrapHab);
   const wrapReposicionesHoy = document.querySelector('#inv-reposiciones-hoy-wrap');
   if (wrapReposicionesHoy) await cargarReposicionesHoy(wrapReposicionesHoy);
   const wrapMov = document.querySelector('#inv-movimientos-wrap');
@@ -1098,7 +1308,12 @@ async function refrescarTrasReabastecer() {
 }
 
 // =========================================================
-// Reabastecer habitación (bodega → habitación)
+// Reabastecer habitación (bodega → habitación) — ver nota 132.5 al
+// inicio del archivo: el formulario ya no deja elegir cualquier
+// combinación. Solo aparecen habitaciones con algo pendiente, el
+// selector de producto se llena SOLO con lo que le falta a la
+// habitación elegida, y la cantidad viene precargada con lo que falta y
+// no se puede subir más de eso.
 // =========================================================
 async function cargarSeccionReabastecer(elemento) {
   if (!puedeGestionar()) {
@@ -1106,58 +1321,97 @@ async function cargarSeccionReabastecer(elemento) {
     return;
   }
 
-  const [{ data: habitaciones }, { data: productos }] = await Promise.all([
+  const [{ data: habitacionesTodas }, { data: productos }, { data: filas }] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre').eq('tiene_minibar', true).order('numero'),
-    supabase.from('minibar_productos').select('id, nombre, categoria').order('categoria').order('nombre'),
+    supabase.from('minibar_productos').select('id, nombre, categoria, cantidad_estandar').eq('activo', true).gt('cantidad_estandar', 0).order('categoria').order('nombre'),
+    supabase.from('inventario_habitacion').select('habitacion_id, producto_id, cantidad_actual'),
   ]);
 
-  const categorias = [...new Set((productos || []).map((p) => p.categoria))];
+  const actualPorClave = new Map((filas || []).map((f) => [`${f.habitacion_id}_${f.producto_id}`, f.cantidad_actual]));
+
+  const pendientesPorHabitacion = new Map();
+  (habitacionesTodas || []).forEach((h) => {
+    const pendientes = [];
+    (productos || []).forEach((p) => {
+      const actual = Number(actualPorClave.get(`${h.id}_${p.id}`) ?? 0);
+      const falta = Number(p.cantidad_estandar) - actual;
+      if (falta > 0) pendientes.push({ productoId: p.id, nombre: p.nombre, categoria: p.categoria, falta });
+    });
+    if (pendientes.length > 0) pendientesPorHabitacion.set(h.id, pendientes);
+  });
+
+  const habitaciones = (habitacionesTodas || []).filter((h) => pendientesPorHabitacion.has(h.id));
+
+  if (habitaciones.length === 0) {
+    elemento.innerHTML = `
+      <div class="tarjeta">
+        <h3>Reabastecer habitación (bodega → habitación)</h3>
+        <p class="mensaje-vacio">✅ Ninguna habitación tiene pendientes ahora mismo — no hay nada que reabastecer. Puedes ver el detalle en "Pendientes de reponer".</p>
+      </div>
+    `;
+    return;
+  }
 
   elemento.innerHTML = `
     <div class="tarjeta">
       <h3>Reabastecer habitación (bodega → habitación)</h3>
+      <p class="texto-ayuda">Solo aparecen habitaciones y productos con algo pendiente, y la cantidad no puede pasar de lo que falta según el estándar — así no se puede reponer de más ni a una habitación que ya está completa.</p>
       <form id="form-reabastecer" class="form-grid">
         <label>Habitación
-          <select name="habitacion_id" required>
-            ${(habitaciones || []).map((h) => `<option value="${h.id}">${escaparHTML(h.numero)} — ${escaparHTML(h.nombre)}</option>`).join('')}
-          </select>
-        </label>
-        <label>Producto
-          <select name="producto_id" required>
-            ${categorias
-              .map(
-                (cat) => `
-              <optgroup label="${escaparHTML(cat)}">
-                ${(productos || [])
-                  .filter((p) => p.categoria === cat)
-                  .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)}</option>`)
-                  .join('')}
-              </optgroup>
-            `
-              )
+          <select name="habitacion_id" id="select-hab-reabastecer" required>
+            ${habitaciones
+              .map((h) => `<option value="${h.id}">${escaparHTML(h.numero)} — ${escaparHTML(h.nombre)} (${pendientesPorHabitacion.get(h.id).length} pendiente(s))</option>`)
               .join('')}
           </select>
         </label>
+        <label>Producto
+          <select name="producto_id" id="select-prod-reabastecer" required></select>
+        </label>
         <label>Cantidad a trasladar
-          <input type="number" name="cantidad" min="1" value="1" required />
+          <input type="number" name="cantidad" id="input-cantidad-reabastecer" min="1" value="1" required />
         </label>
         <button type="submit" class="btn btn-secundario btn-chico">Reabastecer</button>
       </form>
     </div>
   `;
 
+  const selectHab = elemento.querySelector('#select-hab-reabastecer');
+  const selectProd = elemento.querySelector('#select-prod-reabastecer');
+  const inputCantidad = elemento.querySelector('#input-cantidad-reabastecer');
+
+  function pintarProductos(habitacionId) {
+    const pendientes = pendientesPorHabitacion.get(habitacionId) || [];
+    selectProd.innerHTML = pendientes
+      .map((p) => `<option value="${p.productoId}" data-falta="${p.falta}">${escaparHTML(p.nombre)} — faltan ${p.falta} (${escaparHTML(p.categoria)})</option>`)
+      .join('');
+    ajustarCantidadMax();
+  }
+
+  function ajustarCantidadMax() {
+    const opcion = selectProd.selectedOptions[0];
+    const falta = opcion ? Number(opcion.dataset.falta) : 1;
+    inputCantidad.max = falta;
+    inputCantidad.value = falta;
+  }
+
+  pintarProductos(Number(selectHab.value));
+  selectHab.addEventListener('change', () => pintarProductos(Number(selectHab.value)));
+  selectProd.addEventListener('change', ajustarCantidadMax);
+
   elemento.querySelector('#form-reabastecer').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
     const habitacionId = Number(form.get('habitacion_id'));
     const productoId = Number(form.get('producto_id'));
-    const cantidad = Number(form.get('cantidad'));
+    const opcion = selectProd.selectedOptions[0];
+    const falta = opcion ? Number(opcion.dataset.falta) : Infinity;
+    const cantidad = Math.min(Math.max(1, Number(form.get('cantidad')) || 0), falta);
 
     const ok = await ejecutarReabastecimiento(habitacionId, productoId, cantidad);
     if (!ok) return;
 
-    e.target.reset();
     await refrescarTrasReabastecer();
+    await cargarSeccionReabastecer(elemento);
   });
 }
 
@@ -1165,9 +1419,7 @@ async function cargarSeccionReabastecer(elemento) {
 // registro en inventario_movimientos. delta positivo = entra, negativo = sale.
 // A propósito NUNCA toca inventario_bodega — quien la llama decide si
 // además debe moverse stock de bodega (ver ejecutarReabastecimiento /
-// trasladarSinConfirmar más arriba) o no (ver el editor de "Actual" en
-// cargarInventarioHabitacion, que la usa sola para corregir el conteo de
-// la habitación sin afectar la bodega).
+// trasladarSinConfirmar más arriba) o no.
 export async function ajustarInventarioHabitacion(habitacionId, productoId, delta, usuarioId, tipoMovimiento) {
   const { data: fila } = await supabase
     .from('inventario_habitacion')
@@ -1447,155 +1699,6 @@ async function cargarReposicionesHoy(elemento) {
       }
     </div>
   `;
-}
-
-// =========================================================
-// Inventario por habitación (ver nota 119 al inicio del archivo):
-// consulta de SOLO LECTURA — la edición manual de "Actual" se quitó
-// porque el conteo ya se carga completo desde el mapa/Excel y ya no
-// hace falta corregirlo aquí a mano. Solo muestra habitaciones con
-// minibar habilitado (ver 109/111). Incluye el botón "🧹 Vaciar
-// minibar" (ver nota 115 al inicio del archivo), que sigue funcionando
-// igual.
-// =========================================================
-async function cargarInventarioHabitacion(elemento) {
-  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
-
-  const { data: habitaciones, error: errHab } = await supabase.from('habitaciones').select('id, numero, nombre').eq('tiene_minibar', true).order('numero');
-  if (errHab) {
-    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando habitaciones: ${errHab.message}</p>`;
-    return;
-  }
-
-  elemento.innerHTML = `
-    <div class="tarjeta">
-      <h3>Inventario por habitación</h3>
-      <label>Selecciona una habitación
-        <select id="select-hab-inventario" style="max-width:280px">
-          ${(habitaciones || []).map((h) => `<option value="${h.id}">${escaparHTML(h.numero)} — ${escaparHTML(h.nombre)}</option>`).join('')}
-        </select>
-      </label>
-      <div id="detalle-hab-inventario" style="margin-top:1rem;">
-        <p class="mensaje-vacio">Cargando…</p>
-      </div>
-    </div>
-  `;
-
-  const select = elemento.querySelector('#select-hab-inventario');
-  const detalle = elemento.querySelector('#detalle-hab-inventario');
-
-  async function pintarDetalle(habitacionId) {
-    detalle.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
-
-    // A propósito trae TODO el catálogo activo (no solo lo que ya tenga
-    // fila en inventario_habitacion) para poder cargar el conteo real de
-    // un producto que esta habitación nunca había tenido inventariado.
-    const [{ data: productos, error: errProd }, { data: filas, error: errFilas }] = await Promise.all([
-      supabase.from('minibar_productos').select('id, nombre, categoria, cantidad_estandar').eq('activo', true).order('categoria').order('nombre'),
-      supabase.from('inventario_habitacion').select('producto_id, cantidad_actual').eq('habitacion_id', habitacionId),
-    ]);
-
-    if (errProd || errFilas) {
-      detalle.innerHTML = `<p class="mensaje-vacio">Error: ${(errProd || errFilas).message}</p>`;
-      return;
-    }
-
-    const actualPorProducto = new Map((filas || []).map((f) => [f.producto_id, f.cantidad_actual]));
-    const permitidoGestionar = puedeGestionar();
-
-    detalle.innerHTML = `
-      ${
-        permitidoGestionar
-          ? `<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; flex-wrap:wrap; margin-bottom:0.5rem;">
-              <p class="mensaje-vacio" style="margin:0; max-width:640px;">Consulta de solo lectura — el conteo se actualiza automáticamente con cada consumo, reposición o carga de inventario.</p>
-              <button type="button" id="btn-vaciar-minibar" class="btn btn-secundario btn-chico" style="white-space:nowrap;">🧹 Vaciar minibar</button>
-            </div>`
-          : ''
-      }
-      <div class="tabla-scroll">
-        <table class="tabla-simple">
-          <thead>
-            <tr>
-              <th>Categoría</th>
-              <th>Producto</th>
-              <th>Actual</th>
-              <th>Estándar</th>
-              <th>Estado</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${
-              (productos || [])
-                .map((p) => {
-                  const actual = Number(actualPorProducto.get(p.id) ?? 0);
-                  const estandar = Number(p.cantidad_estandar ?? 0);
-                  const falta = actual < estandar;
-                  return `<tr>
-                    <td>${escaparHTML(p.categoria)}</td>
-                    <td>${escaparHTML(p.nombre)}</td>
-                    <td>${actual}</td>
-                    <td>${estandar}</td>
-                    <td>${falta ? '⚠️ Reponer' : '✅'}</td>
-                  </tr>`;
-                })
-                .join('') || `<tr><td colspan="5" class="mensaje-vacio">Sin productos activos en el catálogo.</td></tr>`
-            }
-          </tbody>
-        </table>
-      </div>
-    `;
-
-    if (!permitidoGestionar) return;
-
-    const btnVaciar = detalle.querySelector('#btn-vaciar-minibar');
-    if (btnVaciar) {
-      btnVaciar.addEventListener('click', async () => {
-        const habLabel = select.options[select.selectedIndex]?.textContent || '';
-        const ok = await mostrarConfirmacion({
-          titulo: 'Vaciar minibar',
-          contenidoHTML: `Vas a devolver <strong>todo</strong> el stock actual del minibar de <strong>${escaparHTML(habLabel)}</strong> a la bodega, dejarla en 0 y desactivar su minibar (deja de aparecer en Pendientes/Mapa hasta que se reactive en Configuración). Úsalo cuando la habitación se arriende sin minibar. ¿Confirmas?`,
-          textoConfirmar: 'Sí, vaciar',
-        });
-        if (!ok) return;
-
-        btnVaciar.disabled = true;
-        const usuario = getUsuarioActual();
-        const resultado = await vaciarMinibarHabitacion(habitacionId, usuario?.id || null);
-        if (resultado.error) {
-          mostrarToast(`Error: ${resultado.error.message}`, 'error');
-          btnVaciar.disabled = false;
-          return;
-        }
-
-        mostrarToast(
-          resultado.unidades > 0
-            ? `Minibar vaciado: ${resultado.unidades} unidad(es) de ${resultado.productos} producto(s) devueltas a bodega. Minibar desactivado.`
-            : 'La habitación ya no tenía existencias — minibar desactivado.',
-          'exito'
-        );
-
-        // Recarga toda la sección (no solo el detalle) para que el
-        // selector deje de listar esta habitación, ya que quedó sin
-        // minibar.
-        await cargarInventarioHabitacion(elemento);
-        const wrapMapa = document.querySelector('#inv-mapa-wrap');
-        if (wrapMapa) await cargarMapaMinibares(wrapMapa);
-        const wrapPendientes = document.querySelector('#inv-pendientes-wrap');
-        if (wrapPendientes) await cargarPendientesReponer(wrapPendientes);
-        const wrapBodega = document.querySelector('#inv-bodega-wrap');
-        if (wrapBodega) await cargarInventarioBodega(wrapBodega);
-        const wrapMov = document.querySelector('#inv-movimientos-wrap');
-        if (wrapMov) await cargarMovimientos(wrapMov);
-      });
-    }
-  }
-
-  if (habitaciones && habitaciones.length > 0) {
-    await pintarDetalle(habitaciones[0].id);
-    select.addEventListener('change', () => pintarDetalle(Number(select.value)));
-  } else {
-    detalle.innerHTML = '<p class="mensaje-vacio">No hay habitaciones con minibar habilitado.</p>';
-  }
 }
 
 // =========================================================
