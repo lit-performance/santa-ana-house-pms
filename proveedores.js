@@ -12,15 +12,22 @@
 //     SOLO LECTURA y muestra solo lo esencial para identificar de un
 //     vistazo (Nombre comercial, Contacto, Teléfono, Ciudad, Activo) —
 //     cabe sin scroll horizontal en la mayoría de pantallas.
-//  2. "👁️ Ver" abre una tarjeta emergente con TODOS los datos (razón
-//     social, NIT, correo, dirección, condiciones de pago, notas) y,
-//     para quien puede gestionar, un botón "✏️ Editar" que cambia la
-//     misma tarjeta a un formulario completo (sin volver a la tabla) —
-//     igual que el detalle de Bodega. "🗑 Eliminar" también vive ahí.
-//  3. "+ Nuevo proveedor" ya no es un formulario largo debajo de la
-//     tabla — ahora es un botón que abre una tarjeta emergente aparte
-//     con todos los campos, sin ocupar espacio en la pantalla principal
-//     cuando no se está usando.
+//  2. "👁️ Ver" abre una tarjeta emergente con todos los datos (razón
+//     social, NIT, correo, dirección, condiciones de pago, notas), con
+//     botón "✏️ Editar" que cambia esa misma tarjeta a formulario
+//     completo, y "🗑 Eliminar" con confirmación.
+//  3. "+ Nuevo proveedor" ya no es un formulario fijo en la hoja — es un
+//     botón que abre una tarjeta emergente con todos los campos.
+//
+// Nota (143): `abrirModalProveedorNuevo` ahora se EXPORTA y, al crear el
+// proveedor, pasa el registro recién creado (id + nombre_comercial) a
+// `onCreado(nuevoProveedor)` en vez de llamarlo sin argumentos — así
+// inventario.js también puede reutilizar esta misma tarjeta emergente
+// desde "Registrar compra" (botón "➕" junto al selector de Proveedor,
+// para cuando el proveedor de esa compra todavía no está en el
+// directorio) sin duplicar el formulario. El uso interno de este mismo
+// archivo (botón "+ Nuevo proveedor" del directorio) sigue funcionando
+// igual, solo ignora ese argumento.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -75,7 +82,7 @@ async function cargarProveedores(elemento) {
   elemento.innerHTML = `
     <div class="tarjeta">
       <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.25rem;">
-        <h3 style="margin:0;">Directorio de proveedores</h3>
+        <h3 style="margin:0;">🚚 Directorio de proveedores</h3>
         ${permitido ? '<button type="button" id="btn-nuevo-proveedor" class="btn btn-primario btn-chico">+ Nuevo proveedor</button>' : ''}
       </div>
       <p class="texto-ayuda">Dale "👁️ Ver" a un proveedor para ver todos sus datos (razón social, NIT, correo, dirección, condiciones de pago, notas) y editarlo ahí.</p>
@@ -286,8 +293,12 @@ function abrirModalDetalleProveedor(p, elemento, permitido) {
 
 // Tarjeta emergente para dar de alta un proveedor nuevo, con TODOS los
 // campos — reemplaza al formulario largo que antes vivía debajo de la
-// tabla en la misma hoja (ver nota 142 al inicio del archivo).
-function abrirModalProveedorNuevo({ onCreado }) {
+// tabla en la misma hoja (ver nota 142 al inicio del archivo). Exportada
+// (143) para que inventario.js también la reutilice desde "Registrar
+// compra". Al crear el proveedor, `onCreado` recibe el registro recién
+// creado ({ id, nombre_comercial }) para que quien la llamó pueda, por
+// ejemplo, seleccionarlo automáticamente en un <select>.
+export function abrirModalProveedorNuevo({ onCreado }) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
@@ -349,25 +360,29 @@ function abrirModalProveedorNuevo({ onCreado }) {
       return;
     }
 
-    const { error } = await supabase.from('proveedores').insert({
-      nombre_comercial: nombreComercial,
-      razon_social: form.get('razon_social').trim() || null,
-      nit: form.get('nit').trim() || null,
-      contacto_nombre: form.get('contacto_nombre').trim() || null,
-      telefono: form.get('telefono').trim() || null,
-      correo: form.get('correo').trim() || null,
-      direccion: form.get('direccion').trim() || null,
-      ciudad: form.get('ciudad').trim() || null,
-      condiciones_pago: form.get('condiciones_pago').trim() || null,
-      notas: form.get('notas').trim() || null,
-    });
+    const { data: nuevoProveedor, error } = await supabase
+      .from('proveedores')
+      .insert({
+        nombre_comercial: nombreComercial,
+        razon_social: form.get('razon_social').trim() || null,
+        nit: form.get('nit').trim() || null,
+        contacto_nombre: form.get('contacto_nombre').trim() || null,
+        telefono: form.get('telefono').trim() || null,
+        correo: form.get('correo').trim() || null,
+        direccion: form.get('direccion').trim() || null,
+        ciudad: form.get('ciudad').trim() || null,
+        condiciones_pago: form.get('condiciones_pago').trim() || null,
+        notas: form.get('notas').trim() || null,
+      })
+      .select('id, nombre_comercial')
+      .single();
     if (error) {
       mostrarToast(`Error creando proveedor: ${error.message}`, 'error');
       return;
     }
     mostrarToast('Proveedor agregado.', 'exito');
     overlay.remove();
-    onCreado();
+    onCreado(nuevoProveedor);
   });
 }
 
