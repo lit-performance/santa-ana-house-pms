@@ -1,7 +1,21 @@
 /* assets/css/styles.css
    Mismo sistema de diseño que el CRM de Servicentro B&B (colores, tarjetas,
    modales, tablas, badges, toasts), reutilizado tal cual para consistencia
-   entre ambos proyectos de Lord Solutions. */
+   entre ambos proyectos de Lord Solutions.
+
+   Nota (145): rediseño visual general de tarjetas y mini-tarjetas — esquinas
+   más redondeadas (--radio-tarjeta), fondo suave (no blanco puro) y un
+   borde-sombra de color grueso a la izquierda (o arriba, en las
+   mini-tarjetas de estadística) como estilo por defecto EN TODO EL SISTEMA,
+   no solo en Inventario/Compras — así toda la navegación se ve consistente
+   y con más calidez. El color azul de marca es el que aparece por defecto;
+   las tarjetas que ya usan un acento de color propio (`.tarjeta-acento-*`,
+   `.stat-card-*` — verde=ok, rojo=alerta, naranja=pendiente, morado=especial)
+   conservan su propio color de borde y ahora también su propia sombra de
+   ese color. También corrige que la tarjeta emergente (`.modal-caja`) no
+   tenía scroll propio: si el contenido era más alto que la pantalla, el
+   scroll se lo "robaba" la página de atrás en vez de moverse dentro del
+   modal — ahora tiene su propio alto máximo y scroll interno. */
 
 :root {
   --color-rojo: #d32f2f;
@@ -21,6 +35,8 @@
   --color-pagado: #1e8e5a;
   --color-vencido: #d32f2f;
   --radio: 10px;
+  --radio-tarjeta: 18px;
+  --radio-chico: 14px;
   --sombra: 0 2px 10px rgba(26, 26, 26, 0.1);
   --font-display: var(--font-cuerpo);
   --font-cuerpo: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -384,12 +400,19 @@ h3 {
   padding: 1rem;
 }
 
+/* Nota (145): antes esta tarjeta no tenía alto máximo propio ni scroll
+   interno — si el formulario era más alto que la pantalla (ej. "Nuevo
+   proveedor" con 10 campos), el navegador scrolleaba la PÁGINA de atrás
+   en vez del contenido del modal, y la parte de abajo del formulario
+   quedaba inalcanzable. Ahora el modal mismo tiene su propio scroll. */
 .modal-caja {
   background: var(--color-superficie);
-  border-radius: var(--radio);
+  border-radius: var(--radio-tarjeta);
   padding: 1.5rem;
   max-width: 480px;
   width: 100%;
+  max-height: 88vh;
+  overflow-y: auto;
   box-shadow: var(--sombra);
 }
 
@@ -406,12 +429,18 @@ h3 {
 }
 
 /* ---------- Tarjetas y formularios ---------- */
+/* Nota (145): estilo general de tarjeta EN TODO EL SISTEMA — esquinas
+   redondeadas, fondo suave (no blanco puro) y borde+sombra de color
+   grueso a la izquierda (azul de marca por defecto). Las tarjetas con
+   acento propio (`.tarjeta-acento-*`, más abajo) conservan su color. */
 .tarjeta {
-  background: var(--color-superficie);
-  border: 1px solid var(--color-borde);
-  border-radius: var(--radio);
-  padding: 1.25rem;
+  background: #fbfcfe;
+  border: 1px solid rgba(30, 78, 140, 0.12);
+  border-left: 6px solid var(--color-azul);
+  border-radius: var(--radio-tarjeta);
+  padding: 1.35rem 1.5rem;
   margin-bottom: 1.25rem;
+  box-shadow: 0 4px 18px rgba(30, 78, 140, 0.12);
 }
 
 .acciones-tarjeta {
@@ -516,19 +545,23 @@ h3 {
 }
 
 /* ---------- Tarjeta de estadística simple (etiqueta + número grande) ---------- */
+/* Nota (145): mismo tratamiento que `.tarjeta` — esquinas redondeadas,
+   fondo suave y borde+sombra de color (arriba, en vez de a la
+   izquierda, para diferenciarla visualmente de una tarjeta de
+   contenido normal). */
 .stat-card {
-  background: var(--color-superficie);
-  border: 1px solid var(--color-borde);
-  border-top: 4px solid var(--color-azul);
-  border-radius: 10px;
+  background: #fbfcfe;
+  border: 1px solid rgba(30, 78, 140, 0.10);
+  border-top: 5px solid var(--color-azul);
+  border-radius: var(--radio-chico);
   padding: 1.1rem 1.3rem;
-  box-shadow: var(--sombra);
+  box-shadow: 0 4px 14px rgba(30, 78, 140, 0.12);
 }
 
-.stat-card-azul { border-top-color: var(--color-azul); }
-.stat-card-verde { border-top-color: var(--color-verde); }
-.stat-card-naranja { border-top-color: var(--color-pendiente); }
-.stat-card-rojo { border-top-color: var(--color-rojo); }
+.stat-card-azul { border-top-color: var(--color-azul); box-shadow: 0 4px 14px rgba(30, 78, 140, 0.14); }
+.stat-card-verde { border-top-color: var(--color-verde); box-shadow: 0 4px 14px rgba(30, 142, 90, 0.16); }
+.stat-card-naranja { border-top-color: var(--color-pendiente); box-shadow: 0 4px 14px rgba(199, 124, 17, 0.16); }
+.stat-card-rojo { border-top-color: var(--color-rojo); box-shadow: 0 4px 14px rgba(211, 47, 47, 0.16); }
 
 .stat-card-label {
   font-size: 0.72rem;
@@ -612,10 +645,10 @@ h3 {
 }
 
 .tarjeta-acento-azul { border-left-color: var(--color-azul); }
-.tarjeta-acento-verde { border-left-color: var(--color-verde); }
-.tarjeta-acento-naranja { border-left-color: var(--color-pendiente); }
-.tarjeta-acento-rojo { border-left-color: var(--color-rojo); }
-.tarjeta-acento-morado { border-left-color: #6a3fb5; }
+.tarjeta-acento-verde { border-left-color: var(--color-verde); box-shadow: 0 4px 18px rgba(30, 142, 90, 0.16); }
+.tarjeta-acento-naranja { border-left-color: var(--color-pendiente); box-shadow: 0 4px 18px rgba(199, 124, 17, 0.16); }
+.tarjeta-acento-rojo { border-left-color: var(--color-rojo); box-shadow: 0 4px 18px rgba(211, 47, 47, 0.16); }
+.tarjeta-acento-morado { border-left-color: #6a3fb5; box-shadow: 0 4px 18px rgba(106, 63, 181, 0.16); }
 
 /* ---------- Badges de estado de reserva (Módulo 3: Reservas) ---------- */
 .badge-reservada { background: rgba(107, 107, 107, 0.14); color: var(--color-texto-suave); }
