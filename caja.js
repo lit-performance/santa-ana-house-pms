@@ -31,17 +31,6 @@
 // si no hay ninguno simplemente crea uno. Nadie tiene que pensar en
 // "turnos" nunca más.
 //
-// Diseño en DOS COLUMNAS para que la pantalla no quede tan larga:
-//   - Columna izquierda ("Operación de hoy"): lo que se usa y se toca
-//     constantemente durante el día — huéspedes alojados, ventas de
-//     mostrador, movimientos manuales, ingresos por reservas.
-//   - Columna derecha ("Información y consulta"): lo que se revisa con
-//     menos frecuencia — desglose por medio de pago, saldos acumulados
-//     por cuenta + transferencias, consumo de minibar del día, y el
-//     historial por día (con exportables).
-// Dentro de cada columna, lo más urgente/operativo va arriba y lo
-// meramente informativo va abajo.
-//
 // Los abonos de reservas (reservas_pagos, ya registrados desde Reservas y
 // Recepción, incluyendo los pagos de liquidación al check-out) NO se
 // duplican aquí — este módulo los LEE directamente de esa tabla y los
@@ -63,6 +52,46 @@
 // Transferencias entre cuentas (caja_transferencias): mueven saldo de una
 // cuenta a otra sin que cuente como ingreso/egreso real del negocio (por
 // eso no viven en caja_movimientos).
+//
+// Nota (163): REDISEÑO DE PANTALLA — se reemplazó el diseño fijo de dos
+// columnas (con las 9 tarjetas siempre expandidas de una vez) por el
+// mismo patrón de "resumen en cuadrícula + Ver" que ya usa la pantalla
+// principal de Inventario (ver inventario.js, `cargarResumenInventario` /
+// `abrirModalSeccion`, nota 132.1): cada una de las 9 tarjetas
+// (Huéspedes alojados, Ventas por mostrador, Gastos y compras,
+// Movimientos manuales, Ingresos por reservas, Desglose por medio de
+// pago, Saldos por cuenta, Consumo de minibar, Historial por día) ahora
+// se ve como una mini-tarjeta compacta (ícono + título + una línea de
+// resumen) en una cuadrícula, con un botón "👁️ Ver" que abre esa tarjeta
+// COMPLETA (el mismo formulario/tabla de siempre, sin recortar nada) en
+// una ventana emergente ancha (modal-caja-ancha, 1100px). Al cerrar esa
+// ventana, la cuadrícula de resumen se recalcula sola para que los
+// números queden al día. El panel "📊 Hoy" de arriba (los 3 indicadores
+// grandes de venta/egresos/neto) se queda igual, fuera de la cuadrícula
+// — es puro resumen, no tiene nada que "Ver" por dentro.
+//
+// Consecuencia técnica importante: como las 9 tarjetas ahora viven DENTRO
+// de una ventana emergente (appendChild a document.body, fuera del árbol
+// de `container`), las funciones que antes hacían
+// `container.querySelector('#xxx-wrap')` para refrescarse a sí mismas
+// después de guardar algo (abrirModalMovimiento, abrirModalTransferencia)
+// ya NO pueden encontrar ese elemento por ese camino — se les pasa ahora
+// el elemento directo (el mismo `elemento` que ya tenían en su clausura)
+// en vez de volver a buscarlo. `refrescarTrasMovimiento` sigue usando
+// `container.querySelector` porque `#resumen-dia-wrap` y
+// `#resumen-secciones-wrap` SÍ siguen siendo parte fija de `container`,
+// no de la ventana emergente.
+//
+// Nota (162, dentro de las tarjetas): "Huéspedes alojados", "Ventas por
+// mostrador", "Gastos y compras" y "Movimientos manuales" ya traían sus
+// tablas reducidas a solo 2-3 columnas clave + su propio botón "👁️ Ver"
+// por FILA (no confundir con el "Ver" de la tarjeta completa, 163) que
+// abre el resto de los datos de esa fila en una tarjeta emergente más
+// chica — ver `abrirModalVerDetalle`. Con el modal ancho de 163 esto ya
+// no es indispensable para evitar el scroll lateral (el modal es de
+// 1100px, le sobra ancho), pero se dejó igual: no estorba y evita tener
+// que volver a decidir cuántas columnas mostrar si el modal se angosta
+// en pantallas chicas.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -324,63 +353,305 @@ function filaTablaSimple(cols) {
 }
 
 // =========================================================
+// Ver detalle de una FILA (162) — mismo patrón que "👁️ Ver" en Bodega
+// (inventario.js, ver 107): tarjeta emergente de solo lectura con los
+// campos que ya no caben en la tabla reducida de cada tarjeta. `campos`
+// es un arreglo de { label, valor, anchoCompleto? }.
+// =========================================================
+function abrirModalVerDetalle(titulo, subtitulo, campos) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja">
+      <h3>${titulo}</h3>
+      ${subtitulo ? `<p class="mensaje-vacio" style="margin-top:-0.5rem;">${subtitulo}</p>` : ''}
+      <div class="modal-contenido" style="display:grid; grid-template-columns:1fr 1fr; gap:0.9rem 1.5rem;">
+        ${campos
+          .map(
+            (c) => `
+          <div style="${c.anchoCompleto ? 'grid-column:1 / -1;' : ''}">
+            <span class="mensaje-vacio">${c.label}</span><br />
+            <strong>${c.valor}</strong>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+      <div class="modal-acciones" style="margin-top:1.25rem;">
+        <button type="button" class="btn btn-secundario" id="btn-cerrar-ver-detalle">Cerrar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#btn-cerrar-ver-detalle').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+}
+
+// =========================================================
+// Resumen en cuadrícula de las 9 tarjetas (163) — mismo patrón que la
+// pantalla principal de Inventario (ver `cargarResumenInventario` /
+// `abrirModalSeccion` en inventario.js). Cada `calcularResumenXxx` es una
+// consulta liviana (solo lo necesario para la una línea de resumen); el
+// contenido completo de cada tarjeta (formulario + tabla) solo se carga
+// cuando se abre su "👁️ Ver".
+// =========================================================
+async function calcularResumenHabitacionesUso() {
+  try {
+    const items = await calcularHabitacionesEnUso();
+    return { ocupadas: items.length, conSaldo: items.filter((i) => i.saldoPendiente > 0).length, error: false };
+  } catch {
+    return { ocupadas: 0, conSaldo: 0, error: true };
+  }
+}
+
+async function calcularResumenVentasMostrador() {
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+  const { data } = await supabase.from('ventas_mostrador').select('monto').gte('creado_en', hoyISO).lt('creado_en', mananaISO);
+  return { total: (data || []).reduce((s, v) => s + Number(v.monto), 0), cantidad: (data || []).length };
+}
+
+async function calcularResumenGastos() {
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+  const { data } = await supabase.from('caja_movimientos').select('monto, categoria').eq('tipo', 'egreso').gte('creado_en', hoyISO).lt('creado_en', mananaISO);
+  const categoriasReales = new Set([...CATEGORIAS_GASTOS, CATEGORIA_COMPRAS]);
+  const gastos = (data || []).filter((m) => categoriasReales.has(m.categoria));
+  return { total: gastos.reduce((s, g) => s + Number(g.monto), 0), cantidad: gastos.length };
+}
+
+async function calcularResumenMovimientosManuales() {
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+  const { data } = await supabase.from('caja_movimientos').select('categoria').gte('creado_en', hoyISO).lt('creado_en', mananaISO);
+  const categoriasReales = new Set([...CATEGORIAS_GASTOS, CATEGORIA_COMPRAS]);
+  const movimientos = (data || []).filter((m) => !categoriasReales.has(m.categoria));
+  return { cantidad: movimientos.length };
+}
+
+async function calcularResumenIngresosReservas() {
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+  const { data } = await supabase.from('reservas_pagos').select('monto').gte('fecha', hoyISO).lt('fecha', mananaISO);
+  return { total: (data || []).reduce((s, p) => s + Number(p.monto), 0), cantidad: (data || []).length };
+}
+
+async function calcularResumenDesgloseHoy() {
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+  const [{ data: pagos }, { data: movimientos }, { data: ventasMostrador }] = await Promise.all([
+    supabase.from('reservas_pagos').select('monto, metodo_pago').gte('fecha', hoyISO).lt('fecha', mananaISO),
+    supabase.from('caja_movimientos').select('monto, metodo_pago, tipo').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
+    supabase.from('ventas_mostrador').select('monto, metodo_pago').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
+  ]);
+  const desglose = calcularDesglosePorMetodo(pagos, movimientos, ventasMostrador);
+  return {
+    totalIngresos: Object.values(desglose).reduce((s, m) => s + m.ingresos, 0),
+    totalEgresos: Object.values(desglose).reduce((s, m) => s + m.egresos, 0),
+  };
+}
+
+async function calcularResumenSaldos() {
+  const saldos = await calcularSaldosPorCuenta();
+  return { total: METODOS_PAGO.reduce((s, m) => s + (saldos[m] || 0), 0) };
+}
+
+async function calcularResumenMinibarHoy() {
+  const hoyISO = toISODate(new Date());
+  const mananaISO = toISODate(addDays(new Date(), 1));
+  const { data } = await supabase.from('minibar_consumos').select('cantidad, monto').gte('creado_en', hoyISO).lt('creado_en', mananaISO);
+  return {
+    total: (data || []).reduce((s, c) => s + Number(c.monto), 0),
+    items: (data || []).reduce((s, c) => s + Number(c.cantidad), 0),
+  };
+}
+
+// Config de las 9 secciones: id → { wrapId, cargar(elemento) }. Se arma
+// como función (no como objeto suelto) porque `cargar` necesita la
+// clausura de `container` para las secciones cuyas funciones originales
+// piden `(container, elemento)` — ver nota de cabecera (163).
+function seccionesCaja(container) {
+  return {
+    'habitaciones-uso': { wrapId: 'habitaciones-uso-wrap', cargar: (el) => cargarHabitacionesEnUso(el) },
+    'ventas-mostrador': { wrapId: 'ventas-mostrador-wrap', cargar: (el) => cargarVentasMostradorHoy(container, el) },
+    'gastos-hoy': { wrapId: 'gastos-hoy-wrap', cargar: (el) => cargarGastosHoy(el) },
+    'movimientos-manuales': { wrapId: 'movimientos-manuales-wrap', cargar: (el) => cargarMovimientosManualesHoy(container, el) },
+    'ingresos-reservas': { wrapId: 'ingresos-reservas-wrap', cargar: (el) => cargarIngresosReservasHoy(el) },
+    'desglose-hoy': { wrapId: 'desglose-hoy-wrap', cargar: (el) => cargarDesgloseHoy(el) },
+    'saldos-cuenta': { wrapId: 'saldos-cuenta-wrap', cargar: (el) => cargarSaldosPorCuenta(container, el) },
+    'minibar-hoy': { wrapId: 'minibar-hoy-wrap', cargar: (el) => cargarTarjetaMinibarHoy(el) },
+    'historial-dia': { wrapId: 'historial-dia-wrap', cargar: (el) => cargarHistorialPorDia(container, el) },
+  };
+}
+
+function abrirModalSeccionCaja(container, id, elementoResumen) {
+  const config = seccionesCaja(container)[id];
+  if (!config) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja modal-caja-ancha" style="max-width:1100px; width:95vw; max-height:88vh; overflow:auto;">
+      <div style="display:flex; justify-content:flex-end; margin-bottom:0.5rem;">
+        <button type="button" class="btn btn-secundario btn-chico" id="btn-cerrar-modal-seccion-caja">✕ Cerrar</button>
+      </div>
+      <div id="${config.wrapId}"><p class="mensaje-vacio">Cargando…</p></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  function cerrar() {
+    overlay.remove();
+    cargarResumenSecciones(container, elementoResumen);
+  }
+
+  overlay.querySelector('#btn-cerrar-modal-seccion-caja').addEventListener('click', cerrar);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) cerrar();
+  });
+
+  config.cargar(overlay.querySelector(`#${config.wrapId}`));
+}
+
+async function cargarResumenSecciones(container, elemento) {
+  if (!elemento) return;
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+
+  const [resumenHab, resumenVentas, resumenGastos, resumenMov, resumenIngresos, resumenDesglose, resumenSaldos, resumenMinibar] = await Promise.all([
+    calcularResumenHabitacionesUso(),
+    calcularResumenVentasMostrador(),
+    calcularResumenGastos(),
+    calcularResumenMovimientosManuales(),
+    calcularResumenIngresosReservas(),
+    calcularResumenDesgloseHoy(),
+    calcularResumenSaldos(),
+    calcularResumenMinibarHoy(),
+  ]);
+
+  const tarjetas = [
+    {
+      id: 'habitaciones-uso',
+      icono: '🧳',
+      titulo: 'Huéspedes alojados',
+      resumen: resumenHab.error
+        ? 'Error cargando'
+        : `${resumenHab.ocupadas} habitación(es) ocupada(s)${resumenHab.conSaldo > 0 ? ` · ${resumenHab.conSaldo} con saldo pendiente` : ''}`,
+      alerta: resumenHab.conSaldo > 0,
+      acento: 'azul',
+    },
+    {
+      id: 'ventas-mostrador',
+      icono: '🛒',
+      titulo: 'Ventas por mostrador — hoy',
+      resumen: resumenVentas.cantidad > 0 ? `${formatCOP(resumenVentas.total)} en ${resumenVentas.cantidad} venta(s)` : 'Sin ventas de mostrador hoy',
+      acento: 'verde',
+    },
+    {
+      id: 'gastos-hoy',
+      icono: '💸',
+      titulo: 'Gastos y compras — hoy',
+      resumen: resumenGastos.cantidad > 0 ? `${formatCOP(resumenGastos.total)} en ${resumenGastos.cantidad} registro(s)` : 'Sin gastos ni compras registradas hoy',
+      acento: 'rojo',
+    },
+    {
+      id: 'movimientos-manuales',
+      icono: '➕➖',
+      titulo: 'Movimientos manuales — hoy',
+      resumen: resumenMov.cantidad > 0 ? `${resumenMov.cantidad} movimiento(s) hoy` : 'Sin movimientos manuales hoy',
+      acento: 'naranja',
+    },
+    {
+      id: 'ingresos-reservas',
+      icono: '🧾',
+      titulo: 'Ingresos por reservas — hoy',
+      resumen: resumenIngresos.cantidad > 0 ? `${formatCOP(resumenIngresos.total)} en ${resumenIngresos.cantidad} pago(s)` : 'Sin pagos de reservas hoy',
+      acento: 'verde',
+    },
+    {
+      id: 'desglose-hoy',
+      icono: '💱',
+      titulo: 'Desglose por medio de pago — hoy',
+      resumen: `Ingresos ${formatCOP(resumenDesglose.totalIngresos)} · Egresos ${formatCOP(resumenDesglose.totalEgresos)}`,
+      acento: 'azul',
+    },
+    {
+      id: 'saldos-cuenta',
+      icono: '💼',
+      titulo: 'Saldos por cuenta',
+      resumen: `Total acumulado: ${formatCOP(resumenSaldos.total)}`,
+      acento: 'morado',
+    },
+    {
+      id: 'minibar-hoy',
+      icono: '🥤',
+      titulo: 'Consumo de minibar — hoy',
+      resumen: resumenMinibar.items > 0 ? `${formatCOP(resumenMinibar.total)} en ${resumenMinibar.items} producto(s)` : 'Sin consumo de minibar hoy',
+      acento: 'naranja',
+    },
+    {
+      id: 'historial-dia',
+      icono: '📅',
+      titulo: 'Historial por día',
+      resumen: 'Últimos 10 días — con exportar a Excel/PDF',
+      acento: 'morado',
+    },
+  ];
+
+  elemento.innerHTML = `
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:1rem;">
+      ${tarjetas
+        .map(
+          (t) => `
+        <div class="tarjeta tarjeta-acento tarjeta-acento-${t.alerta ? 'rojo' : t.acento}">
+          <h3 style="margin-top:0;">${t.icono} ${t.titulo}</h3>
+          <p class="mensaje-vacio" style="margin-bottom:1rem;">${t.resumen}</p>
+          <button type="button" class="btn btn-secundario btn-chico btn-ver-seccion-caja" data-id="${t.id}">👁️ Ver</button>
+        </div>
+      `
+        )
+        .join('')}
+    </div>
+  `;
+
+  elemento.querySelectorAll('.btn-ver-seccion-caja').forEach((btn) => {
+    btn.addEventListener('click', () => abrirModalSeccionCaja(container, btn.dataset.id, elemento));
+  });
+}
+
+// =========================================================
 async function render(container) {
   container.innerHTML = `
     <h2>Registro diario</h2>
     <div id="resumen-dia-wrap" style="margin-bottom:1.5rem;">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
-    <div class="grid-dos-columnas">
-      <div>
-        <p class="kicker-columna">🟢 Operación de hoy</p>
-        <div id="habitaciones-uso-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
-        <div id="ventas-mostrador-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
-        <div id="gastos-hoy-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
-        <div id="movimientos-manuales-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
-        <div id="ingresos-reservas-wrap"><p class="mensaje-vacio">Cargando…</p></div>
-      </div>
-      <div>
-        <p class="kicker-columna">📘 Información y consulta</p>
-        <div id="desglose-hoy-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
-        <div id="saldos-cuenta-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
-        <div id="minibar-hoy-wrap" style="margin-bottom:1.5rem;"><p class="mensaje-vacio">Cargando…</p></div>
-        <div id="historial-dia-wrap"><p class="mensaje-vacio">Cargando…</p></div>
-      </div>
+    <div id="resumen-secciones-wrap">
+      <p class="mensaje-vacio">Cargando…</p>
     </div>
   `;
 
   await Promise.all([
     cargarResumenDelDia(container.querySelector('#resumen-dia-wrap')),
-    cargarHabitacionesEnUso(container.querySelector('#habitaciones-uso-wrap')),
-    cargarVentasMostradorHoy(container, container.querySelector('#ventas-mostrador-wrap')),
-    cargarGastosHoy(container.querySelector('#gastos-hoy-wrap')),
-    cargarMovimientosManualesHoy(container, container.querySelector('#movimientos-manuales-wrap')),
-    cargarIngresosReservasHoy(container.querySelector('#ingresos-reservas-wrap')),
-    cargarDesgloseHoy(container.querySelector('#desglose-hoy-wrap')),
-    cargarSaldosPorCuenta(container, container.querySelector('#saldos-cuenta-wrap')),
-    cargarResumenMinibarHoy(container.querySelector('#minibar-hoy-wrap')),
-    cargarHistorialPorDia(container, container.querySelector('#historial-dia-wrap')),
+    cargarResumenSecciones(container, container.querySelector('#resumen-secciones-wrap')),
   ]);
 }
 
 // Refresca las tarjetas cuya cifra cambia después de registrar una venta
-// de mostrador o un movimiento manual — evita repetir la misma lista de
-// refrescos en cada formulario.
+// de mostrador o un movimiento manual — `#resumen-dia-wrap` y
+// `#resumen-secciones-wrap` siguen siendo parte fija de `container` (no
+// viven dentro de una ventana emergente), así que sí se pueden encontrar
+// por este camino.
 async function refrescarTrasMovimiento(container) {
   const wrapResumen = container.querySelector('#resumen-dia-wrap');
   if (wrapResumen) await cargarResumenDelDia(wrapResumen);
-  const wrapGastos = container.querySelector('#gastos-hoy-wrap');
-  if (wrapGastos) await cargarGastosHoy(wrapGastos);
-  const wrapDesglose = container.querySelector('#desglose-hoy-wrap');
-  if (wrapDesglose) await cargarDesgloseHoy(wrapDesglose);
-  const wrapIngresos = container.querySelector('#ingresos-reservas-wrap');
-  if (wrapIngresos) await cargarIngresosReservasHoy(wrapIngresos);
-  const wrapSaldos = container.querySelector('#saldos-cuenta-wrap');
-  if (wrapSaldos) await cargarSaldosPorCuenta(container, wrapSaldos);
+  const wrapSecciones = container.querySelector('#resumen-secciones-wrap');
+  if (wrapSecciones) await cargarResumenSecciones(container, wrapSecciones);
 }
 
 // =========================================================
-// Resumen del día — lo primero que se ve, arriba de las dos columnas.
+// Resumen del día — lo primero que se ve, arriba de la cuadrícula.
 // =========================================================
 async function cargarResumenDelDia(elemento) {
   if (!elemento) return;
@@ -440,8 +711,12 @@ async function cargarResumenDelDia(elemento) {
 }
 
 // =========================================================
-// Huéspedes alojados (columna izquierda, arriba de todo — lo más
-// operativo y urgente: quién debe qué).
+// Huéspedes alojados — lo más operativo y urgente: quién debe qué.
+//
+// Nota (162): tabla reducida de 6 a 3 columnas (Habitación, Huésped,
+// Saldo pendiente) + botón "👁️ Ver" que abre el detalle completo
+// (Ingreso, Monto total, Abonado) en una tarjeta emergente — ver
+// `abrirModalVerDetalle`.
 // =========================================================
 async function cargarHabitacionesEnUso(elemento) {
   if (!elemento) return;
@@ -470,21 +745,19 @@ async function cargarHabitacionesEnUso(elemento) {
       }
       <div class="tabla-scroll">
         <table class="tabla-simple">
-          <thead><tr><th>Habitación</th><th>Huésped</th><th>Ingreso</th><th>Monto total</th><th>Abonado</th><th>Saldo pendiente</th></tr></thead>
+          <thead><tr><th>Habitación</th><th>Huésped</th><th>Saldo pendiente</th><th></th></tr></thead>
           <tbody>
             ${
               items
                 .map(
-                  (i) => `<tr>
+                  (i, idx) => `<tr>
                     <td>${escaparHTML(i.habitacionLabel)}</td>
                     <td>${escaparHTML(i.huespedNombre)}</td>
-                    <td>${formatFechaHora(i.horaIngreso)}</td>
-                    <td>${formatCOP(i.montoTotal)}</td>
-                    <td>${formatCOP(i.totalAbonado)}</td>
                     <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(i.saldoPendiente)}</td>
+                    <td><button type="button" class="btn-editar btn-ver-habitacion-uso" data-idx="${idx}">👁️ Ver</button></td>
                   </tr>`
                 )
-                .join('') || '<tr><td colspan="6" class="mensaje-vacio">No hay habitaciones ocupadas ahora mismo.</td></tr>'
+                .join('') || '<tr><td colspan="4" class="mensaje-vacio">No hay habitaciones ocupadas ahora mismo.</td></tr>'
             }
           </tbody>
         </table>
@@ -493,14 +766,32 @@ async function cargarHabitacionesEnUso(elemento) {
     </div>
   `;
 
+  elemento.querySelectorAll('.btn-ver-habitacion-uso').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const i = items[Number(btn.dataset.idx)];
+      abrirModalVerDetalle(`${escaparHTML(i.habitacionLabel)} — ${escaparHTML(i.huespedNombre)}`, 'Huésped alojado ahora mismo', [
+        { label: 'Ingreso', valor: formatFechaHora(i.horaIngreso) },
+        {
+          label: 'Saldo pendiente',
+          valor: `<span style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'};">${formatCOP(i.saldoPendiente)}</span>`,
+        },
+        { label: 'Monto total', valor: formatCOP(i.montoTotal) },
+        { label: 'Abonado', valor: formatCOP(i.totalAbonado) },
+      ]);
+    });
+  });
+
   elemento.querySelector('#btn-refrescar-habitaciones-uso').addEventListener('click', () => cargarHabitacionesEnUso(elemento));
 }
 
 // =========================================================
-// Ventas por mostrador — hoy (columna izquierda). Productos de bodega
-// vendidos directo en Recepción a un cliente que no se hospeda. Ya no
-// depende de que haya "caja abierta": siempre se puede registrar, el
-// turno del día se resuelve solo por dentro (obtenerOCrearTurnoDeHoy).
+// Ventas por mostrador — hoy. Productos de bodega vendidos directo en
+// Recepción a un cliente que no se hospeda. Ya no depende de que haya
+// "caja abierta": siempre se puede registrar, el turno del día se
+// resuelve solo por dentro (obtenerOCrearTurnoDeHoy).
+//
+// Nota (162): tabla reducida de 6 a 3 columnas (Hora, Producto, Monto) +
+// botón "👁️ Ver" con Cantidad, Método y Cliente en el detalle.
 // =========================================================
 async function cargarVentasMostradorHoy(container, elemento) {
   if (!elemento) return;
@@ -575,21 +866,33 @@ async function cargarVentasMostradorHoy(container, elemento) {
       }
       <div class="tabla-scroll" style="margin-top:0.75rem;">
         <table class="tabla-simple">
-          <thead><tr><th>Hora</th><th>Producto</th><th>Cant.</th><th>Monto</th><th>Método</th><th>Cliente</th></tr></thead>
+          <thead><tr><th>Hora</th><th>Producto</th><th>Monto</th><th></th></tr></thead>
           <tbody>
             ${
               (ventasHoy || [])
                 .map(
-                  (v) =>
-                    `<tr><td>${formatFechaHora(v.creado_en)}</td><td>${v.minibar_productos ? escaparHTML(v.minibar_productos.nombre) : '—'}</td><td>${v.cantidad}</td><td>${formatCOP(v.monto)}</td><td>${v.metodo_pago}</td><td>${escaparHTML(v.cliente_nombre || '—')}</td></tr>`
+                  (v, idx) =>
+                    `<tr><td>${formatFechaHora(v.creado_en)}</td><td>${v.minibar_productos ? escaparHTML(v.minibar_productos.nombre) : '—'}</td><td>${formatCOP(v.monto)}</td><td><button type="button" class="btn-editar btn-ver-venta-mostrador" data-idx="${idx}">👁️ Ver</button></td></tr>`
                 )
-                .join('') || '<tr><td colspan="6" class="mensaje-vacio">Sin ventas de mostrador hoy.</td></tr>'
+                .join('') || '<tr><td colspan="4" class="mensaje-vacio">Sin ventas de mostrador hoy.</td></tr>'
             }
           </tbody>
         </table>
       </div>
     </div>
   `;
+
+  elemento.querySelectorAll('.btn-ver-venta-mostrador').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const v = (ventasHoy || [])[Number(btn.dataset.idx)];
+      abrirModalVerDetalle(v.minibar_productos ? escaparHTML(v.minibar_productos.nombre) : 'Venta de mostrador', formatFechaHora(v.creado_en), [
+        { label: 'Cantidad', valor: v.cantidad },
+        { label: 'Monto', valor: formatCOP(v.monto) },
+        { label: 'Método de pago', valor: escaparHTML(v.metodo_pago || '—') },
+        { label: 'Cliente', valor: escaparHTML(v.cliente_nombre || '—') },
+      ]);
+    });
+  });
 
   if (!permitido) return;
 
@@ -668,13 +971,14 @@ async function cargarVentasMostradorHoy(container, elemento) {
 }
 
 // =========================================================
-// Gastos y compras — hoy (columna izquierda). Egresos REALES del día:
-// lo pagado desde Gastos (agua, luz, gas, insumos, etc. — ver gastos.js)
-// y las compras a proveedores ya recibidas (ver compras.js). Ambos
-// módulos guardan sus egresos como un caja_movimientos más, así que esta
-// tarjeta simplemente los filtra por categoría y los muestra juntos —
-// para que se vea de un vistazo qué salió hoy sin tener que entrar a
-// Gastos o Compras por separado.
+// Gastos y compras — hoy. Egresos REALES del día: lo pagado desde Gastos
+// (agua, luz, gas, insumos, etc. — ver gastos.js) y las compras a
+// proveedores ya recibidas (ver compras.js). Ambos módulos guardan sus
+// egresos como un caja_movimientos más, así que esta tarjeta simplemente
+// los filtra por categoría y los muestra juntos.
+//
+// Nota (162): tabla reducida de 5 a 3 columnas (Hora, Categoría, Monto) +
+// botón "👁️ Ver" con Método y Detalle.
 // =========================================================
 async function cargarGastosHoy(elemento) {
   if (!elemento) return;
@@ -709,29 +1013,43 @@ async function cargarGastosHoy(elemento) {
       <p class="mensaje-vacio" style="margin-bottom:0.5rem;">Pagos operativos de hoy (agua, luz, gas, insumos… — módulo Gastos) y compras a proveedores ya recibidas (módulo Compras).</p>
       <div class="tabla-scroll">
         <table class="tabla-simple">
-          <thead><tr><th>Hora</th><th>Categoría</th><th>Monto</th><th>Método</th><th>Detalle</th></tr></thead>
+          <thead><tr><th>Hora</th><th>Categoría</th><th>Monto</th><th></th></tr></thead>
           <tbody>
             ${
               gastos
                 .map(
-                  (g) =>
-                    `<tr><td>${formatFechaHora(g.creado_en)}</td><td>${escaparHTML(g.categoria || '—')}</td><td>${formatCOP(g.monto)}</td><td>${escaparHTML(g.metodo_pago || '—')}</td><td>${escaparHTML(g.descripcion || '—')}</td></tr>`
+                  (g, idx) =>
+                    `<tr><td>${formatFechaHora(g.creado_en)}</td><td>${escaparHTML(g.categoria || '—')}</td><td>${formatCOP(g.monto)}</td><td><button type="button" class="btn-editar btn-ver-gasto" data-idx="${idx}">👁️ Ver</button></td></tr>`
                 )
-                .join('') || '<tr><td colspan="5" class="mensaje-vacio">Sin gastos ni compras registradas hoy.</td></tr>'
+                .join('') || '<tr><td colspan="4" class="mensaje-vacio">Sin gastos ni compras registradas hoy.</td></tr>'
             }
           </tbody>
         </table>
       </div>
     </div>
   `;
+
+  elemento.querySelectorAll('.btn-ver-gasto').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const g = gastos[Number(btn.dataset.idx)];
+      abrirModalVerDetalle(escaparHTML(g.categoria || 'Gasto'), formatFechaHora(g.creado_en), [
+        { label: 'Monto', valor: formatCOP(g.monto) },
+        { label: 'Método de pago', valor: escaparHTML(g.metodo_pago || '—') },
+        { label: 'Detalle', valor: escaparHTML(g.descripcion || '—'), anchoCompleto: true },
+      ]);
+    });
+  });
 }
 
 // =========================================================
-// Movimientos manuales — hoy (columna izquierda). Ingresos o egresos que
-// NO son venta de mostrador, gasto operativo (ver arriba) ni compra
-// recibida — ej. propinas, ajustes puntuales, o cargue retroactivo de un
-// día anterior con "Fecha y hora". Se excluyen aquí los de Gastos/Compras
-// para no mostrarlos duplicados en las dos tarjetas.
+// Movimientos manuales — hoy. Ingresos o egresos que NO son venta de
+// mostrador, gasto operativo (ver arriba) ni compra recibida — ej.
+// propinas, ajustes puntuales, o cargue retroactivo de un día anterior
+// con "Fecha y hora". Se excluyen aquí los de Gastos/Compras para no
+// mostrarlos duplicados en las dos tarjetas.
+//
+// Nota (162): tabla reducida de 6 a 3 columnas (Hora, Tipo, Monto) +
+// botón "👁️ Ver" con Categoría, Método y Descripción.
 // =========================================================
 async function cargarMovimientosManualesHoy(container, elemento) {
   if (!elemento) return;
@@ -765,15 +1083,15 @@ async function cargarMovimientosManualesHoy(container, elemento) {
       <p class="mensaje-vacio" style="margin-bottom:0.5rem;">Ingresos o egresos que no son venta de mostrador, gasto operativo (ver arriba) ni compra recibida — ej. propinas, ajustes puntuales.</p>
       <div class="tabla-scroll">
         <table class="tabla-simple">
-          <thead><tr><th>Hora</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Método</th><th>Descripción</th></tr></thead>
+          <thead><tr><th>Hora</th><th>Tipo</th><th>Monto</th><th></th></tr></thead>
           <tbody>
             ${
               movimientos
                 .map(
-                  (m) =>
-                    `<tr><td>${formatFechaHora(m.creado_en)}</td><td>${m.tipo === 'ingreso' ? '⬆️ Ingreso' : '⬇️ Egreso'}</td><td>${escaparHTML(m.categoria || '—')}</td><td>${formatCOP(m.monto)}</td><td>${escaparHTML(m.metodo_pago || '—')}</td><td>${escaparHTML(m.descripcion || '—')}</td></tr>`
+                  (m, idx) =>
+                    `<tr><td>${formatFechaHora(m.creado_en)}</td><td>${m.tipo === 'ingreso' ? '⬆️ Ingreso' : '⬇️ Egreso'}</td><td>${formatCOP(m.monto)}</td><td><button type="button" class="btn-editar btn-ver-movimiento" data-idx="${idx}">👁️ Ver</button></td></tr>`
                 )
-                .join('') || '<tr><td colspan="6" class="mensaje-vacio">Sin movimientos manuales hoy.</td></tr>'
+                .join('') || '<tr><td colspan="4" class="mensaje-vacio">Sin movimientos manuales hoy.</td></tr>'
             }
           </tbody>
         </table>
@@ -781,12 +1099,27 @@ async function cargarMovimientosManualesHoy(container, elemento) {
     </div>
   `;
 
+  elemento.querySelectorAll('.btn-ver-movimiento').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const m = movimientos[Number(btn.dataset.idx)];
+      abrirModalVerDetalle(
+        escaparHTML(m.categoria || (m.tipo === 'ingreso' ? 'Ingreso' : 'Egreso')),
+        `${m.tipo === 'ingreso' ? '⬆️ Ingreso' : '⬇️ Egreso'} · ${formatFechaHora(m.creado_en)}`,
+        [
+          { label: 'Monto', valor: formatCOP(m.monto) },
+          { label: 'Método de pago', valor: escaparHTML(m.metodo_pago || '—') },
+          { label: 'Descripción', valor: escaparHTML(m.descripcion || '—'), anchoCompleto: true },
+        ]
+      );
+    });
+  });
+
   if (!permitido) return;
 
-  elemento.querySelector('#btn-nuevo-movimiento').addEventListener('click', () => abrirModalMovimiento(container));
+  elemento.querySelector('#btn-nuevo-movimiento').addEventListener('click', () => abrirModalMovimiento(container, elemento));
 }
 
-async function abrirModalMovimiento(container) {
+async function abrirModalMovimiento(container, elementoSeccion) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
@@ -877,14 +1210,13 @@ async function abrirModalMovimiento(container) {
     mostrarToast('Movimiento registrado.', 'exito');
     overlay.remove();
 
-    const wrapMov = container.querySelector('#movimientos-manuales-wrap');
-    if (wrapMov) await cargarMovimientosManualesHoy(container, wrapMov);
+    if (elementoSeccion) await cargarMovimientosManualesHoy(container, elementoSeccion);
     await refrescarTrasMovimiento(container);
   });
 }
 
 // =========================================================
-// Ingresos por reservas — hoy (columna izquierda, automáticos).
+// Ingresos por reservas — hoy (automáticos).
 // =========================================================
 async function cargarIngresosReservasHoy(elemento) {
   if (!elemento) return;
@@ -934,7 +1266,7 @@ async function cargarIngresosReservasHoy(elemento) {
 }
 
 // =========================================================
-// Desglose por medio de pago — hoy (columna derecha, arriba).
+// Desglose por medio de pago — hoy.
 // =========================================================
 async function cargarDesgloseHoy(elemento) {
   if (!elemento) return;
@@ -981,7 +1313,7 @@ async function cargarDesgloseHoy(elemento) {
 }
 
 // =========================================================
-// Saldos por cuenta + transferencias (columna derecha).
+// Saldos por cuenta + transferencias.
 // =========================================================
 async function cargarSaldosPorCuenta(container, elemento) {
   if (!elemento) return;
@@ -1024,7 +1356,7 @@ async function cargarSaldosPorCuenta(container, elemento) {
   `;
 
   if (permitido) {
-    elemento.querySelector('#btn-transferir-cuentas').addEventListener('click', () => abrirModalTransferencia(container, saldos));
+    elemento.querySelector('#btn-transferir-cuentas').addEventListener('click', () => abrirModalTransferencia(container, elemento, saldos));
   }
 
   elemento.querySelector('#btn-exportar-csv-saldos').addEventListener('click', () => {
@@ -1053,7 +1385,7 @@ async function cargarSaldosPorCuenta(container, elemento) {
   });
 }
 
-async function abrirModalTransferencia(container, saldosActuales) {
+async function abrirModalTransferencia(container, elementoSeccion, saldosActuales) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
@@ -1142,17 +1474,17 @@ async function abrirModalTransferencia(container, saldosActuales) {
 
     mostrarToast(`Transferidos ${formatCOP(monto)} de ${cuentaOrigen} a ${cuentaDestino}.`, 'exito');
     overlay.remove();
-    await cargarSaldosPorCuenta(container, container.querySelector('#saldos-cuenta-wrap'));
+    if (elementoSeccion) await cargarSaldosPorCuenta(container, elementoSeccion);
   });
 }
 
 // =========================================================
-// Consumo de minibar del día calendario de hoy (columna derecha,
-// informativo). No se suma aparte al desglose por método de pago porque
-// ese dinero ya entra ahí solo, cuando el huésped liquida el minibar al
-// hacer check-out (ver recepcion.js).
+// Consumo de minibar del día calendario de hoy (informativo). No se suma
+// aparte al desglose por método de pago porque ese dinero ya entra ahí
+// solo, cuando el huésped liquida el minibar al hacer check-out (ver
+// recepcion.js).
 // =========================================================
-async function cargarResumenMinibarHoy(elemento) {
+async function cargarTarjetaMinibarHoy(elemento) {
   if (!elemento) return;
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando consumo de minibar…</p>';
 
@@ -1210,9 +1542,9 @@ async function cargarResumenMinibarHoy(elemento) {
 }
 
 // =========================================================
-// Historial por día (columna derecha, hasta abajo) — reemplaza la antigua
-// bitácora de "cierres de turno". Muestra los últimos días con sus
-// totales, y "Ver detalle" abre el desglose completo con exportar.
+// Historial por día — reemplaza la antigua bitácora de "cierres de
+// turno". Muestra los últimos días con sus totales, y "Ver detalle" abre
+// el desglose completo con exportar.
 // =========================================================
 async function cargarHistorialPorDia(container, elemento) {
   if (!elemento) return;
