@@ -17,6 +17,12 @@
 // para algo tan relacionado. Este archivo se deja tal cual por dentro
 // (la lógica de crear/recibir/cancelar órdenes no cambió en nada) — solo
 // se quitó el registro como módulo independiente.
+//
+// Nota (138): las dos secciones también perdieron su envoltorio propio
+// (`.tarjeta` + `<h3>`) — ahora viven DENTRO de la tarjeta "🛒 Compras"
+// que arma inventario.js (una sola, con pestañas internas "Entrada
+// rápida" / "Nueva orden formal" y el listado de órdenes siempre visible
+// debajo), así que ya no necesitan su propio título ni tarjeta aparte.
 
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -96,8 +102,7 @@ export async function cargarFormNuevaOrden(elemento) {
   }
 
   elemento.innerHTML = `
-    <div class="tarjeta">
-      <h3>+ Nueva orden de compra</h3>
+      <p class="texto-ayuda">Pedido formal a un proveedor con varios productos — NO se suma a bodega hasta marcarla "recibido" en la lista de abajo.</p>
       <form id="form-nueva-orden">
         <div class="form-grid">
           <label>Proveedor
@@ -120,7 +125,6 @@ export async function cargarFormNuevaOrden(elemento) {
           <button type="submit" class="btn btn-primario">Crear orden</button>
         </div>
       </form>
-    </div>
   `;
 
   const wrapItems = elemento.querySelector('#items-orden-wrap');
@@ -176,7 +180,7 @@ export async function cargarFormNuevaOrden(elemento) {
     e.target.reset();
     wrapItems.innerHTML = '';
     wrapItems.appendChild(filaItem());
-    const wrapLista = document.querySelector('#inv-ordenes-wrap');
+    const wrapLista = document.querySelector('#compras-lista-wrap');
     if (wrapLista) await cargarListaOrdenes(wrapLista);
   });
 }
@@ -215,8 +219,7 @@ export async function cargarListaOrdenes(elemento) {
   });
 
   elemento.innerHTML = `
-    <div class="tarjeta">
-      <h3>Órdenes de compra</h3>
+      <p class="texto-ayuda">Marca "recibido" cuando llegue la mercancía — eso suma las cantidades a bodega automáticamente y actualiza el precio de costo.</p>
       ${
         (ordenes || []).length === 0
           ? '<p class="mensaje-vacio">Sin órdenes registradas todavía.</p>'
@@ -268,7 +271,6 @@ export async function cargarListaOrdenes(elemento) {
               })
               .join('')
       }
-    </div>
   `;
 
   if (!permitido) return;
