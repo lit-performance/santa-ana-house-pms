@@ -30,9 +30,9 @@
 //     Análisis (ver contabilidad.js).
 //   - "Administración" queda oculta (roles: []) — sus únicos módulos
 //     reales que seguían activos (IA, Mantenimiento, CRM) se ocultaron
-//     también, y Usuarios/Documentos se movieron como subpestañas de
-//     Configuración. Se deja registrada (no se borra) para poder
-//     reactivarla fácil si se necesita más adelante.
+//     también, y Usuarios se movió como subpestaña de Configuración. Se
+//     deja registrada (no se borra) para poder reactivarla fácil si se
+//     necesita más adelante.
 //   - IA, Mantenimiento y Facturación quedan ocultos con `roles: []`
 //     (nadie los ve, pero el código/los datos siguen intactos —
 //     reversible con solo devolverles roles).
@@ -43,6 +43,10 @@
 //     duplicado ignorado" en consola (app.js importa el archivo real
 //     ANTES que placeholders.js, así que el real siempre gana — pero es
 //     ruido innecesario que aquí se evita quitando la entrada vieja).
+//   - "Documentos" se quitó por completo (120) — no se va a usar por
+//     ahora. Si se necesita más adelante, basta con volver a agregar su
+//     entrada aquí (estaba en MODULOS_PENDIENTES, parentId:
+//     'configuracion') o construirle su propio módulo real.
 //
 // No tocan la base de datos — son solo vista, sin tablas ni RLS propias
 // (excepto lo que ya haya hecho el módulo real correspondiente).
@@ -129,8 +133,8 @@ const GRUPOS = [
     label: 'Administración',
     icono: '⚙️',
     // Oculta temporalmente (ver nota de cabecera): sus módulos reales
-    // (IA, Mantenimiento, CRM) están ocultos y Usuarios/Documentos se
-    // movieron a Configuración, así que hoy no tendría nada que mostrar.
+    // (IA, Mantenimiento, CRM) están ocultos y Usuarios se movió a
+    // Configuración, así que hoy no tendría nada que mostrar.
     roles: [],
     esGrupoGenerico: true,
     titulo: 'Administración',
@@ -159,6 +163,7 @@ GRUPOS.forEach((grupo) => {
 // nota de cabecera) en vez de borrarse — así es trivial reactivarlos más
 // adelante devolviéndoles su lista de roles. Gastos y Auditoría ya NO
 // están aquí — se construyeron de verdad (ver gastos.js y auditoria.js).
+// "Documentos" se quitó por completo (120, ver nota de cabecera).
 const MODULOS_PENDIENTES = [
   {
     id: 'mantenimiento',
@@ -171,19 +176,6 @@ const MODULOS_PENDIENTES = [
     features: [
       'Órdenes de trabajo con prioridad y responsable',
       'Vínculo con el estado "mantenimiento" de habitaciones',
-    ],
-  },
-  {
-    id: 'documentos',
-    label: 'Documentos',
-    icono: '📁',
-    roles: ['propietario', 'administrador'],
-    parentId: 'configuracion',
-    titulo: 'Documentos',
-    descripcion: 'Almacenamiento de documentos legales y operativos del hotel.',
-    features: [
-      'RNT, pólizas, contratos, permisos',
-      'Alertas de documentos próximos a vencer',
     ],
   },
   {
