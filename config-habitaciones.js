@@ -6,19 +6,30 @@
 // para que, al quedar todos los archivos sueltos en la raíz del repo, sea
 // obvio qué módulo agrupa a cuáles).
 //
-// Nota sobre "Minibar" (nueva columna/casilla, ver 112): algunas
-// habitaciones (ej. 301 y 303, de uso administrativo) no tienen minibar.
-// La casilla "Tiene minibar" controla la columna `tiene_minibar` de
+// Nota sobre "Minibar" (columna/casilla, ver 112): algunas habitaciones
+// (uso administrativo, arriendos mensuales, etc.) no tienen minibar. La
+// casilla "Tiene minibar" controla la columna `tiene_minibar` de
 // `habitaciones`, que el módulo Inventario usa para excluirlas de
 // "Pendientes de reponer", "Reabastecer habitación", "Inventario por
 // habitación" y el "Mapa de minibares" — así no aparecen eternamente como
 // si les faltara todo el stock.
+//
+// Nota sobre "🧹 Vaciar minibar" (nuevo, 116): botón junto a la casilla
+// "Tiene minibar" (solo visible si la habitación tiene minibar activo).
+// Devuelve TODO el stock actual del minibar de esa habitación a la
+// bodega y desactiva `tiene_minibar` en un solo paso — usa la misma
+// función `vaciarMinibarHabitacion` de inventario.js que también está
+// disponible desde Inventario → Inventario por habitación (ver 115).
+// Pensado para el momento de arrendar una habitación sin minibar (ej.
+// tarifa libre / mensual, ver config-tarifas.js).
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
-import { mostrarToast } from './ui.js';
+import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
 import { badgeEstadoHabitacion, opcionesEstadoHabitacion } from './badges.js';
+import { getUsuarioActual } from './auth.js';
+import { vaciarMinibarHabitacion } from './inventario.js';
 
 async function render(container) {
   container.innerHTML = `
@@ -154,12 +165,19 @@ async function abrirModalHabitacion(habitacion) {
                 .join('')}
             </select>
           </label>
-          <label style="display:flex; align-items:center; gap:0.5rem; flex-direction:row;">
-            <input type="checkbox" name="tiene_minibar" style="width:auto;" ${!editando || habitacion.tiene_minibar !== false ? 'checked' : ''} />
-            Tiene minibar
-          </label>
+          <div style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
+            <label style="display:flex; align-items:center; gap:0.5rem; flex-direction:row; margin:0;">
+              <input type="checkbox" name="tiene_minibar" style="width:auto;" ${!editando || habitacion.tiene_minibar !== false ? 'checked' : ''} />
+              Tiene minibar
+            </label>
+            ${
+              editando && habitacion.tiene_minibar !== false
+                ? '<button type="button" id="btn-vaciar-minibar-modal" class="btn btn-secundario btn-chico">🧹 Vaciar minibar y desactivar</button>'
+                : ''
+            }
+          </div>
         </div>
-        <p class="mensaje-vacio" style="margin-top:0.25rem;">Desmárcala para habitaciones de uso administrativo (ej. 301, 303) — dejan de aparecer en Inventario → Pendientes de reponer, Reabastecer y el Mapa de minibares.</p>
+        <p class="mensaje-vacio" style="margin-top:0.25rem;">Desmárcala para habitaciones sin minibar (uso administrativo, arriendo mensual, etc.) — dejan de aparecer en Inventario → Pendientes de reponer, Reabastecer y el Mapa de minibares. "Vaciar minibar" devuelve todo el stock actual de la habitación a bodega y desmarca la casilla automáticamente.</p>
         <div class="modal-acciones" style="margin-top:1.25rem;">
           <button type="button" class="btn btn-secundario" id="btn-cancelar-habitacion">Cancelar</button>
           <button type="submit" class="btn btn-primario">${editando ? 'Guardar cambios' : 'Crear habitación'}</button>
@@ -173,6 +191,41 @@ async function abrirModalHabitacion(habitacion) {
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) overlay.remove();
   });
+
+  const btnVaciarModal = overlay.querySelector('#btn-vaciar-minibar-modal');
+  if (btnVaciarModal) {
+    btnVaciarModal.addEventListener('click', async () => {
+      const ok = await mostrarConfirmacion({
+        titulo: 'Vaciar minibar',
+        contenidoHTML: `Vas a devolver <strong>todo</strong> el stock actual del minibar de la habitación <strong>${habitacion.numero}</strong> a la bodega y desactivar su minibar. ¿Confirmas?`,
+        textoConfirmar: 'Sí, vaciar',
+      });
+      if (!ok) return;
+
+      btnVaciarModal.disabled = true;
+      btnVaciarModal.textContent = 'Vaciando…';
+      const usuario = getUsuarioActual();
+      const resultado = await vaciarMinibarHabitacion(habitacion.id, usuario?.id || null);
+      if (resultado.error) {
+        mostrarToast(`Error: ${resultado.error.message}`, 'error');
+        btnVaciarModal.disabled = false;
+        btnVaciarModal.textContent = '🧹 Vaciar minibar y desactivar';
+        return;
+      }
+
+      mostrarToast(
+        resultado.unidades > 0
+          ? `Minibar vaciado: ${resultado.unidades} unidad(es) de ${resultado.productos} producto(s) devueltas a bodega. Minibar desactivado.`
+          : 'No tenía existencias — minibar desactivado.',
+        'exito'
+      );
+
+      const checkbox = overlay.querySelector('input[name="tiene_minibar"]');
+      if (checkbox) checkbox.checked = false;
+      habitacion.tiene_minibar = false;
+      btnVaciarModal.remove();
+    });
+  }
 
   overlay.querySelector('#form-habitacion').addEventListener('submit', async (e) => {
     e.preventDefault();
