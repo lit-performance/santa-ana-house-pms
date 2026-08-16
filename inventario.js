@@ -151,7 +151,21 @@
 //     emergente aparte (`abrirModalProductoNuevo`) para crear el
 //     producto; al crearlo, el formulario de compra sigue normal con
 //     ese producto ya seleccionado.
-
+//
+// Nota (131): la pestaña de Inventario pasó de 8 tarjetas siempre
+// abiertas y apiladas (mucho scroll para llegar a las últimas) a un
+// tablero de mini-tarjetas: cada sección ahora es un resumen corto
+// (título + el dato más relevante, por ejemplo "12 unidad(es) en 4
+// habitación(es)" para Pendientes) con un botón "👁️ Ver" que abre esa
+// misma sección — completa, con toda su funcionalidad de siempre intacta
+// (Reponer, Editar, Excel, Vaciar minibar, etc.) — dentro de una tarjeta
+// emergente. Al cerrar la emergente, el tablero de resúmenes se vuelve a
+// calcular para reflejar cualquier cambio hecho adentro. Ninguna sección
+// cambió por dentro — cada `cargarXxx` es exactamente la misma función
+// de antes, solo que ahora se monta dentro de la emergente en vez de
+// quedar siempre visible en la página. "Registrar compra" y "Reabastecer
+// habitación" (formularios, no tienen un "estado" que mostrar) solo
+// aparecen en el tablero para quien puede gestionar inventario.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -192,37 +206,202 @@ function descargarCSV(nombreArchivo, filas) {
 async function render(container) {
   container.innerHTML = `
     <h2>Inventario</h2>
-    <div id="inv-mapa-wrap" style="margin-bottom:1.5rem;">
-      <p class="mensaje-vacio">Cargando mapa de minibares…</p>
-    </div>
-    <div id="inv-pendientes-wrap" style="margin-bottom:1.5rem;">
-      <p class="mensaje-vacio">Calculando pendientes de reponer…</p>
-    </div>
-    <div id="inv-bodega-wrap" style="margin-bottom:1.5rem;">
-      <p class="mensaje-vacio">Cargando…</p>
-    </div>
-    <div id="inv-compra-wrap" style="margin-bottom:1.5rem;"></div>
-    <div id="inv-reabastecer-wrap" style="margin-bottom:1.5rem;"></div>
-    <div id="inv-reposiciones-hoy-wrap" style="margin-bottom:1.5rem;">
-      <p class="mensaje-vacio">Cargando…</p>
-    </div>
-    <div id="inv-habitacion-wrap" style="margin-bottom:1.5rem;">
-      <p class="mensaje-vacio">Cargando…</p>
-    </div>
-    <div id="inv-movimientos-wrap">
-      <p class="mensaje-vacio">Cargando…</p>
+    <div id="inv-resumen-wrap">
+      <p class="mensaje-vacio">Cargando resumen…</p>
     </div>
   `;
-  await Promise.all([
-    cargarMapaMinibares(container.querySelector('#inv-mapa-wrap')),
-    cargarPendientesReponer(container.querySelector('#inv-pendientes-wrap')),
-    cargarInventarioBodega(container.querySelector('#inv-bodega-wrap')),
-    cargarSeccionCompra(container.querySelector('#inv-compra-wrap')),
-    cargarSeccionReabastecer(container.querySelector('#inv-reabastecer-wrap')),
-    cargarReposicionesHoy(container.querySelector('#inv-reposiciones-hoy-wrap')),
-    cargarInventarioHabitacion(container.querySelector('#inv-habitacion-wrap')),
-    cargarMovimientos(container.querySelector('#inv-movimientos-wrap')),
+  await cargarResumenInventario(container.querySelector('#inv-resumen-wrap'));
+}
+
+// =========================================================
+// Tablero de resumen (ver nota 131 al inicio del archivo): mini-tarjeta
+// por sección con el dato más relevante y un botón "👁️ Ver" que abre esa
+// sección completa — reutilizando exactamente las mismas funciones
+// cargarXxx de siempre — dentro de una tarjeta emergente. Los cálculos
+// de resumen son consultas livianas, separadas de la carga completa.
+// =========================================================
+
+async function calcularResumenMapa() {
+  const [{ count: habitaciones }, { count: productos }] = await Promise.all([
+    supabase.from('habitaciones').select('id', { count: 'exact', head: true }).eq('tiene_minibar', true),
+    supabase.from('minibar_productos').select('id', { count: 'exact', head: true }).eq('activo', true).gt('cantidad_estandar', 0),
   ]);
+  return { habitaciones: habitaciones || 0, productos: productos || 0 };
+}
+
+async function calcularResumenPendientes() {
+  const [{ data: habitaciones }, { data: productos }, { data: filas }] = await Promise.all([
+    supabase.from('habitaciones').select('id').eq('tiene_minibar', true),
+    supabase.from('minibar_productos').select('id, cantidad_estandar').eq('activo', true).gt('cantidad_estandar', 0),
+    supabase.from('inventario_habitacion').select('habitacion_id, producto_id, cantidad_actual'),
+  ]);
+  const actualPorClave = new Map((filas || []).map((f) => [`${f.habitacion_id}_${f.producto_id}`, f.cantidad_actual]));
+  let totalUnidades = 0;
+  const habitacionesConFaltantes = new Set();
+  (habitaciones || []).forEach((h) => {
+    (productos || []).forEach((p) => {
+      const actual = Number(actualPorClave.get(`${h.id}_${p.id}`) ?? 0);
+      const falta = Number(p.cantidad_estandar) - actual;
+      if (falta > 0) {
+        totalUnidades += falta;
+        habitacionesConFaltantes.add(h.id);
+      }
+    });
+  });
+  return { totalUnidades, habitaciones: habitacionesConFaltantes.size };
+}
+
+async function calcularResumenBodega() {
+  const { data } = await supabase.from('inventario_bodega').select('cantidad_actual, cantidad_minima');
+  const total = (data || []).length;
+  const bajoMinimo = (data || []).filter((f) => f.cantidad_minima > 0 && f.cantidad_actual <= f.cantidad_minima).length;
+  return { total, bajoMinimo };
+}
+
+async function calcularResumenReposicionesHoy() {
+  const hoy = new Date();
+  const inicioHoy = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()).toISOString();
+  const inicioManana = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 1).toISOString();
+  const { data } = await supabase
+    .from('inventario_movimientos')
+    .select('cantidad')
+    .eq('tipo', 'reabastecimiento')
+    .gte('creado_en', inicioHoy)
+    .lt('creado_en', inicioManana);
+  const total = (data || []).reduce((sum, m) => sum + Number(m.cantidad), 0);
+  return { total };
+}
+
+async function calcularResumenHabitacion() {
+  const { count } = await supabase.from('habitaciones').select('id', { count: 'exact', head: true }).eq('tiene_minibar', true);
+  return { habitaciones: count || 0 };
+}
+
+// Cada sección conserva su wrapId de siempre (#inv-mapa-wrap,
+// #inv-bodega-wrap, etc.) — así, al abrirse dentro de la tarjeta
+// emergente, todo el código existente que refresca esa sección o a sus
+// vecinas buscando ese mismo id (por ejemplo `refrescarTrasReabastecer`)
+// sigue funcionando exactamente igual, sin tener que tocarlo.
+const SECCIONES_INVENTARIO = {
+  mapa: { wrapId: 'inv-mapa-wrap', cargar: cargarMapaMinibares, ancho: true },
+  pendientes: { wrapId: 'inv-pendientes-wrap', cargar: cargarPendientesReponer, ancho: true },
+  bodega: { wrapId: 'inv-bodega-wrap', cargar: cargarInventarioBodega, ancho: true },
+  compra: { wrapId: 'inv-compra-wrap', cargar: cargarSeccionCompra },
+  reabastecer: { wrapId: 'inv-reabastecer-wrap', cargar: cargarSeccionReabastecer },
+  'reposiciones-hoy': { wrapId: 'inv-reposiciones-hoy-wrap', cargar: cargarReposicionesHoy },
+  habitacion: { wrapId: 'inv-habitacion-wrap', cargar: cargarInventarioHabitacion },
+  movimientos: { wrapId: 'inv-movimientos-wrap', cargar: cargarMovimientos },
+};
+
+function abrirModalSeccion(id, elementoResumen) {
+  const config = SECCIONES_INVENTARIO[id];
+  if (!config) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja modal-caja-ancha" style="max-width:${config.ancho ? '1100px' : '600px'}; width:95vw; max-height:88vh; overflow:auto;">
+      <div style="display:flex; justify-content:flex-end; margin-bottom:0.5rem;">
+        <button type="button" class="btn btn-secundario btn-chico" id="btn-cerrar-modal-seccion">✕ Cerrar</button>
+      </div>
+      <div id="${config.wrapId}"><p class="mensaje-vacio">Cargando…</p></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  function cerrar() {
+    overlay.remove();
+    cargarResumenInventario(elementoResumen);
+  }
+
+  overlay.querySelector('#btn-cerrar-modal-seccion').addEventListener('click', cerrar);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) cerrar();
+  });
+
+  config.cargar(overlay.querySelector(`#${config.wrapId}`));
+}
+
+async function cargarResumenInventario(elemento) {
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando resumen…</p>';
+  const permitido = puedeGestionar();
+
+  const [resumenMapa, resumenPendientes, resumenBodega, resumenReposicionesHoy, resumenHabitacion] = await Promise.all([
+    calcularResumenMapa(),
+    calcularResumenPendientes(),
+    calcularResumenBodega(),
+    calcularResumenReposicionesHoy(),
+    calcularResumenHabitacion(),
+  ]);
+
+  const tarjetas = [
+    {
+      id: 'mapa',
+      icono: '🗺️',
+      titulo: 'Mapa de minibares',
+      resumen: `${resumenMapa.habitaciones} habitación(es) · ${resumenMapa.productos} producto(s)`,
+    },
+    {
+      id: 'pendientes',
+      icono: '🔴',
+      titulo: 'Pendientes de reponer',
+      resumen:
+        resumenPendientes.totalUnidades > 0
+          ? `${resumenPendientes.totalUnidades} unidad(es) en ${resumenPendientes.habitaciones} habitación(es)`
+          : '✅ Todo al día',
+      alerta: resumenPendientes.totalUnidades > 0,
+    },
+    {
+      id: 'bodega',
+      icono: '📦',
+      titulo: 'Bodega — existencias y proveedor',
+      resumen:
+        resumenBodega.bajoMinimo > 0
+          ? `${resumenBodega.total} producto(s) · ${resumenBodega.bajoMinimo} bajo el mínimo`
+          : `${resumenBodega.total} producto(s) · ✅ ninguno bajo mínimo`,
+      alerta: resumenBodega.bajoMinimo > 0,
+    },
+    permitido ? { id: 'compra', icono: '🛒', titulo: 'Registrar compra', resumen: 'Entrada rápida de un producto a bodega' } : null,
+    permitido ? { id: 'reabastecer', icono: '🔁', titulo: 'Reabastecer habitación', resumen: 'Traslada stock de bodega a una habitación' } : null,
+    {
+      id: 'reposiciones-hoy',
+      icono: '📤',
+      titulo: 'Reposiciones de hoy',
+      resumen: `${resumenReposicionesHoy.total} unidad(es) repuestas hoy`,
+    },
+    {
+      id: 'habitacion',
+      icono: '🏨',
+      titulo: 'Inventario por habitación',
+      resumen: `${resumenHabitacion.habitaciones} habitación(es) con minibar`,
+    },
+    {
+      id: 'movimientos',
+      icono: '📋',
+      titulo: 'Movimientos recientes',
+      resumen: 'Historial de compras, reposiciones, consumos y ajustes',
+    },
+  ].filter(Boolean);
+
+  elemento.innerHTML = `
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:1rem;">
+      ${tarjetas
+        .map(
+          (t) => `
+        <div class="tarjeta" style="${t.alerta ? 'border:1.5px solid #f0a8a0; background:var(--color-alerta-fondo, #fdecea);' : ''}">
+          <h3 style="margin-top:0;">${t.icono} ${t.titulo}</h3>
+          <p class="mensaje-vacio" style="margin-bottom:1rem;">${t.resumen}</p>
+          <button type="button" class="btn btn-secundario btn-chico btn-ver-seccion" data-id="${t.id}">👁️ Ver</button>
+        </div>
+      `
+        )
+        .join('')}
+    </div>
+  `;
+
+  elemento.querySelectorAll('.btn-ver-seccion').forEach((btn) => {
+    btn.addEventListener('click', () => abrirModalSeccion(btn.dataset.id, elemento));
+  });
 }
 
 // =========================================================
@@ -709,7 +888,6 @@ async function cargarSeccionCompra(elemento) {
 
     mostrarToast('Entrada registrada en bodega.', 'exito');
     e.target.reset();
-    camposNuevo.style.display = 'none';
     document.dispatchEvent(new CustomEvent('inventario:actualizado'));
     const wrapBodega = document.querySelector('#inv-bodega-wrap');
     if (wrapBodega) await cargarInventarioBodega(wrapBodega);
