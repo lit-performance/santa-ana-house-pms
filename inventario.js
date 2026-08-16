@@ -194,6 +194,16 @@
 // Esta tarjeta ahora vive bajo su propio subtítulo "Compras" en el
 // tablero, separada visualmente de las tarjetas operativas de
 // Inventario (Mapa, Pendientes, Bodega, etc.) — ver `cargarSeccionCompras`.
+//
+// Nota (140): dentro de "🛒 Compras" las 3 zonas (Entrada rápida, Nueva
+// orden formal, Órdenes registradas) ya no se ven todas iguales/planas
+// — cada una tiene su propio color de acento (azul = entrada rápida,
+// morado = orden formal, verde azulado = órdenes registradas) en forma
+// de tarjeta-botón grande con borde y sombra del mismo color, y el
+// contenido activo se muestra dentro de un recuadro con ese mismo color
+// (franja de color a la izquierda + fondo tenue) — para identificar de
+// un vistazo en qué zona se está, en vez de un solo bloque de texto
+// corrido.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -1159,6 +1169,22 @@ async function cargarSeccionCompra(elemento) {
 // (`cargarListaOrdenes` de compras.js) — es lo que sigue naturalmente
 // después de crear una orden formal.
 // =========================================================
+// Colores de acento por zona (ver nota 140): cada una se identifica por
+// su propio color en vez de que todo se vea plano/igual — no se
+// reutilizan los colores que ya tienen significado en el resto del
+// módulo (verde=completo, ámbar=reponer, rojo=alerta en Mapa/Pendientes).
+const ACENTO_COMPRA_RAPIDA = { borde: '#1c5fa8', fondo: '#e7f1fd', texto: '#154a86' };
+const ACENTO_COMPRA_ORDEN = { borde: '#7443ad', fondo: '#f2ecfc', texto: '#5f3690' };
+const ACENTO_COMPRA_LISTA = { borde: '#2f7a78', fondo: '#eaf5f4', texto: '#25605e' };
+
+function estiloTarjetaAcento(acento, activa) {
+  return `text-align:left; cursor:pointer; border-radius:10px; padding:0.85rem 1rem; border:2px solid ${acento.borde}; background:${activa ? acento.fondo : '#fff'}; box-shadow:${activa ? `0 3px 10px ${acento.borde}40` : '0 1px 3px rgba(0,0,0,0.06)'}; transition:box-shadow 0.15s, background 0.15s;`;
+}
+
+function estiloContenidoAcento(acento) {
+  return `border-left:5px solid ${acento.borde}; background:${acento.fondo}; border-radius:0 8px 8px 0; padding:1rem; box-shadow:0 1px 5px ${acento.borde}26;`;
+}
+
 async function cargarSeccionCompras(elemento) {
   if (!puedeGestionar()) {
     elemento.innerHTML = '<p class="mensaje-vacio">No tienes permiso para gestionar compras.</p>';
@@ -1168,13 +1194,23 @@ async function cargarSeccionCompras(elemento) {
   elemento.innerHTML = `
     <div class="tarjeta">
       <h3 style="margin-top:0;">🛒 Compras</h3>
-      <div class="acciones-tarjeta" style="margin-top:0; margin-bottom:0.75rem;">
-        <button type="button" class="btn btn-primario btn-chico btn-tab-compra" data-tab="rapida">Entrada rápida (1 producto)</button>
-        <button type="button" class="btn btn-secundario btn-chico btn-tab-compra" data-tab="orden">Nueva orden formal (varios productos)</button>
+      <p class="mensaje-vacio" style="margin-top:-0.3rem;">Elige cómo vas a registrar la entrada — cada opción queda marcada con su color para identificarla fácil.</p>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:0.75rem; margin:0.75rem 0 1rem;">
+        <button type="button" class="btn-tab-compra" data-tab="rapida" style="${estiloTarjetaAcento(ACENTO_COMPRA_RAPIDA, true)}">
+          <strong style="color:${ACENTO_COMPRA_RAPIDA.texto};">⚡ Entrada rápida</strong>
+          <div class="mensaje-vacio" style="margin-top:0.2rem;">Un producto, directo a bodega</div>
+        </button>
+        <button type="button" class="btn-tab-compra" data-tab="orden" style="${estiloTarjetaAcento(ACENTO_COMPRA_ORDEN, false)}">
+          <strong style="color:${ACENTO_COMPRA_ORDEN.texto};">📝 Orden formal</strong>
+          <div class="mensaje-vacio" style="margin-top:0.2rem;">Varios productos + proveedor</div>
+        </button>
       </div>
       <div id="compras-form-wrap" style="margin-bottom:1.5rem;"></div>
-      <hr style="border:none; border-top:1px solid var(--color-borde); margin:1rem 0;" />
-      <div id="compras-lista-wrap"><p class="mensaje-vacio">Cargando…</p></div>
+      <h4 style="display:flex; align-items:center; gap:0.5rem; margin:1.5rem 0 0.6rem;">
+        <span style="display:inline-block; width:12px; height:12px; border-radius:3px; background:${ACENTO_COMPRA_LISTA.borde};"></span>
+        📦 Órdenes registradas
+      </h4>
+      <div id="compras-lista-wrap" style="${estiloContenidoAcento(ACENTO_COMPRA_LISTA)}"><p class="mensaje-vacio">Cargando…</p></div>
     </div>
   `;
 
@@ -1183,11 +1219,13 @@ async function cargarSeccionCompras(elemento) {
   const botonesTab = elemento.querySelectorAll('.btn-tab-compra');
 
   function activarTab(tab) {
+    const acento = tab === 'rapida' ? ACENTO_COMPRA_RAPIDA : ACENTO_COMPRA_ORDEN;
     botonesTab.forEach((b) => {
       const activo = b.dataset.tab === tab;
-      b.classList.toggle('btn-primario', activo);
-      b.classList.toggle('btn-secundario', !activo);
+      const suAcento = b.dataset.tab === 'rapida' ? ACENTO_COMPRA_RAPIDA : ACENTO_COMPRA_ORDEN;
+      b.setAttribute('style', estiloTarjetaAcento(suAcento, activo));
     });
+    wrapForm.setAttribute('style', `margin-bottom:1.5rem; ${estiloContenidoAcento(acento)}`);
     if (tab === 'rapida') cargarSeccionCompra(wrapForm);
     else cargarFormNuevaOrden(wrapForm);
   }
