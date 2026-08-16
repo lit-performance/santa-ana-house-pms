@@ -63,22 +63,35 @@
 // los productos activos del catálogo (no solo los que ya tengan fila en
 // inventario_habitacion), igual que "Pendientes de reponer".
 //
-// Nota sobre "tiene_minibar" (ver 109/111): las habitaciones 301 y 303
-// son de uso administrativo y no tienen minibar — "Pendientes de
-// reponer", "Reabastecer habitación", el selector de "Inventario por
-// habitación" y el nuevo "Mapa de minibares" de abajo YA NO las
-// incluyen, filtrando siempre por `tiene_minibar = true`. Si en el
-// futuro se habilita el minibar en alguna de esas habitaciones, basta
-// con marcar la casilla correspondiente en Configuración → Habitaciones.
+// Nota sobre "tiene_minibar" (ver 109/111): las habitaciones marcadas
+// como sin minibar (uso administrativo, arriendo mensual, etc.) no
+// aparecen en "Pendientes de reponer", "Reabastecer habitación", el
+// selector de "Inventario por habitación" ni el "Mapa de minibares" de
+// abajo — se filtran siempre por `tiene_minibar = true`. Para reactivar
+// el minibar de una habitación cuando corresponda, basta con marcar la
+// casilla correspondiente en Configuración → Habitaciones.
 //
-// Nota sobre "🗺️ Mapa de minibares" (nuevo, 111): vista de cuadrícula —
-// un producto por fila, una habitación por columna — inspirada en el
-// Excel de conteo físico que se usaba en papel, pero con números reales
-// en vez de solo ✓/X. Verde = completo, ámbar = a medias (muestra
+// Nota sobre "🗺️ Mapa de minibares" (111): vista de cuadrícula — un
+// producto por fila, una habitación por columna — inspirada en el Excel
+// de conteo físico que se usaba en papel, pero con números reales en vez
+// de solo ✓/X. Verde = completo, ámbar = a medias (muestra
 // "actual/estándar"), rojo = no queda nada. Pensada para verse todo el
 // panorama de un vistazo, sin tener que ir producto por producto o
 // habitación por habitación; "Pendientes de reponer" (más abajo) sigue
 // siendo la vista de trabajo para efectivamente reponer.
+//
+// Nota sobre "🧹 Vaciar minibar" (nuevo, 115): para habitaciones que se
+// arriendan sin minibar (ej. tarifa libre / mensual, ver config-
+// tarifas.js). Un solo botón que: (1) devuelve TODO el stock actual del
+// minibar de esa habitación a la bodega (inventario_bodega suma, la
+// habitación queda en 0 — cada movimiento queda registrado con tipo
+// 'vaciado_a_bodega'), y (2) desactiva `tiene_minibar` en esa habitación
+// automáticamente, para que deje de aparecer en Pendientes/Mapa hasta
+// que alguien la reactive manualmente desde Configuración. Disponible
+// aquí (Inventario → Inventario por habitación) y también en
+// Configuración → Habitaciones, junto a la casilla "Tiene minibar" — es
+// la misma función (`vaciarMinibarHabitacion`, exportada), usada desde
+// los dos lugares.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -201,7 +214,7 @@ async function cargarMapaMinibares(elemento) {
           <span><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--color-alerta-fondo, #fdecea);border:1px solid var(--color-rojo-oscuro, #c0392b);margin-right:4px;vertical-align:middle;"></span>Falta todo</span>
         </div>
       </div>
-      <p class="mensaje-vacio" style="margin-top:-0.2rem;">De un vistazo: qué hay y qué falta en cada minibar, comparado contra el estándar (no incluye 301/303, sin minibar). Para reponer, usa "Pendientes de reponer" más abajo.</p>
+      <p class="mensaje-vacio" style="margin-top:-0.2rem;">De un vistazo: qué hay y qué falta en cada minibar, comparado contra el estándar (no incluye habitaciones sin minibar). Para reponer, usa "Pendientes de reponer" más abajo.</p>
       <div class="tabla-scroll" style="max-height:520px; overflow:auto;">
         <table class="tabla-simple" style="border-collapse:collapse;">
           <thead>
@@ -561,6 +574,69 @@ async function reponerCantidadParcial(habitacionId, productoId, cantidadDeseada)
   }
 
   return { trasladado: aTrasladar };
+}
+
+// =========================================================
+// Vacía el minibar de una habitación: devuelve TODO su stock actual a la
+// bodega (suma inventario_bodega, deja la habitación en 0, registra cada
+// movimiento con tipo 'vaciado_a_bodega') y desactiva `tiene_minibar` en
+// esa habitación. Pensada para habitaciones que se arriendan sin minibar
+// (ver nota al inicio del archivo, 115). Exportada porque también se usa
+// desde config-habitaciones.js.
+// =========================================================
+export async function vaciarMinibarHabitacion(habitacionId, usuarioId) {
+  const { data: filas, error } = await supabase
+    .from('inventario_habitacion')
+    .select('id, producto_id, cantidad_actual')
+    .eq('habitacion_id', habitacionId)
+    .gt('cantidad_actual', 0);
+
+  if (error) {
+    return { error, unidades: 0, productos: 0 };
+  }
+
+  let totalUnidades = 0;
+  let totalProductos = 0;
+
+  for (const fila of filas || []) {
+    const cantidad = Number(fila.cantidad_actual);
+    if (cantidad <= 0) continue;
+    totalUnidades += cantidad;
+    totalProductos += 1;
+
+    const { data: filaBodega } = await supabase
+      .from('inventario_bodega')
+      .select('id, cantidad_actual')
+      .eq('producto_id', fila.producto_id)
+      .maybeSingle();
+
+    if (filaBodega) {
+      await supabase
+        .from('inventario_bodega')
+        .update({ cantidad_actual: filaBodega.cantidad_actual + cantidad, actualizado_en: new Date().toISOString() })
+        .eq('id', filaBodega.id);
+    } else {
+      await supabase.from('inventario_bodega').insert({
+        producto_id: fila.producto_id,
+        cantidad_actual: cantidad,
+        cantidad_minima: 0,
+      });
+    }
+
+    await supabase.from('inventario_habitacion').update({ cantidad_actual: 0, actualizado_en: new Date().toISOString() }).eq('id', fila.id);
+
+    await supabase.from('inventario_movimientos').insert({
+      tipo: 'vaciado_a_bodega',
+      producto_id: fila.producto_id,
+      habitacion_id: habitacionId,
+      cantidad,
+      registrado_por: usuarioId,
+    });
+  }
+
+  await supabase.from('habitaciones').update({ tiene_minibar: false }).eq('id', habitacionId);
+
+  return { error: null, unidades: totalUnidades, productos: totalProductos };
 }
 
 // Refresca todas las secciones que dependen del stock (mapa, bodega,
@@ -936,7 +1012,8 @@ async function cargarReposicionesHoy(elemento) {
 // =========================================================
 // Inventario por habitación (ver 096: "Actual" es editable directo,
 // sin tocar bodega — ver nota al inicio del archivo). Solo muestra
-// habitaciones con minibar habilitado (ver 109/111).
+// habitaciones con minibar habilitado (ver 109/111). Incluye el botón
+// "🧹 Vaciar minibar" (ver nota 115 al inicio del archivo).
 // =========================================================
 async function cargarInventarioHabitacion(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
@@ -986,7 +1063,10 @@ async function cargarInventarioHabitacion(elemento) {
     detalle.innerHTML = `
       ${
         permitidoEditar
-          ? '<p class="mensaje-vacio" style="margin-top:-0.4rem; margin-bottom:0.75rem;">Edita "Actual" y dale Guardar para dejar el conteo físico real de esta habitación — esto <strong>no saca nada de bodega</strong>, solo corrige el número de la habitación. Para trasladar stock real de bodega a la habitación, usa "Reabastecer habitación" o "Pendientes de reponer" más arriba.</p>'
+          ? `<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; flex-wrap:wrap; margin-bottom:0.5rem;">
+              <p class="mensaje-vacio" style="margin:0; max-width:640px;">Edita "Actual" y dale Guardar para dejar el conteo físico real de esta habitación — esto <strong>no saca nada de bodega</strong>, solo corrige el número de la habitación. Para trasladar stock real de bodega a la habitación, usa "Reabastecer habitación" o "Pendientes de reponer" más arriba.</p>
+              <button type="button" id="btn-vaciar-minibar" class="btn btn-secundario btn-chico" style="white-space:nowrap;">🧹 Vaciar minibar</button>
+            </div>`
           : ''
       }
       <div class="tabla-scroll">
@@ -1025,6 +1105,48 @@ async function cargarInventarioHabitacion(elemento) {
     `;
 
     if (!permitidoEditar) return;
+
+    const btnVaciar = detalle.querySelector('#btn-vaciar-minibar');
+    if (btnVaciar) {
+      btnVaciar.addEventListener('click', async () => {
+        const habLabel = select.options[select.selectedIndex]?.textContent || '';
+        const ok = await mostrarConfirmacion({
+          titulo: 'Vaciar minibar',
+          contenidoHTML: `Vas a devolver <strong>todo</strong> el stock actual del minibar de <strong>${escaparHTML(habLabel)}</strong> a la bodega, dejarla en 0 y desactivar su minibar (deja de aparecer en Pendientes/Mapa hasta que se reactive en Configuración). Úsalo cuando la habitación se arriende sin minibar. ¿Confirmas?`,
+          textoConfirmar: 'Sí, vaciar',
+        });
+        if (!ok) return;
+
+        btnVaciar.disabled = true;
+        const usuario = getUsuarioActual();
+        const resultado = await vaciarMinibarHabitacion(habitacionId, usuario?.id || null);
+        if (resultado.error) {
+          mostrarToast(`Error: ${resultado.error.message}`, 'error');
+          btnVaciar.disabled = false;
+          return;
+        }
+
+        mostrarToast(
+          resultado.unidades > 0
+            ? `Minibar vaciado: ${resultado.unidades} unidad(es) de ${resultado.productos} producto(s) devueltas a bodega. Minibar desactivado.`
+            : 'La habitación ya no tenía existencias — minibar desactivado.',
+          'exito'
+        );
+
+        // Recarga toda la sección (no solo el detalle) para que el
+        // selector deje de listar esta habitación, ya que quedó sin
+        // minibar.
+        await cargarInventarioHabitacion(elemento);
+        const wrapMapa = document.querySelector('#inv-mapa-wrap');
+        if (wrapMapa) await cargarMapaMinibares(wrapMapa);
+        const wrapPendientes = document.querySelector('#inv-pendientes-wrap');
+        if (wrapPendientes) await cargarPendientesReponer(wrapPendientes);
+        const wrapBodega = document.querySelector('#inv-bodega-wrap');
+        if (wrapBodega) await cargarInventarioBodega(wrapBodega);
+        const wrapMov = document.querySelector('#inv-movimientos-wrap');
+        if (wrapMov) await cargarMovimientos(wrapMov);
+      });
+    }
 
     detalle.querySelectorAll('.btn-guardar-conteo-habitacion').forEach((btn) => {
       btn.addEventListener('click', async (e) => {
@@ -1097,6 +1219,7 @@ async function cargarMovimientos(elemento) {
     consumo: 'Consumo',
     ajuste_bodega: 'Ajuste bodega',
     ajuste_habitacion: 'Ajuste habitación',
+    vaciado_a_bodega: 'Vaciado a bodega',
   };
 
   elemento.innerHTML = `
