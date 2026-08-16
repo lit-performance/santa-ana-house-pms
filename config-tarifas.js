@@ -1,23 +1,28 @@
 // config-tarifas.js
 //
-// Subpestaña de Configuración: tarifas (temporada baja, alta y fin de
-// semana) por código. Cada habitación en Habitaciones apunta a una de estas.
+// Subpestaña de Configuración: tarifas por código. Dos familias
+// distintas (ver 121/122):
 //
-// Nota sobre tarifas libres (nuevo, 117): antes esta pantalla solo
-// dejaba editar los precios de tarifas ya existentes (sembradas por
-// SQL) — no había forma de crear una tarifa nueva desde la app, ni de
-// cambiarle el nombre/código. Ahora:
-//   - El código de cada tarifa es editable (antes era texto fijo).
-//   - Hay un formulario "+ Nueva tarifa" al final para crear cuantas
-//     tarifas libres se necesiten, con nombre y valores 100% a tu
-//     gusto (ej. "Arriendo mensual", con el valor mensual en
-//     "Temporada baja" y $0 en las demás si no aplican). Una vez
-//     creada, aparece en el selector de Tarifa al editar cualquier
-//     habitación (Configuración → Habitaciones).
+//   - "Tarifas diarias" (A-E, las de siempre): temporada baja, alta y
+//     fin de semana, por noche, con IVA %.
+//   - "Tarifas por días" (nueva, ej. "Tarifa F"): pensada para estadías
+//     negociadas que no siguen el esquema de temporadas — un número de
+//     días y un valor convenido/negociado total para esa estadía. No
+//     usan las columnas de temporada ni IVA.
+//
+// Cada habitación en Habitaciones apunta a una tarifa de cualquiera de
+// las dos familias (columna tarifa_id, sin distinción — el selector de
+// Habitaciones simplemente lista todas).
+//
+// Nota: esto reemplaza el enfoque anterior de una única "tarifa libre"
+// genérica (117) — se reemplazó por esta separación en dos familias
+// porque las tarifas por días necesitan campos distintos (número de
+// días + valor convenido) en vez de los tres precios por temporada.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast } from './ui.js';
+import { formatCOP } from './currency.js';
 
 function escaparHTML(texto) {
   const div = document.createElement('div');
@@ -28,52 +33,70 @@ function escaparHTML(texto) {
 async function render(container) {
   container.innerHTML = `
     <h2>Tarifas</h2>
-    <div id="tabla-tarifas-wrap" class="tabla-scroll">
-      <p class="mensaje-vacio">Cargando…</p>
+    <div class="tarjeta" style="margin-bottom:1.5rem;">
+      <h3>Tarifas diarias</h3>
+      <p class="texto-ayuda">Por noche, con temporada baja/alta/fin de semana e IVA.</p>
+      <div id="tabla-tarifas-diarias-wrap" class="tabla-scroll">
+        <p class="mensaje-vacio">Cargando…</p>
+      </div>
     </div>
-    <div id="nueva-tarifa-wrap" style="margin-top:1.5rem;"></div>
+    <div class="tarjeta">
+      <h3>Tarifas por días</h3>
+      <p class="texto-ayuda">Para estadías negociadas (ej. arriendos por varios días o meses) — número de días contratados y el valor convenido total, sin esquema de temporadas.</p>
+      <div id="tabla-tarifas-dias-wrap" class="tabla-scroll">
+        <p class="mensaje-vacio">Cargando…</p>
+      </div>
+      <div id="nueva-tarifa-dias-wrap" style="margin-top:1.25rem;"></div>
+    </div>
   `;
-  await cargarTabla(container);
-  cargarFormularioNuevaTarifa(container.querySelector('#nueva-tarifa-wrap'), container);
+  await cargarTablas(container);
+  cargarFormularioNuevaTarifaPorDias(container.querySelector('#nueva-tarifa-dias-wrap'), container);
 }
 
-async function cargarTabla(container) {
-  const wrap = container.querySelector('#tabla-tarifas-wrap');
+async function cargarTablas(container) {
   const { data, error } = await supabase.from('tarifas').select('*').order('codigo');
   if (error) {
-    wrap.innerHTML = `<p class="mensaje-vacio">Error: ${error.message}</p>`;
+    container.querySelector('#tabla-tarifas-diarias-wrap').innerHTML = `<p class="mensaje-vacio">Error: ${error.message}</p>`;
+    container.querySelector('#tabla-tarifas-dias-wrap').innerHTML = '';
     return;
   }
+
+  const todas = data || [];
+  pintarTablaDiarias(container.querySelector('#tabla-tarifas-diarias-wrap'), todas.filter((t) => t.tipo !== 'por_dias'), container);
+  pintarTablaPorDias(container.querySelector('#tabla-tarifas-dias-wrap'), todas.filter((t) => t.tipo === 'por_dias'), container);
+}
+
+function pintarTablaDiarias(wrap, filas, container) {
   wrap.innerHTML = `
     <table class="tabla-simple">
       <thead>
         <tr><th>Código / nombre</th><th>Temporada baja</th><th>Temporada alta</th><th>Fin de semana</th><th>IVA %</th><th></th></tr>
       </thead>
       <tbody>
-        ${(data || [])
+        ${filas
           .map(
             (t) => `
           <tr data-id="${t.id}">
-            <td><input type="text" class="input-tarifa" data-campo="codigo" value="${escaparHTML(t.codigo)}" style="width:170px" /></td>
-            <td><input type="number" class="input-tarifa" data-campo="precio_temporada_baja" value="${t.precio_temporada_baja}" /></td>
-            <td><input type="number" class="input-tarifa" data-campo="precio_temporada_alta" value="${t.precio_temporada_alta}" /></td>
-            <td><input type="number" class="input-tarifa" data-campo="precio_fin_semana" value="${t.precio_fin_semana}" /></td>
-            <td><input type="number" class="input-tarifa" data-campo="iva_porcentaje" value="${t.iva_porcentaje}" style="width:70px" /></td>
-            <td><button type="button" class="btn-editar btn-guardar-tarifa">Guardar</button></td>
+            <td><input type="text" class="input-tarifa-diaria" data-campo="codigo" value="${escaparHTML(t.codigo)}" style="width:170px" /></td>
+            <td><input type="number" class="input-tarifa-diaria" data-campo="precio_temporada_baja" value="${t.precio_temporada_baja}" /></td>
+            <td><input type="number" class="input-tarifa-diaria" data-campo="precio_temporada_alta" value="${t.precio_temporada_alta}" /></td>
+            <td><input type="number" class="input-tarifa-diaria" data-campo="precio_fin_semana" value="${t.precio_fin_semana}" /></td>
+            <td><input type="number" class="input-tarifa-diaria" data-campo="iva_porcentaje" value="${t.iva_porcentaje}" style="width:70px" /></td>
+            <td><button type="button" class="btn-editar btn-guardar-tarifa-diaria">Guardar</button></td>
           </tr>`
           )
-          .join('') || '<tr><td colspan="6" class="mensaje-vacio">Sin tarifas registradas.</td></tr>'}
+          .join('') || '<tr><td colspan="6" class="mensaje-vacio">Sin tarifas diarias registradas.</td></tr>'}
       </tbody>
     </table>
-    <p class="mensaje-vacio">⚠ El IVA de alojamiento en Colombia tiene reglas particulares — confirma el % correcto con tu contador antes de facturar. Para tarifas libres (ej. arriendo mensual sin IVA), deja el % en 0.</p>
+    <p class="mensaje-vacio">⚠ El IVA de alojamiento en Colombia tiene reglas particulares — confirma el % correcto con tu contador antes de facturar.</p>
   `;
 
-  wrap.querySelectorAll('.btn-guardar-tarifa').forEach((btn) => {
+  wrap.querySelectorAll('.btn-guardar-tarifa-diaria').forEach((btn) => {
     btn.addEventListener('click', async (e) => {
       const fila = e.target.closest('tr');
       const id = Number(fila.dataset.id);
       const payload = {};
-      fila.querySelectorAll('.input-tarifa').forEach((input) => {
+      fila.querySelectorAll('.input-tarifa-diaria').forEach((input) => {
         const campo = input.dataset.campo;
         payload[campo] = campo === 'codigo' ? input.value.trim() : Number(input.value) || 0;
       });
@@ -91,41 +114,82 @@ async function cargarTabla(container) {
   });
 }
 
-function cargarFormularioNuevaTarifa(elemento, container) {
-  elemento.innerHTML = `
-    <div class="tarjeta">
-      <h3>+ Nueva tarifa (libre en nombre y valor)</h3>
-      <p class="texto-ayuda">Úsala para casos que no siguen la estructura normal de temporadas, por ejemplo un arriendo mensual: ponle el nombre que quieras y el valor donde corresponda (puedes dejar en 0 los campos que no apliquen).</p>
-      <form id="form-nueva-tarifa" class="form-grid">
-        <label>Nombre / código
-          <input type="text" name="codigo" required placeholder="Ej: Arriendo mensual" />
-        </label>
-        <label>Temporada baja (o valor único)
-          <input type="number" name="precio_temporada_baja" min="0" value="0" required />
-        </label>
-        <label>Temporada alta
-          <input type="number" name="precio_temporada_alta" min="0" value="0" required />
-        </label>
-        <label>Fin de semana
-          <input type="number" name="precio_fin_semana" min="0" value="0" required />
-        </label>
-        <label>IVA %
-          <input type="number" name="iva_porcentaje" min="0" value="0" required />
-        </label>
-        <button type="submit" class="btn btn-primario">+ Crear tarifa</button>
-      </form>
-    </div>
+function pintarTablaPorDias(wrap, filas, container) {
+  wrap.innerHTML = `
+    <table class="tabla-simple">
+      <thead>
+        <tr><th>Nombre</th><th>Número de días</th><th>Valor convenido</th><th></th></tr>
+      </thead>
+      <tbody>
+        ${filas
+          .map(
+            (t) => `
+          <tr data-id="${t.id}">
+            <td><input type="text" class="input-tarifa-dias" data-campo="codigo" value="${escaparHTML(t.codigo)}" style="width:200px" /></td>
+            <td><input type="number" class="input-tarifa-dias" data-campo="numero_dias" min="1" value="${t.numero_dias ?? ''}" style="width:100px" /></td>
+            <td><input type="number" class="input-tarifa-dias" data-campo="valor_convenido" min="0" value="${t.valor_convenido ?? ''}" style="width:150px" /></td>
+            <td><button type="button" class="btn-editar btn-guardar-tarifa-dias">Guardar</button></td>
+          </tr>`
+          )
+          .join('') || '<tr><td colspan="4" class="mensaje-vacio">Sin tarifas por días registradas todavía.</td></tr>'}
+      </tbody>
+    </table>
   `;
 
-  elemento.querySelector('#form-nueva-tarifa').addEventListener('submit', async (e) => {
+  wrap.querySelectorAll('.btn-guardar-tarifa-dias').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      const fila = e.target.closest('tr');
+      const id = Number(fila.dataset.id);
+      const payload = {};
+      fila.querySelectorAll('.input-tarifa-dias').forEach((input) => {
+        const campo = input.dataset.campo;
+        payload[campo] = campo === 'codigo' ? input.value.trim() : Number(input.value) || 0;
+      });
+      if (!payload.codigo) {
+        mostrarToast('El nombre de la tarifa no puede quedar vacío.', 'error');
+        return;
+      }
+      const { error } = await supabase.from('tarifas').update(payload).eq('id', id);
+      if (error) {
+        mostrarToast(`Error: ${error.message}`, 'error');
+        return;
+      }
+      mostrarToast(`Tarifa "${payload.codigo}" actualizada.`, 'exito');
+    });
+  });
+}
+
+function cargarFormularioNuevaTarifaPorDias(elemento, container) {
+  elemento.innerHTML = `
+    <h4 style="margin-bottom:0.4rem;">+ Nueva tarifa por días</h4>
+    <form id="form-nueva-tarifa-dias" class="form-grid">
+      <label>Nombre
+        <input type="text" name="codigo" required placeholder="Ej: Tarifa F" />
+      </label>
+      <label>Número de días
+        <input type="number" name="numero_dias" min="1" required placeholder="Ej: 30" />
+      </label>
+      <label>Valor convenido (total de la estadía)
+        <input type="number" name="valor_convenido" min="0" required placeholder="Ej: 900000" />
+      </label>
+      <button type="submit" class="btn btn-primario">+ Crear tarifa</button>
+    </form>
+  `;
+
+  elemento.querySelector('#form-nueva-tarifa-dias').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
     const payload = {
       codigo: form.get('codigo').trim(),
-      precio_temporada_baja: Number(form.get('precio_temporada_baja')) || 0,
-      precio_temporada_alta: Number(form.get('precio_temporada_alta')) || 0,
-      precio_fin_semana: Number(form.get('precio_fin_semana')) || 0,
-      iva_porcentaje: Number(form.get('iva_porcentaje')) || 0,
+      tipo: 'por_dias',
+      numero_dias: Number(form.get('numero_dias')) || 0,
+      valor_convenido: Number(form.get('valor_convenido')) || 0,
+      // Estas tres no aplican a "por días" — quedan en 0 para no
+      // interferir con nada que las use por defecto.
+      precio_temporada_baja: 0,
+      precio_temporada_alta: 0,
+      precio_fin_semana: 0,
+      iva_porcentaje: 0,
     };
     if (!payload.codigo) {
       mostrarToast('Ponle un nombre a la tarifa.', 'error');
@@ -140,7 +204,7 @@ function cargarFormularioNuevaTarifa(elemento, container) {
 
     mostrarToast(`Tarifa "${payload.codigo}" creada — ya aparece en el selector de Tarifa al editar una habitación.`, 'exito');
     e.target.reset();
-    await cargarTabla(container);
+    await cargarTablas(container);
   });
 }
 
