@@ -11,6 +11,10 @@
 //    completo una sola vez, sin prorratear por noche).
 // 3. Huéspedes — listado completo con visitas y total histórico gastado
 //    (no usa el rango de fechas, es el mismo cálculo que huespedes.js).
+//
+// Oculto temporalmente (roles: []) desde 160, a pedido de Elssy. El
+// código y los datos siguen intactos; reactivar es solo devolverle su
+// lista de roles al registerModule() de más abajo.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -319,7 +323,7 @@ registerModule({
   id: 'reportes',
   label: 'Reportes',
   icono: '📈',
-  roles: ['propietario', 'administrador', 'auditor'],
+  roles: [],
   parentId: 'grupo-analisis',
   render,
 });
