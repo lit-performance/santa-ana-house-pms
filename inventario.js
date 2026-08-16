@@ -92,6 +92,15 @@
 // Configuración → Habitaciones, junto a la casilla "Tiene minibar" — es
 // la misma función (`vaciarMinibarHabitacion`, exportada), usada desde
 // los dos lugares.
+//
+// Nota (119): (1) el "Mapa de minibares" ahora fija también la fila de
+// encabezado (números de habitación) al hacer scroll hacia abajo, no
+// solo la columna de producto — así siempre se ve a qué habitación
+// corresponde cada columna, sin importar qué tan abajo se haya
+// scrolleado. (2) "Inventario por habitación" pasó a ser de SOLO
+// LECTURA — se quitó la edición manual de "Actual" (el conteo ya se
+// carga completo desde el mapa/Excel y no hacía falta corregirlo aquí a
+// mano); el botón "🧹 Vaciar minibar" se mantiene igual.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -188,6 +197,11 @@ async function cargarMapaMinibares(elemento) {
   const ESTILO_FALTA = 'background:var(--color-alerta-fondo, #fdecea); color:var(--color-rojo-oscuro, #c0392b);';
   const ESTILO_CELDA_BASE = 'text-align:center; min-width:52px; font-weight:700; padding:0.4rem 0.3rem;';
   const ESTILO_COL_PRODUCTO = 'position:sticky; left:0; background:var(--color-fondo-tarjeta, #fff); text-align:left; min-width:200px; z-index:1;';
+  // Fila de encabezado (números de habitación) fija al scrollear hacia
+  // abajo, para que siempre se vea a qué habitación corresponde cada
+  // columna (ver nota 119 al inicio del archivo).
+  const ESTILO_TH_FILA_FIJA = 'position:sticky; top:0; background:#f5f6f8; z-index:2;';
+  const ESTILO_TH_ESQUINA = 'position:sticky; left:0; top:0; background:#f5f6f8; text-align:left; min-width:200px; z-index:3;';
 
   function celda(habitacionId, producto) {
     const actual = Number(actualPorClave.get(`${habitacionId}_${producto.id}`) ?? 0);
@@ -216,9 +230,9 @@ async function cargarMapaMinibares(elemento) {
         <table class="tabla-simple" style="border-collapse:collapse;">
           <thead>
             <tr>
-              <th style="${ESTILO_COL_PRODUCTO} z-index:2;">Producto</th>
-              <th style="text-align:center; min-width:70px;">Estándar</th>
-              ${(habitaciones || []).map((h) => `<th style="text-align:center; min-width:52px;">${escaparHTML(h.numero)}</th>`).join('')}
+              <th style="${ESTILO_TH_ESQUINA}">Producto</th>
+              <th style="${ESTILO_TH_FILA_FIJA} text-align:center; min-width:70px;">Estándar</th>
+              ${(habitaciones || []).map((h) => `<th style="${ESTILO_TH_FILA_FIJA} text-align:center; min-width:52px;">${escaparHTML(h.numero)}</th>`).join('')}
             </tr>
           </thead>
           <tbody>
@@ -1009,10 +1023,13 @@ async function cargarReposicionesHoy(elemento) {
 }
 
 // =========================================================
-// Inventario por habitación (ver 096: "Actual" es editable directo,
-// sin tocar bodega — ver nota al inicio del archivo). Solo muestra
-// habitaciones con minibar habilitado (ver 109/111). Incluye el botón
-// "🧹 Vaciar minibar" (ver nota 115 al inicio del archivo).
+// Inventario por habitación (ver nota 119 al inicio del archivo):
+// consulta de SOLO LECTURA — la edición manual de "Actual" se quitó
+// porque el conteo ya se carga completo desde el mapa/Excel y ya no
+// hace falta corregirlo aquí a mano. Solo muestra habitaciones con
+// minibar habilitado (ver 109/111). Incluye el botón "🧹 Vaciar
+// minibar" (ver nota 115 al inicio del archivo), que sigue funcionando
+// igual.
 // =========================================================
 async function cargarInventarioHabitacion(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
@@ -1057,13 +1074,13 @@ async function cargarInventarioHabitacion(elemento) {
     }
 
     const actualPorProducto = new Map((filas || []).map((f) => [f.producto_id, f.cantidad_actual]));
-    const permitidoEditar = puedeGestionar();
+    const permitidoGestionar = puedeGestionar();
 
     detalle.innerHTML = `
       ${
-        permitidoEditar
+        permitidoGestionar
           ? `<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; flex-wrap:wrap; margin-bottom:0.5rem;">
-              <p class="mensaje-vacio" style="margin:0; max-width:640px;">Edita "Actual" y dale Guardar para dejar el conteo físico real de esta habitación — esto <strong>no saca nada de bodega</strong>, solo corrige el número de la habitación. Para trasladar stock real de bodega a la habitación, usa "Reabastecer habitación" o "Pendientes de reponer" más arriba.</p>
+              <p class="mensaje-vacio" style="margin:0; max-width:640px;">Consulta de solo lectura — el conteo se actualiza automáticamente con cada consumo, reposición o carga de inventario.</p>
               <button type="button" id="btn-vaciar-minibar" class="btn btn-secundario btn-chico" style="white-space:nowrap;">🧹 Vaciar minibar</button>
             </div>`
           : ''
@@ -1077,7 +1094,6 @@ async function cargarInventarioHabitacion(elemento) {
               <th>Actual</th>
               <th>Estándar</th>
               <th>Estado</th>
-              ${permitidoEditar ? '<th></th>' : ''}
             </tr>
           </thead>
           <tbody>
@@ -1087,23 +1103,22 @@ async function cargarInventarioHabitacion(elemento) {
                   const actual = Number(actualPorProducto.get(p.id) ?? 0);
                   const estandar = Number(p.cantidad_estandar ?? 0);
                   const falta = actual < estandar;
-                  return `<tr data-producto-id="${p.id}" data-actual="${actual}">
+                  return `<tr>
                     <td>${escaparHTML(p.categoria)}</td>
                     <td>${escaparHTML(p.nombre)}</td>
-                    <td>${permitidoEditar ? `<input type="number" class="input-actual-habitacion" min="0" value="${actual}" style="width:70px" />` : actual}</td>
+                    <td>${actual}</td>
                     <td>${estandar}</td>
                     <td>${falta ? '⚠️ Reponer' : '✅'}</td>
-                    ${permitidoEditar ? `<td><button type="button" class="btn-editar btn-guardar-conteo-habitacion">Guardar</button></td>` : ''}
                   </tr>`;
                 })
-                .join('') || `<tr><td colspan="${permitidoEditar ? 6 : 5}" class="mensaje-vacio">Sin productos activos en el catálogo.</td></tr>`
+                .join('') || `<tr><td colspan="5" class="mensaje-vacio">Sin productos activos en el catálogo.</td></tr>`
             }
           </tbody>
         </table>
       </div>
     `;
 
-    if (!permitidoEditar) return;
+    if (!permitidoGestionar) return;
 
     const btnVaciar = detalle.querySelector('#btn-vaciar-minibar');
     if (btnVaciar) {
@@ -1146,45 +1161,6 @@ async function cargarInventarioHabitacion(elemento) {
         if (wrapMov) await cargarMovimientos(wrapMov);
       });
     }
-
-    detalle.querySelectorAll('.btn-guardar-conteo-habitacion').forEach((btn) => {
-      btn.addEventListener('click', async (e) => {
-        const fila = e.target.closest('tr');
-        const productoId = Number(fila.dataset.productoId);
-        const actualAnterior = Number(fila.dataset.actual);
-        const input = fila.querySelector('.input-actual-habitacion');
-        const nuevoValor = Math.max(0, Number(input.value) || 0);
-        const delta = nuevoValor - actualAnterior;
-
-        if (delta === 0) {
-          mostrarToast('Ese producto ya tenía esa cantidad.', 'exito');
-          return;
-        }
-
-        const usuario = getUsuarioActual();
-        btn.disabled = true;
-        try {
-          // 'ajuste_habitacion': el mismo tipo que usa minibar.js al
-          // revertir un consumo eliminado — SOLO toca
-          // inventario_habitacion, nunca inventario_bodega.
-          await ajustarInventarioHabitacion(habitacionId, productoId, delta, usuario?.id || null, 'ajuste_habitacion');
-        } catch (errAjuste) {
-          mostrarToast(`Error guardando el conteo: ${errAjuste.message}`, 'error');
-          btn.disabled = false;
-          return;
-        }
-
-        mostrarToast('Conteo de la habitación actualizado (no se tocó la bodega).', 'exito');
-        await pintarDetalle(habitacionId);
-
-        const wrapMapa = document.querySelector('#inv-mapa-wrap');
-        if (wrapMapa) await cargarMapaMinibares(wrapMapa);
-        const wrapPendientes = document.querySelector('#inv-pendientes-wrap');
-        if (wrapPendientes) await cargarPendientesReponer(wrapPendientes);
-        const wrapMov = document.querySelector('#inv-movimientos-wrap');
-        if (wrapMov) await cargarMovimientos(wrapMov);
-      });
-    });
   }
 
   if (habitaciones && habitaciones.length > 0) {
