@@ -18,11 +18,27 @@
 // genérica (117) — se reemplazó por esta separación en dos familias
 // porque las tarifas por días necesitan campos distintos (número de
 // días + valor convenido) en vez de los tres precios por temporada.
+//
+// Nota (156): se agregó una tercera tarjeta, "🏷 Tipos de habitación"
+// (Sencilla, Doble, Triple, Suite...), que antes vivía en su propia
+// subpestaña (config-tipos.js). Se trae aquí porque conceptualmente es
+// otra forma de "clasificar" una habitación, igual que la tarifa —
+// tiene sentido gestionar ambas cosas juntas en un solo lugar. Se
+// muestra como una cuadrícula de mini-tarjetas redondeadas con acento
+// de color (mismo estilo `.tarjeta-acento-*` ya usado en el resto del
+// sistema — ver 113/145), cada una con botones de Editar (vuelve la
+// mini-tarjeta un formulario en el sitio) y Eliminar (bloqueado con un
+// aviso si alguna habitación todavía tiene ese tipo asignado, para no
+// dejar referencias huérfanas). config-tipos.js se dejó oculto
+// (roles: []) — su código y los datos siguen intactos, ver su propia
+// nota de cabecera.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
-import { mostrarToast } from './ui.js';
+import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
+
+const ACENTOS_TIPO = ['azul', 'verde', 'naranja', 'rojo', 'morado'];
 
 function escaparHTML(texto) {
   const div = document.createElement('div');
@@ -32,7 +48,7 @@ function escaparHTML(texto) {
 
 async function render(container) {
   container.innerHTML = `
-    <h2>Tarifas</h2>
+    <h2>💲 Tarifas</h2>
     <div class="tarjeta" style="margin-bottom:1.5rem;">
       <h3>Tarifas diarias</h3>
       <p class="texto-ayuda">Por noche, con temporada baja/alta/fin de semana e IVA.</p>
@@ -40,7 +56,7 @@ async function render(container) {
         <p class="mensaje-vacio">Cargando…</p>
       </div>
     </div>
-    <div class="tarjeta">
+    <div class="tarjeta" style="margin-bottom:1.5rem;">
       <h3>Tarifas por días</h3>
       <p class="texto-ayuda">Para estadías negociadas (ej. arriendos por varios días o meses) — número de días contratados y el valor convenido total, sin esquema de temporadas.</p>
       <div id="tabla-tarifas-dias-wrap" class="tabla-scroll">
@@ -48,9 +64,19 @@ async function render(container) {
       </div>
       <div id="nueva-tarifa-dias-wrap" style="margin-top:1.25rem;"></div>
     </div>
+    <div class="tarjeta">
+      <h3>🏷 Tipos de habitación</h3>
+      <p class="texto-ayuda">Sencilla, Doble, Triple, Suite… se usan en el selector "Tipo" al crear o editar una habitación en la pestaña Habitaciones.</p>
+      <div id="tipos-habitacion-grid-wrap">
+        <p class="mensaje-vacio">Cargando…</p>
+      </div>
+      <div id="nuevo-tipo-wrap" style="margin-top:1.25rem;"></div>
+    </div>
   `;
   await cargarTablas(container);
   cargarFormularioNuevaTarifaPorDias(container.querySelector('#nueva-tarifa-dias-wrap'), container);
+  await cargarTiposHabitacion(container.querySelector('#tipos-habitacion-grid-wrap'), container);
+  cargarFormularioNuevoTipo(container.querySelector('#nuevo-tipo-wrap'), container);
 }
 
 async function cargarTablas(container) {
@@ -205,6 +231,167 @@ function cargarFormularioNuevaTarifaPorDias(elemento, container) {
     mostrarToast(`Tarifa "${payload.codigo}" creada — ya aparece en el selector de Tarifa al editar una habitación.`, 'exito');
     e.target.reset();
     await cargarTablas(container);
+  });
+}
+
+// =========================================================
+// Tipos de habitación (156) — mini-tarjetas con acento de color,
+// editar en el sitio y eliminar con verificación de uso.
+// =========================================================
+
+async function cargarTiposHabitacion(wrap, container) {
+  const { data, error } = await supabase.from('tipos_habitacion').select('*').order('nombre');
+  if (error) {
+    wrap.innerHTML = `<p class="mensaje-vacio">Error: ${error.message}</p>`;
+    return;
+  }
+  pintarTiposHabitacion(wrap, data || [], container);
+}
+
+function pintarTiposHabitacion(wrap, tipos, container) {
+  if (tipos.length === 0) {
+    wrap.innerHTML = '<p class="mensaje-vacio">Sin tipos de habitación registrados todavía.</p>';
+    return;
+  }
+
+  wrap.innerHTML = `
+    <div class="grid-tipos-habitacion">
+      ${tipos.map((t, i) => tarjetaTipoHTML(t, ACENTOS_TIPO[i % ACENTOS_TIPO.length])).join('')}
+    </div>
+  `;
+
+  tipos.forEach((t) => {
+    const tarjeta = wrap.querySelector(`[data-tipo-id="${t.id}"]`);
+    if (!tarjeta) return;
+    const btnEditar = tarjeta.querySelector('.btn-editar-tipo');
+    const btnEliminar = tarjeta.querySelector('.btn-eliminar-tipo');
+    if (btnEditar) btnEditar.addEventListener('click', () => activarEdicionTipo(tarjeta, t, wrap, container));
+    if (btnEliminar) btnEliminar.addEventListener('click', () => eliminarTipoHabitacion(t, wrap, container));
+  });
+}
+
+function tarjetaTipoHTML(t, acento) {
+  return `
+    <div class="tarjeta tarjeta-mini tarjeta-acento tarjeta-acento-${acento}" data-tipo-id="${t.id}">
+      <div class="tarjeta-tipo-vista">
+        <strong>${escaparHTML(t.nombre)}</strong>
+        <p class="mensaje-vacio" style="margin:0.3rem 0 0.75rem;">${t.descripcion ? escaparHTML(t.descripcion) : 'Sin descripción'}</p>
+        <div class="acciones-tarjeta" style="margin-top:0;">
+          <button type="button" class="btn-editar btn-chico btn-editar-tipo">✏️ Editar</button>
+          <button type="button" class="btn btn-secundario btn-chico btn-eliminar-tipo">🗑️ Eliminar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function activarEdicionTipo(tarjetaEl, tipo, wrap, container) {
+  const vista = tarjetaEl.querySelector('.tarjeta-tipo-vista');
+  vista.innerHTML = `
+    <form class="form-editar-tipo" style="display:flex; flex-direction:column; gap:0.6rem;">
+      <label style="margin:0;">Nombre
+        <input type="text" name="nombre" required value="${escaparHTML(tipo.nombre)}" />
+      </label>
+      <label style="margin:0;">Descripción
+        <input type="text" name="descripcion" value="${tipo.descripcion ? escaparHTML(tipo.descripcion) : ''}" placeholder="Opcional" />
+      </label>
+      <div class="acciones-tarjeta" style="margin-top:0.25rem;">
+        <button type="button" class="btn btn-secundario btn-chico btn-cancelar-edicion-tipo">Cancelar</button>
+        <button type="submit" class="btn btn-primario btn-chico">Guardar</button>
+      </div>
+    </form>
+  `;
+
+  vista.querySelector('.btn-cancelar-edicion-tipo').addEventListener('click', () => {
+    cargarTiposHabitacion(wrap, container);
+  });
+
+  vista.querySelector('.form-editar-tipo').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const nombre = form.get('nombre').trim();
+    if (!nombre) {
+      mostrarToast('El nombre no puede quedar vacío.', 'error');
+      return;
+    }
+    const { error } = await supabase
+      .from('tipos_habitacion')
+      .update({ nombre, descripcion: form.get('descripcion').trim() || null })
+      .eq('id', tipo.id);
+    if (error) {
+      mostrarToast(`Error: ${error.message}`, 'error');
+      return;
+    }
+    mostrarToast(`Tipo "${nombre}" actualizado.`, 'exito');
+    await cargarTiposHabitacion(wrap, container);
+  });
+}
+
+async function eliminarTipoHabitacion(tipo, wrap, container) {
+  const { count, error: errConteo } = await supabase
+    .from('habitaciones')
+    .select('id', { count: 'exact', head: true })
+    .eq('tipo_id', tipo.id);
+
+  if (errConteo) {
+    mostrarToast(`Error verificando uso: ${errConteo.message}`, 'error');
+    return;
+  }
+
+  if (count > 0) {
+    mostrarToast(`No se puede eliminar "${tipo.nombre}": ${count} habitación(es) lo tienen asignado. Cámbiales el tipo primero desde la pestaña Habitaciones.`, 'error');
+    return;
+  }
+
+  const ok = await mostrarConfirmacion({
+    titulo: 'Eliminar tipo de habitación',
+    contenidoHTML: `¿Eliminar el tipo <strong>${escaparHTML(tipo.nombre)}</strong>? Ninguna habitación lo tiene asignado actualmente.`,
+    textoConfirmar: 'Sí, eliminar',
+  });
+  if (!ok) return;
+
+  const { error } = await supabase.from('tipos_habitacion').delete().eq('id', tipo.id);
+  if (error) {
+    mostrarToast(`Error eliminando: ${error.message}`, 'error');
+    return;
+  }
+  mostrarToast(`Tipo "${tipo.nombre}" eliminado.`, 'exito');
+  await cargarTiposHabitacion(wrap, container);
+}
+
+function cargarFormularioNuevoTipo(elemento, container) {
+  elemento.innerHTML = `
+    <h4 style="margin-bottom:0.4rem;">+ Nuevo tipo de habitación</h4>
+    <form id="form-nuevo-tipo-habitacion" class="form-grid">
+      <label>Nombre
+        <input type="text" name="nombre" required placeholder="Ej: Suite Junior" />
+      </label>
+      <label>Descripción
+        <input type="text" name="descripcion" placeholder="Opcional" />
+      </label>
+      <button type="submit" class="btn btn-primario">+ Agregar tipo</button>
+    </form>
+  `;
+
+  elemento.querySelector('#form-nuevo-tipo-habitacion').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const nombre = form.get('nombre').trim();
+    if (!nombre) {
+      mostrarToast('Ponle un nombre al tipo.', 'error');
+      return;
+    }
+    const { error } = await supabase.from('tipos_habitacion').insert({
+      nombre,
+      descripcion: form.get('descripcion').trim() || null,
+    });
+    if (error) {
+      mostrarToast(`Error creando el tipo: ${error.message}`, 'error');
+      return;
+    }
+    mostrarToast(`Tipo "${nombre}" creado — ya aparece en el selector de Tipo al editar una habitación.`, 'exito');
+    e.target.reset();
+    await cargarTiposHabitacion(container.querySelector('#tipos-habitacion-grid-wrap'), container);
   });
 }
 
