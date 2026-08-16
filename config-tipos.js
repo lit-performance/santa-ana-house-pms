@@ -2,6 +2,15 @@
 //
 // Subpestaña de Configuración: tipos de habitación (Sencilla, Doble, Triple,
 // Suite...). Permite agregar nuevos sin tocar el resto del sistema.
+//
+// Oculto temporalmente (roles: []) desde 156 — su gestión (crear, editar,
+// eliminar) se fusionó dentro de config-tarifas.js ("🏷 Tipos de
+// habitación", con mini-tarjetas de color), porque son dos formas de
+// clasificar una habitación que tenía sentido tener juntas. El código y
+// los datos de este archivo siguen intactos; reactivarlo es solo
+// devolverle su lista de roles más abajo — aunque si se reactiva, quedará
+// duplicando la gestión que ahora vive en config-tarifas.js (esta pantalla
+// no tiene editar/eliminar, solo alta).
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -66,7 +75,7 @@ registerModule({
   id: 'config-tipos',
   label: 'Tipos de habitación',
   icono: '🏷',
-  roles: ['propietario', 'administrador'],
+  roles: [],
   parentId: 'configuracion',
   render,
 });
