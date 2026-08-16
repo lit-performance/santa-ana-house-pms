@@ -222,6 +222,13 @@
 // aparece en el desglose de "Gastos" del día en Registro diario, y se ve
 // reflejada en Indicadores, Contabilidad y Auditoría — sin tocar esos
 // archivos, exactamente igual a como ya funciona un gasto (gastos.js).
+//
+// Nota (144): "Registrar compra" tiene un botón "➕" junto al selector de
+// Proveedor, para cuando el proveedor de esa compra todavía no está en
+// el directorio — abre la misma tarjeta emergente de proveedores.js
+// (143, `abrirModalProveedorNuevo`, ahora exportada) sin salir del
+// formulario de compra; al crearlo, queda agregado al selector y
+// seleccionado de una vez.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -229,6 +236,7 @@ import { formatCOP } from './currency.js';
 import { formatFechaHora, toISODate } from './dates.js';
 import { getUsuarioActual } from './auth.js';
 import { obtenerOCrearTurnoDeHoy } from './caja.js';
+import { abrirModalProveedorNuevo } from './proveedores.js';
 
 // Mismas cuentas/medios de pago que ya usan gastos.js y caja.js — "de
 // dónde salió el dinero" de esta compra.
@@ -695,7 +703,7 @@ async function cargarInventarioBodega(elemento) {
   elemento.innerHTML = `
     <div class="tarjeta">
       <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.25rem;">
-        <h3 style="margin:0;">Bodega — existencias y proveedor</h3>
+        <h3 style="margin:0;">📦 Bodega — existencias y proveedor</h3>
         <button type="button" id="btn-exportar-bodega" class="btn btn-secundario btn-chico">⬇ Excel</button>
       </div>
       <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:0.75rem; margin-bottom:0.75rem;">
@@ -1097,10 +1105,13 @@ async function cargarSeccionCompras(elemento) {
           <h4 style="margin:0 0 0.75rem; color:${ACENTO_COMPRA_PAGO.texto};">💳 Pago</h4>
           <div class="form-grid">
             <label>Proveedor <span class="mensaje-vacio" style="font-size:0.7rem;">(opcional)</span>
-              <select name="proveedor_id">
-                <option value="">— Sin asignar —</option>
-                ${(proveedores || []).map((p) => `<option value="${p.id}">${escaparHTML(p.nombre_comercial)}</option>`).join('')}
-              </select>
+              <div style="display:flex; gap:0.4rem;">
+                <select name="proveedor_id" id="select-proveedor-compra" style="flex:1;">
+                  <option value="">— Sin asignar —</option>
+                  ${(proveedores || []).map((p) => `<option value="${p.id}">${escaparHTML(p.nombre_comercial)}</option>`).join('')}
+                </select>
+                <button type="button" id="btn-nuevo-proveedor-compra" class="btn-editar btn-chico" title="El proveedor no está en la lista — crear uno nuevo">➕</button>
+              </div>
             </label>
             <label>Pagado desde
               <select name="metodo_pago" required>
@@ -1123,6 +1134,28 @@ async function cargarSeccionCompras(elemento) {
   `;
 
   const wrapLineas = elemento.querySelector('#lineas-compra-wrap');
+
+  // Botón "➕" junto a Proveedor (144): crea un proveedor nuevo sin salir
+  // del formulario de compra — al crearlo, lo agrega al selector y lo
+  // deja seleccionado, y lo suma también al arreglo `proveedores` en
+  // memoria para que el envío del formulario (más abajo) lo encuentre al
+  // armar la descripción del movimiento en Caja.
+  const selectProveedor = elemento.querySelector('#select-proveedor-compra');
+  const btnNuevoProveedor = elemento.querySelector('#btn-nuevo-proveedor-compra');
+  if (btnNuevoProveedor) {
+    btnNuevoProveedor.addEventListener('click', () => {
+      abrirModalProveedorNuevo({
+        onCreado: (nuevoProveedor) => {
+          proveedores.push(nuevoProveedor);
+          const nuevaOpcion = document.createElement('option');
+          nuevaOpcion.value = String(nuevoProveedor.id);
+          nuevaOpcion.textContent = nuevoProveedor.nombre_comercial;
+          selectProveedor.appendChild(nuevaOpcion);
+          selectProveedor.value = String(nuevoProveedor.id);
+        },
+      });
+    });
+  }
 
   function actualizarTotal() {
     let total = 0;
