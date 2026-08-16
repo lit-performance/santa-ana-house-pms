@@ -7,25 +7,24 @@
 // rápida de Inventario) y actualiza el precio de costo — así no toca
 // registrar la entrada dos veces.
 //
-// Además, al recibir la orden se pide el método de pago y se registra el
-// costo total como un EGRESO en caja_movimientos (categoría "Compras") —
-// así cualquier compra recibida queda reflejada de inmediato en Registro
-// diario, Indicadores, Contabilidad y Auditoría, igual que un gasto (ver
-// gastos.js). El turno del día se resuelve solo por dentro (ver
-// `obtenerOCrearTurnoDeHoy` en caja.js) — ya no existe la posibilidad de
-// que "no haya caja abierta", así que la orden y el egreso siempre quedan
-// registrados juntos.
+// Nota (136): este archivo YA NO se registra como pestaña propia — sus dos
+// secciones (`cargarFormNuevaOrden` y `cargarListaOrdenes`, ahora
+// exportadas) se muestran como dos mini-tarjetas más dentro del tablero de
+// Inventario ("📝 Nueva orden de compra" y "📦 Órdenes de compra"), junto a
+// "Registrar compra" y el resto — Compras solo tenía 2 secciones y ya
+// vivía en el mismo grupo de menú que Inventario, así que tenerlas
+// separadas en dos pestañas distintas era más navegación de la necesaria
+// para algo tan relacionado. Este archivo se deja tal cual por dentro
+// (la lógica de crear/recibir/cancelar órdenes no cambió en nada) — solo
+// se quitó el registro como módulo independiente.
 
-import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
 import { formatFechaHora } from './dates.js';
 import { getUsuarioActual } from './auth.js';
-import { obtenerOCrearTurnoDeHoy } from './caja.js';
 
 const ROLES_GESTIONAN = ['propietario', 'administrador', 'bodega'];
-const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
 
 function puedeGestionar() {
   const usuario = getUsuarioActual();
@@ -45,24 +44,10 @@ const ETIQUETAS_ESTADO = {
   cancelado: '⚪ Cancelado',
 };
 
-async function render(container) {
-  container.innerHTML = `
-    <h2>Compras</h2>
-    <div id="compras-nueva-wrap" style="margin-bottom:1.5rem;"></div>
-    <div id="compras-lista-wrap">
-      <p class="mensaje-vacio">Cargando…</p>
-    </div>
-  `;
-  await Promise.all([
-    cargarFormNuevaOrden(container.querySelector('#compras-nueva-wrap')),
-    cargarListaOrdenes(container.querySelector('#compras-lista-wrap')),
-  ]);
-}
-
 // =========================================================
 // Nueva orden de compra
 // =========================================================
-async function cargarFormNuevaOrden(elemento) {
+export async function cargarFormNuevaOrden(elemento) {
   if (!puedeGestionar()) {
     elemento.innerHTML = '';
     return;
@@ -191,7 +176,7 @@ async function cargarFormNuevaOrden(elemento) {
     e.target.reset();
     wrapItems.innerHTML = '';
     wrapItems.appendChild(filaItem());
-    const wrapLista = document.querySelector('#compras-lista-wrap');
+    const wrapLista = document.querySelector('#inv-ordenes-wrap');
     if (wrapLista) await cargarListaOrdenes(wrapLista);
   });
 }
@@ -199,7 +184,7 @@ async function cargarFormNuevaOrden(elemento) {
 // =========================================================
 // Lista de órdenes
 // =========================================================
-async function cargarListaOrdenes(elemento) {
+export async function cargarListaOrdenes(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
   const permitido = puedeGestionar();
 
@@ -321,119 +306,63 @@ async function cargarListaOrdenes(elemento) {
   elemento.querySelectorAll('.btn-recibido').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const ordenId = Number(btn.dataset.ordenId);
-      const itemsOrden = itemsPorOrden.get(ordenId) || [];
-      const totalOrden = itemsOrden.reduce((acc, it) => acc + it.cantidad * it.precio_costo_unitario, 0);
-
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      overlay.innerHTML = `
-        <div class="modal-caja">
-          <h3>Marcar como recibido</h3>
-          <div class="modal-contenido">
-            <p class="mensaje-vacio">Esto suma las cantidades de esta orden a las existencias de bodega y actualiza el precio de costo de cada producto.</p>
-            <p><strong>Total de la orden: ${formatCOP(totalOrden)}</strong></p>
-            <form id="form-recibir-orden" class="form-grid">
-              <label>¿Cómo se pagó?
-                <select name="metodo_pago" required>
-                  ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
-                </select>
-              </label>
-            </form>
-            <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">El total se registrará como egreso en Registro diario (categoría "Compras").</p>
-          </div>
-          <div class="modal-acciones">
-            <button type="button" class="btn btn-secundario" id="btn-cancelar-recibir">Cancelar</button>
-            <button type="button" class="btn btn-primario" id="btn-confirmar-recibir">Sí, ya llegó</button>
-          </div>
-        </div>
-      `;
-      document.body.appendChild(overlay);
-
-      overlay.querySelector('#btn-cancelar-recibir').addEventListener('click', () => overlay.remove());
-      overlay.addEventListener('click', (e) => {
-        if (e.target === overlay) overlay.remove();
+      const ok = await mostrarConfirmacion({
+        titulo: 'Marcar como recibido',
+        contenidoHTML: 'Esto suma las cantidades de esta orden a las existencias de bodega y actualiza el precio de costo de cada producto. ¿Continuar?',
+        textoConfirmar: 'Sí, ya llegó',
       });
+      if (!ok) return;
 
-      overlay.querySelector('#btn-confirmar-recibir').addEventListener('click', async () => {
-        const usuario = getUsuarioActual();
-        const metodoPago = overlay.querySelector('select[name="metodo_pago"]').value;
+      const itemsOrden = itemsPorOrden.get(ordenId) || [];
+      const usuario = getUsuarioActual();
 
-        for (const it of itemsOrden) {
-          const { data: filaBodega } = await supabase
+      for (const it of itemsOrden) {
+        const { data: filaBodega } = await supabase
+          .from('inventario_bodega')
+          .select('id, cantidad_actual')
+          .eq('producto_id', it.producto_id)
+          .maybeSingle();
+
+        if (filaBodega) {
+          await supabase
             .from('inventario_bodega')
-            .select('id, cantidad_actual')
-            .eq('producto_id', it.producto_id)
-            .maybeSingle();
-
-          if (filaBodega) {
-            await supabase
-              .from('inventario_bodega')
-              .update({
-                cantidad_actual: filaBodega.cantidad_actual + it.cantidad,
-                precio_costo: it.precio_costo_unitario,
-                actualizado_en: new Date().toISOString(),
-              })
-              .eq('id', filaBodega.id);
-          } else {
-            await supabase.from('inventario_bodega').insert({
-              producto_id: it.producto_id,
-              cantidad_actual: it.cantidad,
-              cantidad_minima: 0,
+            .update({
+              cantidad_actual: filaBodega.cantidad_actual + it.cantidad,
               precio_costo: it.precio_costo_unitario,
-            });
-          }
-
-          await supabase.from('inventario_movimientos').insert({
-            tipo: 'compra_bodega',
+              actualizado_en: new Date().toISOString(),
+            })
+            .eq('id', filaBodega.id);
+        } else {
+          await supabase.from('inventario_bodega').insert({
             producto_id: it.producto_id,
-            cantidad: it.cantidad,
+            cantidad_actual: it.cantidad,
+            cantidad_minima: 0,
             precio_costo: it.precio_costo_unitario,
-            notas: `Recibido de orden de compra #${ordenId}.`,
-            registrado_por: usuario?.id || null,
           });
         }
 
-        if (totalOrden > 0) {
-          try {
-            const turno = await obtenerOCrearTurnoDeHoy();
-            await supabase.from('caja_movimientos').insert({
-              turno_id: turno.id,
-              tipo: 'egreso',
-              categoria: 'Compras',
-              monto: totalOrden,
-              metodo_pago: metodoPago,
-              descripcion: `Orden de compra #${ordenId} recibida.`,
-              registrado_por: usuario?.id || null,
-            });
-          } catch (errTurno) {
-            mostrarToast(`Bodega actualizada, pero no se pudo registrar el egreso en Caja: ${errTurno.message}`, 'error');
-          }
-        }
+        await supabase.from('inventario_movimientos').insert({
+          tipo: 'compra_bodega',
+          producto_id: it.producto_id,
+          cantidad: it.cantidad,
+          precio_costo: it.precio_costo_unitario,
+          notas: `Recibido de orden de compra #${ordenId}.`,
+          registrado_por: usuario?.id || null,
+        });
+      }
 
-        const { error: errOrden } = await supabase
-          .from('ordenes_compra')
-          .update({ estado: 'recibido', fecha_recibido: new Date().toISOString() })
-          .eq('id', ordenId);
+      const { error: errOrden } = await supabase
+        .from('ordenes_compra')
+        .update({ estado: 'recibido', fecha_recibido: new Date().toISOString() })
+        .eq('id', ordenId);
 
-        overlay.remove();
+      if (errOrden) {
+        mostrarToast(`Bodega actualizada, pero no se pudo marcar la orden como recibida: ${errOrden.message}`, 'error');
+        return;
+      }
 
-        if (errOrden) {
-          mostrarToast(`Bodega actualizada, pero no se pudo marcar la orden como recibida: ${errOrden.message}`, 'error');
-          return;
-        }
-
-        mostrarToast('Orden recibida. Bodega actualizada y gasto registrado en Caja.', 'exito');
-        await cargarListaOrdenes(elemento);
-      });
+      mostrarToast('Orden recibida. Bodega actualizada.', 'exito');
+      await cargarListaOrdenes(elemento);
     });
   });
 }
-
-registerModule({
-  id: 'compras',
-  label: 'Compras',
-  icono: '🛒',
-  roles: ['propietario', 'administrador', 'bodega'],
-  parentId: 'grupo-inventario',
-  render,
-});
