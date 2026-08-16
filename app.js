@@ -53,6 +53,19 @@
 // compras.js se deja en el repo (su lógica no cambió), solo dejó de
 // registrarse como pestaña independiente — por eso ya no necesita su
 // propia línea de import aquí; 'inventario.js' lo carga por su cuenta.
+//
+// Nota (153): 'inventario.js', 'minibar.js' y 'proveedores.js' se
+// reordenaron a ese orden EXACTO (antes: minibar, inventario,
+// proveedores) para que las subpestañas del grupo Inventario queden
+// Inventario · Minibar · Proveedores de izquierda a derecha. Esto solo
+// alcanza a garantizar el orden si NINGUNO de esos tres archivos importa
+// a otro de este mismo grupo en su parte de arriba (los `import` de un
+// archivo se evalúan ANTES que el propio archivo, así que un import
+// cruzado adelanta silenciosamente el registro de esa pestaña) — por eso
+// el botón "➕ nuevo proveedor" agregado en inventario.js (150) usa un
+// import dinámico (`await import(...)` dentro del clic, no aquí arriba)
+// en vez de un import normal, precisamente para no volver a romper este
+// orden.
 
 import { iniciarSesion, cerrarSesion, restaurarSesion } from './auth.js';
 import { initRouter, renderPrimerModuloDisponible } from './router.js';
@@ -64,8 +77,8 @@ import './gastos.js';
 import './reservas.js';
 import './housekeeping.js';
 import './indicadores.js';
-import './minibar.js';
 import './inventario.js';
+import './minibar.js';
 import './proveedores.js';
 import './facturacion.js';
 import './contabilidad.js';
