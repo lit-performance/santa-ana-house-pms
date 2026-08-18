@@ -394,6 +394,7 @@ function abrirModalEditarTransaccion(ev, recargar) {
         <form id="form-editar-transaccion" class="form-grid">
           <label>Método de pago
             <select name="metodo_pago" required>
+              <option value="" ${!ev.metodoPago ? 'selected' : ''}>— Elige a qué cuenta va —</option>
               ${METODOS_PAGO.map((m) => `<option value="${m}" ${ev.metodoPago === m ? 'selected' : ''}>${m}</option>`).join('')}
             </select>
           </label>
