@@ -91,12 +91,29 @@
 // guarda en una columna suelta — se inserta directo en `reservas_pagos`
 // (la misma tabla de abonos que ya usan Reservas y la liquidación del
 // check-out), así el pago aparece automático en Caja ("Ingresos por
-// reservas"), Indicadores y Contabilidad sin ningún paso manual extra. El
-// campo "Monto total estimado" (noches × tarifa) es solo una ayuda visual
-// para la recepcionista, no se guarda. Elegir "Pago total" cobra
-// automático el valor completo que falte de la estadía (estimado menos lo
-// ya abonado antes) — deja la habitación saldada, y solo quedaría
-// pendiente el consumo de minibar, que se liquida en el check-out.
+// reservas"), Indicadores y Contabilidad sin ningún paso manual extra.
+// Elegir "Pago total" cobra automático el valor completo que falte de la
+// estadía (estimado menos lo ya abonado antes) — deja la habitación
+// saldada, y solo quedaría pendiente el consumo de minibar, que se
+// liquida en el check-out.
+//
+// Nota (171) sobre "Monto total estimado" (noches × tarifa) en un WALK-IN
+// (check-in sin reserva previa — `reservaIdSeleccionada` vacío): antes
+// este campo era solo una ayuda visual para la recepcionista y NUNCA se
+// guardaba en ningún lado — la reserva que este mismo check-in crea sola
+// por detrás (ver `ejecutarRegistroCheckin`) se insertaba sin
+// `monto_total`. El pago de la habitación sí quedaba bien guardado en
+// reservas_pagos, pero como no había contra qué restarlo, cuentas.js
+// calculaba montoHabitacion = $0 para CUALQUIER walk-in — y ese pago de
+// la habitación, completo, aparecía como "excedente" en la liquidación
+// del check-out (ver caso real: habitación 304 / Michel Lopez, 18-ago-26 —
+// monto total mostrado $16.000 = exactamente el minibar, habitación en
+// $0, pago anticipado de $150.000 completo marcado como sobrepago). Ahora
+// SÍ se guarda como `monto_total` de la reserva nueva, con el mismo
+// cálculo que ya se mostraba (noches × tarifa) — null si no hay tarifa
+// elegida, igual que antes en ese caso. Un check-in que SÍ viene de una
+// reserva ya existente (`reservaIdSeleccionada` con valor) no toca esto —
+// esa reserva ya trae su `monto_total` de cuando se creó en Reservas.
 //
 // Nota sobre "adicionar días a la estadía": si un huésped que ya tenía su
 // reserva hecha (por ejemplo 2 noches) decide en el check-in quedarse más
@@ -1590,7 +1607,7 @@ function abrirModalConfirmarCheckin(datos) {
 // tarjeta de confirmación de arriba, nunca directo desde el submit del
 // formulario.
 async function ejecutarRegistroCheckin(p) {
-  const { container, form, habitacionId, hoyISO, reservaIdSeleccionada, tarifaId, cantidadNoches, nombre, documento, celular, estadoPagoCheckin, montoPagoCheckin, acompanantesDetalle, hayFirma, canvas } = p;
+  const { container, form, habitacionId, hoyISO, reservaIdSeleccionada, tarifaId, cantidadNoches, nombre, documento, celular, estadoPagoCheckin, montoPagoCheckin, montoEstimado, acompanantesDetalle, hayFirma, canvas } = p;
 
   // --- Vincular o crear la reserva asociada ---
   let reservaIdFinal = null;
@@ -1642,6 +1659,16 @@ async function ejecutarRegistroCheckin(p) {
         fecha_checkout: toISODate(addDays(hoyISO, cantidadNoches > 0 ? cantidadNoches : 1)),
         estado: 'hospedado',
         tarifa_id: tarifaId,
+        // (171) Antes este insert NO traía monto_total — quedaba en null,
+        // así que cuentas.js calculaba montoHabitacion = 0 para CUALQUIER
+        // walk-in, sin importar que sí se le hubiera cobrado la habitación
+        // (el pago se guarda bien en reservas_pagos, pero no había contra
+        // qué restarlo). Cualquier pago de la habitación aparecía entonces
+        // como "excedente" de punta a punta, aunque nadie pagó de más. Se
+        // arregla guardando aquí el mismo monto que ya se le muestra a la
+        // recepcionista como "Monto estimado estadía" (noches × tarifa) —
+        // null si no hay tarifa elegida, igual que antes en ese caso.
+        monto_total: montoEstimado > 0 ? montoEstimado : null,
         comentarios: 'Creada automáticamente desde Recepción (walk-in).',
       })
       .select('id')
@@ -2325,6 +2352,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
           celular,
           estadoPagoCheckin,
           montoPagoCheckin,
+          montoEstimado,
           acompanantesDetalle,
           hayFirma,
           canvas,
