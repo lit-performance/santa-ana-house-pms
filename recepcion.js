@@ -1101,7 +1101,7 @@ async function abrirModalEditarCheckin(container, item) {
             </select>
           </label>
           <label>Cantidad de noches
-            <input type="number" name="cantidad_noches" min="1" required value="${checkin.cantidad_noches || 1}" />
+            <input type="number" name="cantidad_noches" id="input-noches-editar" min="1" required value="${checkin.cantidad_noches || 1}" />
           </label>
           <label>Método de pago
             <select name="metodo_pago" required>
@@ -1114,6 +1114,20 @@ async function abrirModalEditarCheckin(container, item) {
           </label>
         </div>
         <p class="mensaje-vacio" style="margin-top:0.4rem; font-size:0.78rem;">💡 Si el huésped decide quedarse más noches, solo aumenta "Cantidad de noches" — la reserva vinculada extiende su fecha de salida sola (contando desde el check-in original), siempre que la habitación siga libre esos días.</p>
+
+        <!-- (Nota 181) Si "Cantidad de noches" cambia frente al valor con el
+        que se abrió este modal, la fecha de salida de la reserva vinculada
+        se extiende (o se acorta) sola — pero el monto total de esa reserva
+        NO se toca automáticamente (para no pisar totales con descuento).
+        Este cajón obliga a confirmar/ajustar el monto a mano antes de
+        guardar, para que la estadía nunca quede con más noches pero el
+        mismo cobro de antes. Oculto mientras las noches no cambian. -->
+        <div id="wrap-monto-extendido-editar" class="oculto" style="margin-top:0.85rem; background:var(--color-fondo-suave, #f8f9fb); border:1px solid var(--color-borde, #ddd); border-radius:8px; padding:0.75rem 0.9rem;">
+          <label>Nuevo monto total de la estadía (cambiaron las noches)
+            <input type="text" id="input-monto-extendido-editar" placeholder="$0" />
+          </label>
+          <p class="mensaje-vacio" style="font-size:0.78rem; margin-top:0.3rem;">Sugerido con la tarifa actual: <strong id="monto-sugerido-extendido-editar">$0</strong> — confírmalo o ajústalo a mano (por ejemplo, si hay un descuento) antes de guardar. Este es el monto total de toda la reserva, no solo las noches nuevas.</p>
+        </div>
 
         <p class="mensaje-vacio" style="margin-top:0.75rem; font-size:0.78rem;">No editables desde aquí: firma digital, consentimiento Habeas Data y pagos ya registrados (se corrigen en Caja o Reservas).</p>
 
@@ -1165,9 +1179,49 @@ async function abrirModalEditarCheckin(container, item) {
     if (e.target === overlay) overlay.remove();
   });
 
+  // --- (Nota 181) Candado de "extender noches" — ver comentario del cajón
+  // en el HTML. cantidadNochesInicial es el valor con el que se abrió el
+  // modal (lo que ya estaba guardado); si la recepcionista lo cambia, se
+  // exige confirmar el nuevo monto total antes de dejar guardar. ---
+  const cantidadNochesInicialEditar = checkin.cantidad_noches || 1;
+  const inputNochesEditar = overlay.querySelector('#input-noches-editar');
+  const selectTarifaEditar = overlay.querySelector('select[name="tarifa_id"]');
+  const wrapMontoExtendidoEditar = overlay.querySelector('#wrap-monto-extendido-editar');
+  const inputMontoExtendidoEditar = overlay.querySelector('#input-monto-extendido-editar');
+  const spanMontoSugeridoEditar = overlay.querySelector('#monto-sugerido-extendido-editar');
+  activarInputDinero(inputMontoExtendidoEditar);
+
+  function nochesCambiaronEditar() {
+    return !!checkin.reserva_id && (Number(inputNochesEditar.value) || 0) !== cantidadNochesInicialEditar;
+  }
+
+  function actualizarCandadoMontoExtendidoEditar() {
+    const cambiaron = nochesCambiaronEditar();
+    wrapMontoExtendidoEditar.classList.toggle('oculto', !cambiaron);
+    inputMontoExtendidoEditar.required = cambiaron;
+    if (cambiaron) {
+      const tarifaSel = (tarifas || []).find((t) => t.id === Number(selectTarifaEditar.value));
+      const nochesSel = Number(inputNochesEditar.value) || 0;
+      const sugerido = tarifaSel && nochesSel > 0 ? nochesSel * Number(tarifaSel.precio_temporada_baja) : 0;
+      spanMontoSugeridoEditar.textContent = formatCOP(sugerido);
+    }
+  }
+
+  inputNochesEditar.addEventListener('input', actualizarCandadoMontoExtendidoEditar);
+  selectTarifaEditar.addEventListener('change', actualizarCandadoMontoExtendidoEditar);
+
   overlay.querySelector('#form-editar-checkin').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
+
+    // Se valida ANTES de tocar la base de datos (ni el update del check-in,
+    // ni el de la reserva vinculada) para que nunca quede a medias: si
+    // cambiaron las noches y falta el monto confirmado, no se guarda nada.
+    if (nochesCambiaronEditar() && !valorNumericoInput(inputMontoExtendidoEditar)) {
+      mostrarToast('Cambiaron las noches de la estadía — confirma el nuevo monto total de la reserva antes de guardar.', 'error');
+      return;
+    }
+    const montoTotalActualizadoEditar = nochesCambiaronEditar() ? valorNumericoInput(inputMontoExtendidoEditar) : null;
 
     const nuevaHabitacionId = Number(form.get('habitacion_id'));
     const habitacionCambio = nuevaHabitacionId !== habitacionOriginalId;
@@ -1263,6 +1317,12 @@ async function abrirModalEditarCheckin(container, item) {
 
         if (!crucesEdicion || crucesEdicion.length === 0) {
           payloadReservaSync.fecha_checkout = nuevaFechaCheckoutISO;
+          // (181) Solo se toca monto_total si de verdad se pudo extender la
+          // fecha — si hubo cruce y la estadía se queda como estaba, el
+          // monto confirmado tampoco aplica.
+          if (montoTotalActualizadoEditar != null) {
+            payloadReservaSync.monto_total = montoTotalActualizadoEditar;
+          }
         } else {
           mostrarToast(
             `No se pudo extender la estadía hasta ${nuevaFechaCheckoutISO}: la habitación ya tiene otra reserva (${crucesEdicion[0].huesped_nombre}) que se cruza. Se guardó el resto de los cambios igual.`,
@@ -1593,6 +1653,11 @@ function abrirModalConfirmarCheckin(datos) {
         ${filaResumen('Tarifa', datos.tarifaCodigo, {})}
         ${filaResumen('Noches', datos.cantidadNoches || '—', {})}
         ${cajonMonto('Monto estimado de la estadía', formatCOP(datos.montoEstimado), '#0b5fae', '#eaf3ff', '#8ec1f5')}
+        ${
+          datos.montoTotalConfirmadoVinculada != null
+            ? cajonMonto('Nuevo monto total confirmado (cambiaron las noches)', formatCOP(datos.montoTotalConfirmadoVinculada), '#6a3fb5', '#f3edfb', '#c6acec')
+            : ''
+        }
         ${datos.abonoPrevioActual > 0 ? cajonMonto('Ya abonado antes (reserva / check-in previo)', formatCOP(datos.abonoPrevioActual), '#6a3fb5', '#f3edfb', '#c6acec') : ''}
 
         <div style="margin-top:1rem; padding:0.9rem 1rem; border-radius:10px; background:${info.fondo}; border:1.5px solid ${info.borde};">
@@ -1638,7 +1703,25 @@ function abrirModalConfirmarCheckin(datos) {
 // tarjeta de confirmación de arriba, nunca directo desde el submit del
 // formulario.
 async function ejecutarRegistroCheckin(p) {
-  const { container, form, habitacionId, hoyISO, reservaIdSeleccionada, tarifaId, cantidadNoches, nombre, documento, celular, estadoPagoCheckin, montoPagoCheckin, montoEstimado, acompanantesDetalle, hayFirma, canvas } = p;
+  const {
+    container,
+    form,
+    habitacionId,
+    hoyISO,
+    reservaIdSeleccionada,
+    tarifaId,
+    cantidadNoches,
+    nombre,
+    documento,
+    celular,
+    estadoPagoCheckin,
+    montoPagoCheckin,
+    montoEstimado,
+    montoTotalConfirmadoVinculada,
+    acompanantesDetalle,
+    hayFirma,
+    canvas,
+  } = p;
 
   // --- Vincular o crear la reserva asociada ---
   let reservaIdFinal = null;
@@ -1667,6 +1750,13 @@ async function ejecutarRegistroCheckin(p) {
     const payloadReservaVinculada = { estado: 'hospedado' };
     if (!cruces || cruces.length === 0) {
       payloadReservaVinculada.fecha_checkout = nuevaFechaCheckoutISO;
+      // (181) El monto solo se toca si de verdad se pudo extender la
+      // fecha, y solo con lo que la recepcionista confirmó a mano en el
+      // formulario (nunca con montoEstimado en silencio — puede haber
+      // descuento).
+      if (montoTotalConfirmadoVinculada != null) {
+        payloadReservaVinculada.monto_total = montoTotalConfirmadoVinculada;
+      }
     } else {
       mostrarToast(
         `No se pudo extender la estadía hasta ${nuevaFechaCheckoutISO}: la habitación ya tiene otra reserva (${cruces[0].huesped_nombre}) que se cruza. El check-in continúa con la fecha original de la reserva.`,
@@ -1929,6 +2019,19 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
           </label>
         </div>
         <p class="mensaje-vacio" style="margin-top:0.4rem; font-size:0.78rem;">💡 Si el huésped ya tenía su reserva hecha y decide quedarse más días, solo aumenta "Cantidad de noches" — la reserva vinculada se extiende sola (contando desde hoy), siempre que la habitación siga libre esos días.</p>
+
+        <!-- (Nota 181) Igual que en "Editar check-in": si las noches cambian
+        frente a lo que ya tenía la reserva vinculada, la fecha de salida se
+        extiende sola pero el monto NO se recalcula solo — se exige
+        confirmarlo/ajustarlo a mano (por descuentos, por ejemplo). Oculto
+        para walk-ins sin reserva y mientras las noches no cambian. -->
+        <div id="wrap-monto-extendido-checkin" class="oculto" style="margin-top:0.6rem; background:var(--color-fondo-suave, #f8f9fb); border:1px solid var(--color-borde, #ddd); border-radius:8px; padding:0.75rem 0.9rem;">
+          <label>Nuevo monto total de la estadía (cambiaron las noches)
+            <input type="text" id="input-monto-extendido-checkin" placeholder="$0" />
+          </label>
+          <p class="mensaje-vacio" style="font-size:0.78rem; margin-top:0.3rem;">Sugerido con la tarifa actual: <strong id="monto-sugerido-extendido-checkin">$0</strong> — confírmalo o ajústalo a mano antes de continuar. Es el monto total de toda la reserva, no solo las noches nuevas.</p>
+        </div>
+
         <div class="acciones-tarjeta" style="justify-content:flex-start; margin-top:0.5rem;">
           <button type="button" id="btn-ver-disponibilidad" class="btn btn-secundario btn-chico">📅 Ver disponibilidad</button>
         </div>
@@ -2140,6 +2243,29 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
   // aplicarReserva(); en 0 si es un walk-in sin reserva.
   let abonoPrevioActual = 0;
 
+  // (Nota 181) Noches que ya tenía la reserva vinculada al elegirla — null
+  // para walk-ins sin reserva. Si "Cantidad de noches" termina siendo
+  // distinta a esto, se exige confirmar el nuevo monto total antes de
+  // registrar el check-in (ver wrapMontoExtendidoCheckin más abajo).
+  let nochesOriginalesVinculada = null;
+  const wrapMontoExtendidoCheckin = container.querySelector('#wrap-monto-extendido-checkin');
+  const inputMontoExtendidoCheckin = container.querySelector('#input-monto-extendido-checkin');
+  const spanMontoSugeridoExtendidoCheckin = container.querySelector('#monto-sugerido-extendido-checkin');
+  activarInputDinero(inputMontoExtendidoCheckin);
+
+  function nochesCambiaronVinculada() {
+    return nochesOriginalesVinculada != null && (Number(inputNochesEstadia.value) || 0) !== nochesOriginalesVinculada;
+  }
+
+  function actualizarCandadoMontoExtendidoCheckin() {
+    const cambiaron = nochesCambiaronVinculada();
+    wrapMontoExtendidoCheckin.classList.toggle('oculto', !cambiaron);
+    inputMontoExtendidoCheckin.required = cambiaron;
+    if (cambiaron) {
+      spanMontoSugeridoExtendidoCheckin.textContent = formatCOP(calcularMontoEstimado());
+    }
+  }
+
   function calcularMontoEstimado() {
     const tarifa = (tarifas || []).find((t) => t.id === Number(selectTarifaEstadia.value));
     const noches = Number(inputNochesEstadia.value) || 0;
@@ -2198,6 +2324,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
       inputMontoPago.value = Math.max(0, estimado - abonoPrevioActual);
       activarInputDinero(inputMontoPago);
     }
+    actualizarCandadoMontoExtendidoCheckin();
     pintarResumenLiquidacion();
   }
 
@@ -2245,6 +2372,8 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
     const noches = Math.round((new Date(reserva.fecha_checkout) - new Date(reserva.fecha_checkin)) / 86400000);
     container.querySelector('#input-noches').value = noches > 0 ? noches : '';
+    nochesOriginalesVinculada = noches > 0 ? noches : null;
+    inputMontoExtendidoCheckin.value = '';
 
     const { data: pagosPrevios, error: errPagosPrevios } = await supabase.from('reservas_pagos').select('monto').eq('reserva_id', reserva.id);
     if (errPagosPrevios) {
@@ -2261,6 +2390,8 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     const reservaId = e.target.value;
     if (!reservaId) {
       abonoPrevioActual = 0;
+      nochesOriginalesVinculada = null;
+      actualizarCandadoMontoExtendidoCheckin();
       pintarResumenLiquidacion();
       return;
     }
@@ -2290,6 +2421,15 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
       mostrarToast('Elige si el huésped paga ahora (Parcial/Total) o si queda Pendiente, antes de continuar — es obligatorio.', 'error');
       return;
     }
+
+    // (Nota 181) Si se vinculó una reserva y las noches cambiaron frente a
+    // las que ya tenía, no se deja continuar sin confirmar el nuevo monto
+    // total — se valida aquí, antes de tocar la base de datos.
+    if (nochesCambiaronVinculada() && !valorNumericoInput(inputMontoExtendidoCheckin)) {
+      mostrarToast('Cambiaron las noches frente a la reserva original — confirma el nuevo monto total de la estadía antes de continuar.', 'error');
+      return;
+    }
+    const montoTotalConfirmadoVinculada = nochesCambiaronVinculada() ? valorNumericoInput(inputMontoExtendidoCheckin) : null;
 
     const form = new FormData(e.target);
     const reservaIdSeleccionada = container.querySelector('#select-reserva').value || null;
@@ -2365,6 +2505,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
       tarifaCodigo: tarifa ? tarifa.codigo : '—',
       cantidadNoches,
       montoEstimado,
+      montoTotalConfirmadoVinculada,
       abonoPrevioActual,
       estadoPagoCheckin,
       montoPagoCheckin,
@@ -2385,6 +2526,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
           estadoPagoCheckin,
           montoPagoCheckin,
           montoEstimado,
+          montoTotalConfirmadoVinculada,
           acompanantesDetalle,
           hayFirma,
           canvas,
