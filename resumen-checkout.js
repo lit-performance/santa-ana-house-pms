@@ -33,6 +33,12 @@
 // sistema). Si el hotel cambia de dirección o de logo más adelante, este
 // es el único lugar que hay que tocar para que se actualice en todos los
 // descargables.
+//
+// Nota (165) sobre "Excedente": el CSV, el PDF y la tarjeta en pantalla
+// muestran una caja/fila morada extra "Excedente (pagó de más)" solo
+// cuando `datos.excedente` (nuevo campo de cuentas.js) es mayor a 0 — es
+// decir, cuando a esa habitación le quedaron registrados más pagos de
+// los que debía. En el caso normal (sin sobrepago) no aparece nada nuevo.
 
 import { obtenerResumenLiquidacion } from './cuentas.js';
 import { formatCOP } from './currency.js';
@@ -116,6 +122,7 @@ function filasCSV(datos) {
     ['Monto total', datos.montoTotal],
     ['Total pagado', datos.totalAbonado],
     ['Saldo pendiente', datos.saldoPendiente],
+    ['Excedente (pagó de más)', datos.excedente],
     [],
     ['Comentarios del check-in', datos.observacionesCheckin || ''],
     ['Comentarios del check-out', datos.observacionesCheckout || ''],
@@ -229,6 +236,7 @@ function abrirVistaPDF(datos) {
         <div class="cajon" style="border-color:#1a5276;"><div class="cajon-label" style="color:#1a5276;">Monto total</div><div class="cajon-valor" style="color:#1a5276;">${formatCOP(datos.montoTotal)}</div></div>
         <div class="cajon" style="border-color:#1e7e34;"><div class="cajon-label" style="color:#1e7e34;">Total pagado</div><div class="cajon-valor" style="color:#1e7e34;">${formatCOP(datos.totalAbonado)}</div></div>
         <div class="cajon" style="border-color:${datos.saldoPendiente > 0 ? '#a12626' : '#1e7e34'};"><div class="cajon-label" style="color:${datos.saldoPendiente > 0 ? '#a12626' : '#1e7e34'};">Saldo pendiente</div><div class="cajon-valor" style="color:${datos.saldoPendiente > 0 ? '#a12626' : '#1e7e34'};">${formatCOP(datos.saldoPendiente)}</div></div>
+        ${datos.excedente > 0 ? `<div class="cajon" style="border-color:#6a3fb5;"><div class="cajon-label" style="color:#6a3fb5;">Excedente (pagó de más)</div><div class="cajon-valor" style="color:#6a3fb5;">${formatCOP(datos.excedente)}</div></div>` : ''}
       </div>
 
       ${datos.observacionesCheckin || datos.observacionesCheckout ? `
@@ -349,6 +357,7 @@ function pintarModalResumen(datos) {
           ${cajonMonto('Monto total', formatCOP(datos.montoTotal), '#1a5276', '#eaf2f8')}
           ${cajonMonto('Total pagado', formatCOP(datos.totalAbonado), 'var(--color-verde-oscuro, #1e7e34)', '#e6f4ea')}
           ${cajonMonto('Saldo pendiente', formatCOP(datos.saldoPendiente), datos.saldoPendiente > 0 ? 'var(--color-rojo-oscuro, #a12626)' : 'var(--color-verde-oscuro, #1e7e34)', datos.saldoPendiente > 0 ? '#fdecea' : '#e6f4ea')}
+          ${datos.excedente > 0 ? cajonMonto('Excedente (pagó de más)', formatCOP(datos.excedente), '#6a3fb5', '#f3edfb') : ''}
         </div>
 
         ${
