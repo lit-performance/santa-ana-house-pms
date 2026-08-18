@@ -711,7 +711,10 @@ async function cargarInventarioBodega(elemento) {
     <div class="tarjeta">
       <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.25rem;">
         <h3 style="margin:0;">📦 Bodega — existencias y proveedor</h3>
-        <button type="button" id="btn-exportar-bodega" class="btn btn-secundario btn-chico">⬇ Excel</button>
+        <div style="display:flex; gap:0.5rem;">
+          ${permitido ? '<button type="button" id="btn-salida-bodega" class="btn btn-secundario btn-chico">🎁 Salida sin venta</button>' : ''}
+          <button type="button" id="btn-exportar-bodega" class="btn btn-secundario btn-chico">⬇ Excel</button>
+        </div>
       </div>
       <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:0.75rem; margin-bottom:0.75rem;">
         <div class="stat-card"><div class="stat-card-label">Cantidad de productos</div><div class="stat-card-valor">${cantidadProductos}</div></div>
@@ -753,6 +756,11 @@ async function cargarInventarioBodega(elemento) {
     </div>
   `;
 
+  const btnSalidaBodega = elemento.querySelector('#btn-salida-bodega');
+  if (btnSalidaBodega) {
+    btnSalidaBodega.addEventListener('click', () => abrirModalSalidaBodega(inventarioOrdenado, elemento));
+  }
+
   elemento.querySelector('#btn-exportar-bodega').addEventListener('click', () => {
     descargarCSV(`bodega_existencias_${toISODate(new Date())}.csv`, [
       ['Bodega — existencias y proveedor — Santa Ana House 21'],
@@ -786,6 +794,134 @@ async function cargarInventarioBodega(elemento) {
       if (f) abrirModalDetalleBodega(f, proveedores, elemento, permitido);
     }
   };
+}
+
+// =========================================================
+// (Nota 183) Salida de bodega sin venta — para cortesías, consumo
+// interno o cualquier producto que sale del inventario SIN que nadie lo
+// pague (ej. bebidas/snacks autorizados por el propietario para personal
+// externo). A propósito NO usa "Venta de mostrador" (eso siempre se lee
+// como ingreso real con método de pago — quedaría un cobro fantasma que
+// no cuadra con la caja del día) ni "Nuevo movimiento"/"Gastos" de Caja
+// (esos representan plata que de verdad entra o sale de una cuenta, y
+// aquí no se mueve plata hoy, se mueve inventario ya comprado).
+//
+// El motivo es obligatorio y queda guardado tal cual en
+// inventario_movimientos junto con quién lo registró y cuándo — visible
+// en "Movimientos recientes" con el tipo "🎁 Cortesía / salida sin
+// venta". Esto es también la mitad del blindaje contra que alguien
+// "ajuste" el stock para tapar consumo propio: la otra mitad es que
+// abrirModalDetalleBodega ya NO deja bajar la Cantidad en bodega sin
+// motivo (ver Nota 183 en esa función).
+// =========================================================
+function abrirModalSalidaBodega(inventarioOrdenado, elementoSeccion) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja">
+      <h3>🎁 Salida de bodega sin venta</h3>
+      <p class="mensaje-vacio" style="margin-top:-0.5rem;">Para cortesías, consumo interno o cualquier salida de producto que NO se vende — por ejemplo bebidas o snacks autorizados por el propietario. Baja el stock de bodega y queda registrado en Movimientos, sin tocar Caja ni las ventas del día.</p>
+      <form id="form-salida-bodega" class="modal-contenido">
+        <div class="form-grid">
+          <label>Producto
+            <select name="producto_bodega_id" required>
+              <option value="">— Elige un producto —</option>
+              ${inventarioOrdenado
+                .map((f) => `<option value="${f.id}">${escaparHTML(f.minibar_productos?.nombre || '—')} (hay ${f.cantidad_actual} en bodega)</option>`)
+                .join('')}
+            </select>
+          </label>
+          <label>Cantidad
+            <input type="number" name="cantidad" id="input-cantidad-salida-bodega" min="1" required />
+          </label>
+        </div>
+        <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
+          Motivo (obligatorio)
+          <textarea name="motivo" id="input-motivo-salida-bodega" rows="2" required style="padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit; text-transform:none;" placeholder='Ej: "Autorizado por [nombre del propietario] — bebidas y snacks para personal de reparaciones"'></textarea>
+        </label>
+        <p class="mensaje-vacio" style="margin-top:0.5rem; font-size:0.78rem;">Queda guardado con tu usuario, la fecha y este motivo tal cual lo escribas — no se puede dejar en blanco.</p>
+        <div class="modal-acciones" style="margin-top:1.25rem;">
+          <button type="button" class="btn btn-secundario" id="btn-cancelar-salida-bodega">Cancelar</button>
+          <button type="submit" class="btn btn-primario">Registrar salida</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#btn-cancelar-salida-bodega').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  overlay.querySelector('#form-salida-bodega').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+
+    const filaBodegaId = Number(form.get('producto_bodega_id'));
+    const cantidadSalida = Number(form.get('cantidad'));
+    const motivo = form.get('motivo').trim();
+
+    if (!filaBodegaId) {
+      mostrarToast('Elige un producto antes de continuar.', 'error');
+      return;
+    }
+    if (!cantidadSalida || cantidadSalida <= 0) {
+      mostrarToast('La cantidad debe ser mayor a 0.', 'error');
+      return;
+    }
+    if (!motivo) {
+      mostrarToast('Escribe el motivo de la salida antes de registrarla — es obligatorio.', 'error');
+      return;
+    }
+
+    // Se vuelve a leer el stock fresco (no el que quedó pintado al abrir
+    // el modal) para no restar sobre un número que ya cambió mientras
+    // alguien más usaba el sistema al mismo tiempo.
+    const { data: filaBodega, error: errFila } = await supabase
+      .from('inventario_bodega')
+      .select('id, producto_id, cantidad_actual')
+      .eq('id', filaBodegaId)
+      .maybeSingle();
+
+    if (errFila || !filaBodega) {
+      mostrarToast(`No se pudo confirmar el stock actual: ${errFila?.message || 'producto no encontrado'}`, 'error');
+      return;
+    }
+
+    if (cantidadSalida > filaBodega.cantidad_actual) {
+      mostrarToast(`Solo hay ${filaBodega.cantidad_actual} en bodega — no se puede sacar más de lo que hay.`, 'error');
+      return;
+    }
+
+    const usuario = getUsuarioActual();
+    const nuevaCantidad = filaBodega.cantidad_actual - cantidadSalida;
+
+    const { error: errUpdate } = await supabase
+      .from('inventario_bodega')
+      .update({ cantidad_actual: nuevaCantidad, actualizado_en: new Date().toISOString() })
+      .eq('id', filaBodega.id);
+    if (errUpdate) {
+      mostrarToast(`Error actualizando el stock: ${errUpdate.message}`, 'error');
+      return;
+    }
+
+    const { error: errMov } = await supabase.from('inventario_movimientos').insert({
+      tipo: 'cortesia',
+      producto_id: filaBodega.producto_id,
+      cantidad: cantidadSalida,
+      notas: motivo,
+      registrado_por: usuario?.id || null,
+    });
+    if (errMov) {
+      mostrarToast(`El stock se descontó, pero no se pudo guardar el registro del motivo: ${errMov.message}`, 'error');
+    } else {
+      mostrarToast('Salida registrada — no afecta la caja ni las ventas del día.', 'exito');
+    }
+
+    overlay.remove();
+    await cargarInventarioBodega(elementoSeccion);
+  });
 }
 
 // Tarjeta emergente de detalle de un producto de bodega: muestra toda
@@ -847,12 +983,29 @@ function abrirModalDetalleBodega(f, proveedores, elemento, permitido) {
               </select>
             </label>
             <label>Cantidad en bodega
-              <input type="number" name="cantidad_actual" min="0" value="${f.cantidad_actual}" required />
+              <input type="number" name="cantidad_actual" id="input-cantidad-actual-editar-bodega" min="0" value="${f.cantidad_actual}" required />
             </label>
             <label>Cantidad mínima
               <input type="number" name="cantidad_minima" min="0" value="${f.cantidad_minima}" required />
             </label>
           </div>
+
+          <!-- (Nota 183) Antes esta edición podía bajar (o subir) la
+          Cantidad en bodega sin dejar ningún rastro — ni motivo, ni quién
+          lo hizo, ni que apareciera en Movimientos. Eso lo dejaba abierto
+          para que alguien tapara consumo propio cambiando el número
+          nomás. Ahora, si la Cantidad en bodega cambia frente al valor
+          con el que se abrió el modal, este motivo pasa a ser
+          obligatorio y el cambio queda guardado en Movimientos con quién
+          lo hizo, cuándo y por qué. Editar solo precio/proveedor/mínimo
+          (sin tocar la cantidad) sigue sin pedir motivo. -->
+          <div id="wrap-motivo-ajuste-bodega" class="oculto" style="margin-top:0.85rem; background:var(--color-fondo-suave, #f8f9fb); border:1px solid var(--color-borde, #ddd); border-radius:8px; padding:0.75rem 0.9rem;">
+            <label>Motivo del ajuste (obligatorio)
+              <textarea name="motivo_ajuste" id="input-motivo-ajuste-bodega" rows="2" style="padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit; width:100%;" placeholder="Ej: conteo físico, producto dañado, corrección de un error de digitación…"></textarea>
+            </label>
+            <p class="mensaje-vacio" style="font-size:0.78rem; margin-top:0.3rem;">Cambiaste la Cantidad en bodega — este motivo queda guardado con tu usuario y la fecha en el historial de Movimientos. Si es una salida por cortesía o consumo interno (no una corrección de conteo), usa mejor "🎁 Salida sin venta" en vez de este campo.</p>
+          </div>
+
           <div class="modal-acciones" style="margin-top:1.25rem;">
             <button type="button" class="btn btn-secundario" id="btn-cancelar-edicion-bodega">Cancelar</button>
             <button type="submit" class="btn btn-primario">Guardar</button>
@@ -861,13 +1014,38 @@ function abrirModalDetalleBodega(f, proveedores, elemento, permitido) {
       </div>
     `;
     overlay.querySelector('#btn-cancelar-edicion-bodega').addEventListener('click', pintarVista);
+
+    const inputCantidadEditarBodega = overlay.querySelector('#input-cantidad-actual-editar-bodega');
+    const wrapMotivoAjusteBodega = overlay.querySelector('#wrap-motivo-ajuste-bodega');
+    const inputMotivoAjusteBodega = overlay.querySelector('#input-motivo-ajuste-bodega');
+
+    function cantidadCambioEditarBodega() {
+      return (Number(inputCantidadEditarBodega.value) || 0) !== f.cantidad_actual;
+    }
+
+    function actualizarWrapMotivoAjusteBodega() {
+      wrapMotivoAjusteBodega.classList.toggle('oculto', !cantidadCambioEditarBodega());
+    }
+    inputCantidadEditarBodega.addEventListener('input', actualizarWrapMotivoAjusteBodega);
+
     overlay.querySelector('#form-editar-bodega').addEventListener('submit', async (e) => {
       e.preventDefault();
       const form = new FormData(e.target);
+      const cantidadNueva = Number(form.get('cantidad_actual')) || 0;
+      const cambioCantidad = cantidadNueva !== f.cantidad_actual;
+      const motivoAjuste = form.get('motivo_ajuste').trim();
+
+      // Se valida ANTES de escribir nada: si cambió la cantidad, el
+      // motivo no es opcional.
+      if (cambioCantidad && !motivoAjuste) {
+        mostrarToast('Cambiaste la Cantidad en bodega — escribe el motivo del ajuste antes de guardar, es obligatorio.', 'error');
+        return;
+      }
+
       const payload = {
         precio_costo: form.get('precio_costo') ? Number(form.get('precio_costo')) : null,
         proveedor_id: form.get('proveedor_id') ? Number(form.get('proveedor_id')) : null,
-        cantidad_actual: Number(form.get('cantidad_actual')) || 0,
+        cantidad_actual: cantidadNueva,
         cantidad_minima: Number(form.get('cantidad_minima')) || 0,
         actualizado_en: new Date().toISOString(),
       };
@@ -876,6 +1054,22 @@ function abrirModalDetalleBodega(f, proveedores, elemento, permitido) {
         mostrarToast(`Error: ${error.message}`, 'error');
         return;
       }
+
+      if (cambioCantidad) {
+        const usuario = getUsuarioActual();
+        const diferencia = cantidadNueva - f.cantidad_actual;
+        const { error: errMov } = await supabase.from('inventario_movimientos').insert({
+          tipo: 'ajuste_bodega',
+          producto_id: f.producto_id,
+          cantidad: Math.abs(diferencia),
+          notas: `${diferencia > 0 ? 'Aumento' : 'Disminución'} manual: ${f.cantidad_actual} → ${cantidadNueva}. Motivo: ${motivoAjuste}`,
+          registrado_por: usuario?.id || null,
+        });
+        if (errMov) {
+          mostrarToast(`El inventario se guardó, pero no se pudo registrar el motivo del ajuste: ${errMov.message}`, 'error');
+        }
+      }
+
       mostrarToast('Inventario de bodega actualizado.', 'exito');
       overlay.remove();
       await cargarInventarioBodega(elemento);
@@ -2373,6 +2567,7 @@ async function cargarMovimientos(elemento) {
     ajuste_bodega: 'Ajuste bodega',
     ajuste_habitacion: 'Ajuste habitación',
     vaciado_a_bodega: 'Vaciado a bodega',
+    cortesia: '🎁 Cortesía / salida sin venta',
   };
 
   elemento.innerHTML = `
@@ -2386,6 +2581,7 @@ async function cargarMovimientos(elemento) {
               <th>Producto</th>
               <th>Habitación</th>
               <th>Cantidad</th>
+              <th>Motivo / notas</th>
               <th>Fecha</th>
               ${permitido ? '<th></th>' : ''}
             </tr>
@@ -2399,11 +2595,12 @@ async function cargarMovimientos(elemento) {
                 <td>${escaparHTML(m.minibar_productos?.nombre || '—')}</td>
                 <td>${m.habitaciones ? escaparHTML(m.habitaciones.numero) : '—'}</td>
                 <td>${m.cantidad}</td>
+                <td style="max-width:260px; white-space:normal;">${escaparHTML(m.notas || '—')}</td>
                 <td>${formatFechaHora(m.creado_en)}</td>
                 ${permitido ? `<td>${m.tipo === 'compra_bodega' ? '<button type="button" class="btn-editar btn-eliminar-compra">🗑</button>' : ''}</td>` : ''}
               </tr>`
                 )
-                .join('') || `<tr><td colspan="${permitido ? 6 : 5}" class="mensaje-vacio">Sin movimientos registrados todavía.</td></tr>`
+                .join('') || `<tr><td colspan="${permitido ? 7 : 6}" class="mensaje-vacio">Sin movimientos registrados todavía.</td></tr>`
             }
           </tbody>
         </table>
