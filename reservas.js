@@ -356,7 +356,15 @@ async function abrirModalReserva(container, reserva, prellenado) {
             <input type="text" name="monto_total" id="input-monto-total-reserva" placeholder="$0" value="${editando && reserva.monto_total ? reserva.monto_total : ''}" />
           </label>
         </div>
-        <p id="monto-auto-hint" class="mensaje-vacio" style="font-size:0.78rem; margin-top:0.3rem;">El monto total se calcula solo (noches × tarifa) al elegir tarifa y fechas. Si lo editas a mano, dejamos de tocarlo.</p>
+        <p id="monto-auto-hint" class="mensaje-vacio oculto" style="font-size:0.78rem; margin-top:0.3rem;">El monto total se calcula solo (noches × tarifa) al elegir tarifa y fechas. Si lo editas a mano, dejamos de tocarlo.</p>
+
+        <!-- (Nota 182) Solo aparece al EDITAR una reserva que ya tenía
+        fechas guardadas, si cambian y quedan con distinta cantidad de
+        noches que antes. A diferencia de crear una reserva nueva, aquí NO
+        se pisa el monto en silencio (puede traer un descuento manual) — se
+        sugiere y hay que confirmarlo/ajustarlo a mano antes de guardar (se
+        valida en el submit). -->
+        <p id="aviso-monto-cambio-fechas" class="oculto" style="font-size:0.78rem; margin-top:0.4rem; padding:0.6rem 0.75rem; border-radius:8px; background:#f3edfb; border:1px solid #c6acec; color:#4a2a80; font-weight:600;">⚠️ Cambiaron las noches frente a lo que ya tenía esta reserva — el monto total NO se recalcula solo. Sugerido con la tarifa actual: <span id="monto-sugerido-editar-reserva">$0</span>. Ajusta el campo "Monto total" de arriba (déjalo igual si el precio no cambia) antes de guardar.</p>
         <label style="display:flex; flex-direction:column; gap:0.3rem; margin-top:1rem; font-size:0.78rem; text-transform:uppercase; color:var(--color-texto-suave);">
           Comentarios
           <textarea name="comentarios" rows="2" style="padding:0.6rem; border:1px solid var(--color-borde); border-radius:6px; font-family:inherit;">${editando ? escaparHTML(reserva.comentarios || '') : ''}</textarea>
@@ -407,6 +415,9 @@ async function abrirModalReserva(container, reserva, prellenado) {
   const inputCheckin = overlay.querySelector('input[name="fecha_checkin"]');
   const inputCheckout = overlay.querySelector('input[name="fecha_checkout"]');
   const inputMonto = overlay.querySelector('#input-monto-total-reserva');
+  const hintMontoAuto = overlay.querySelector('#monto-auto-hint');
+  const avisoMontoCambioFechas = overlay.querySelector('#aviso-monto-cambio-fechas');
+  const spanMontoSugeridoEditar = overlay.querySelector('#monto-sugerido-editar-reserva');
 
   // Campo de dinero con formato "$" y punto de miles en vivo.
   activarInputDinero(inputMonto);
@@ -425,9 +436,39 @@ async function abrirModalReserva(container, reserva, prellenado) {
     activarInputDinero(inputMonto);
   }
 
-  selectTarifa.addEventListener('change', recalcularMontoAutomatico);
-  inputCheckin.addEventListener('change', recalcularMontoAutomatico);
-  inputCheckout.addEventListener('change', recalcularMontoAutomatico);
+  // (Nota 182) Al CREAR una reserva no hay nada que pisar todavía, así que
+  // el monto se sigue calculando solo mientras nadie lo edite a mano — se
+  // deja tal cual estaba. Al EDITAR una reserva que ya tenía fechas
+  // guardadas, en cambio, cambiar check-in/check-out ya NO recalcula el
+  // monto en silencio (podía pisar un descuento manual sin que nadie se
+  // diera cuenta) — solo se sugiere en el aviso morado, y hay que
+  // confirmarlo/ajustarlo a mano; se exige al guardar (ver validación en
+  // el submit más abajo).
+  const nochesOriginalesReserva = editando ? calcularNoches(reserva.fecha_checkin, reserva.fecha_checkout) : null;
+
+  function actualizarAvisoMontoCambioFechas() {
+    if (!editando) return;
+    const nochesAhora = calcularNoches(inputCheckin.value, inputCheckout.value);
+    const cambiaron = nochesOriginalesReserva != null && nochesAhora !== nochesOriginalesReserva;
+    avisoMontoCambioFechas.classList.toggle('oculto', !cambiaron);
+    if (cambiaron) {
+      const tarifa = (tarifas || []).find((t) => t.id === Number(selectTarifa.value));
+      const sugerido = tarifa && nochesAhora > 0 ? nochesAhora * Number(tarifa.precio_temporada_baja) : 0;
+      spanMontoSugeridoEditar.textContent = formatCOP(sugerido);
+    }
+  }
+
+  if (editando) {
+    hintMontoAuto.classList.add('oculto');
+    selectTarifa.addEventListener('change', actualizarAvisoMontoCambioFechas);
+    inputCheckin.addEventListener('change', actualizarAvisoMontoCambioFechas);
+    inputCheckout.addEventListener('change', actualizarAvisoMontoCambioFechas);
+  } else {
+    hintMontoAuto.classList.remove('oculto');
+    selectTarifa.addEventListener('change', recalcularMontoAutomatico);
+    inputCheckin.addEventListener('change', recalcularMontoAutomatico);
+    inputCheckout.addEventListener('change', recalcularMontoAutomatico);
+  }
 
   // Si al abrir el modal ya hay tarifa Y fechas (ej. reabriendo una reserva
   // existente sin monto guardado), calculamos una vez de entrada.
@@ -539,6 +580,22 @@ async function abrirModalReserva(container, reserva, prellenado) {
     if (payload.fecha_checkout <= payload.fecha_checkin) {
       mostrarToast('La fecha de check-out debe ser posterior al check-in.', 'error');
       return;
+    }
+
+    // (Nota 182) Si se editó una reserva y las noches quedaron distintas a
+    // las que ya tenía, pero el monto total sigue exactamente igual al que
+    // ya estaba guardado, lo más probable es que nadie lo haya confirmado
+    // todavía (ver aviso morado junto al campo) — se bloquea para que no se
+    // quede por fuera y sin sumar en Caja, Análisis/Indicadores, etc. Si de
+    // verdad el monto no cambia (p. ej. tarifa plana), basta con tocar el
+    // campo y volver a poner el mismo valor.
+    if (editando && nochesOriginalesReserva != null) {
+      const nochesAhora = calcularNoches(payload.fecha_checkin, payload.fecha_checkout);
+      const montoOriginal = Number(reserva.monto_total) || null;
+      if (nochesAhora !== nochesOriginalesReserva && !montoEditadoManualmente && payload.monto_total === montoOriginal) {
+        mostrarToast('Cambiaron las noches de la reserva — confirma o ajusta el monto total antes de guardar (no se recalcula solo, por si hay descuento).', 'error');
+        return;
+      }
     }
 
     // Si va a haber abono inicial, se valida el método de pago ANTES de
