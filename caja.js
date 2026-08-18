@@ -753,7 +753,10 @@ async function cargarHabitacionesEnUso(elemento) {
                   (i, idx) => `<tr>
                     <td>${escaparHTML(i.habitacionLabel)}</td>
                     <td>${escaparHTML(i.huespedNombre)}</td>
-                    <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(i.saldoPendiente)}</td>
+                    <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">
+                      ${formatCOP(i.saldoPendiente)}
+                      ${i.excedente > 0 ? `<div style="font-size:0.72rem; font-weight:700; color:#6a3fb5;">↑ excedente ${formatCOP(i.excedente)}</div>` : ''}
+                    </td>
                     <td><button type="button" class="btn-editar btn-ver-habitacion-uso" data-idx="${idx}">👁️ Ver</button></td>
                   </tr>`
                 )
@@ -777,6 +780,7 @@ async function cargarHabitacionesEnUso(elemento) {
         },
         { label: 'Monto total', valor: formatCOP(i.montoTotal) },
         { label: 'Abonado', valor: formatCOP(i.totalAbonado) },
+        ...(i.excedente > 0 ? [{ label: 'Excedente (pagó de más)', valor: `<span style="color:#6a3fb5; font-weight:700;">${formatCOP(i.excedente)}</span>` }] : []),
       ]);
     });
   });
