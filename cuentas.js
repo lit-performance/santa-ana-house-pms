@@ -14,6 +14,18 @@
 // abre al hacer check-out (ver resumen-checkout.js) — se usa tanto justo
 // después del check-out como para volver a verla luego desde el listado
 // de Checkouts en Indicadores. Misma razón: una sola fuente de verdad.
+//
+// Nota (164): `saldoPendiente` SIEMPRE se entrega acotado a un mínimo de
+// 0 con Math.max(0, ...) en las tres funciones de este archivo. Antes se
+// entregaba el resultado crudo de montoTotal - totalAbonado, que se podía
+// ir a negativo apenas una habitación quedaba sobrepagada (por ejemplo,
+// al corregir a mano un cobro de más) — y como ningún módulo que consume
+// este helper (Recepción, Caja, Indicadores, resumen-checkout.js) espera
+// un signo negativo, ese saldo aparecía tal cual en pantalla como "-$ ..."
+// en vez de "$0", que es lo que de verdad significa "ya no debe nada".
+// Si algún día se necesita saber CUÁNTO se sobrepagó (para un reembolso,
+// por ejemplo), eso debe ser un campo nuevo y explícito — no reusar el
+// signo de saldoPendiente para eso.
 
 import { supabase } from './supabase-client.js';
 
@@ -97,7 +109,7 @@ export async function calcularHabitacionesEnUso() {
       montoMinibar,
       montoTotal,
       totalAbonado,
-      saldoPendiente: montoTotal - totalAbonado,
+      saldoPendiente: Math.max(0, montoTotal - totalAbonado),
       horaIngreso: c.hora_ingreso,
     };
   });
@@ -162,7 +174,7 @@ export async function calcularCheckoutsEnRango(fechaInicioISO, finExclusivoISO) 
       checkOutEn: c.check_out_en,
       montoTotal,
       totalAbonado,
-      saldoPendiente: montoTotal - totalAbonado,
+      saldoPendiente: Math.max(0, montoTotal - totalAbonado),
     };
   });
 }
@@ -242,7 +254,7 @@ export async function obtenerResumenLiquidacion(checkinId) {
     montoMinibar,
     montoTotal,
     totalAbonado,
-    saldoPendiente: montoTotal - totalAbonado,
+    saldoPendiente: Math.max(0, montoTotal - totalAbonado),
     minibarItems: (minibar || []).map((m) => ({
       nombre: m.minibar_productos ? m.minibar_productos.nombre : '—',
       categoria: m.minibar_productos ? m.minibar_productos.categoria : null,
