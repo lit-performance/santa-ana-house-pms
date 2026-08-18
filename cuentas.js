@@ -23,9 +23,16 @@
 // este helper (Recepción, Caja, Indicadores, resumen-checkout.js) espera
 // un signo negativo, ese saldo aparecía tal cual en pantalla como "-$ ..."
 // en vez de "$0", que es lo que de verdad significa "ya no debe nada".
-// Si algún día se necesita saber CUÁNTO se sobrepagó (para un reembolso,
-// por ejemplo), eso debe ser un campo nuevo y explícito — no reusar el
-// signo de saldoPendiente para eso.
+//
+// Nota (165): el campo nuevo `excedente` es justamente ese "cuánto se
+// sobrepagó" del que hablaba la nota anterior — Math.max(0, totalAbonado
+// - montoTotal), el espejo de saldoPendiente. Vale más que 0 solo cuando
+// a la habitación le cobraron/abonaron de más (el caso típico: se
+// registró un pago repetido, o se corrigió a mano un error de cobro
+// agregando plata de más en vez de anular el pago original). No modifica
+// saldoPendiente ni ninguna otra cuenta existente — es un dato aparte
+// para que quien revise pueda VER que hay un sobrepago (y por cuánto),
+// en vez de que quede escondido detrás de un simple "$0".
 
 import { supabase } from './supabase-client.js';
 
@@ -44,6 +51,7 @@ import { supabase } from './supabase-client.js';
  *   montoTotal: number,
  *   totalAbonado: number,
  *   saldoPendiente: number,
+ *   excedente: number,
  *   horaIngreso: string,
  * }>>}
  */
@@ -110,6 +118,7 @@ export async function calcularHabitacionesEnUso() {
       montoTotal,
       totalAbonado,
       saldoPendiente: Math.max(0, montoTotal - totalAbonado),
+      excedente: Math.max(0, totalAbonado - montoTotal),
       horaIngreso: c.hora_ingreso,
     };
   });
@@ -175,6 +184,7 @@ export async function calcularCheckoutsEnRango(fechaInicioISO, finExclusivoISO) 
       montoTotal,
       totalAbonado,
       saldoPendiente: Math.max(0, montoTotal - totalAbonado),
+      excedente: Math.max(0, totalAbonado - montoTotal),
     };
   });
 }
@@ -255,6 +265,7 @@ export async function obtenerResumenLiquidacion(checkinId) {
     montoTotal,
     totalAbonado,
     saldoPendiente: Math.max(0, montoTotal - totalAbonado),
+    excedente: Math.max(0, totalAbonado - montoTotal),
     minibarItems: (minibar || []).map((m) => ({
       nombre: m.minibar_productos ? m.minibar_productos.nombre : '—',
       categoria: m.minibar_productos ? m.minibar_productos.categoria : null,
