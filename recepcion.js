@@ -145,6 +145,25 @@
 // navegador), así siempre hay un paso explícito de revisar el minibar
 // antes de cerrar la cuenta.
 //
+// Nota (172) — Método de pago obligatorio en el check-out: si se va a
+// registrar un pago (el campo "Pago que recibes ahora" queda en más de
+// $0), ahora es obligatorio elegir explícitamente a qué cuenta va ese
+// pago — el select ya no arranca en "Efectivo" por defecto, arranca
+// vacío ("— Elige a qué cuenta va este pago —") y si se intenta
+// confirmar sin elegir, se bloquea con un aviso. Antes, un <select> sin
+// ninguna opción marcada como `selected` caía solo en la primera de
+// METODOS_PAGO (Efectivo) por comportamiento normal del navegador, sin
+// que la recepcionista lo hubiera elegido a propósito — eso por sí solo
+// no había causado el problema real que se encontró (habitación 406,
+// Viviana Tovar: por el mismo bug del monto_total en null que arregla
+// esta misma versión, el saldo se mostró en $0 y el pago del minibar por
+// transferencia — "Cuenta Jorge" — nunca llegó a escribirse en el campo
+// de monto, así que ni siquiera se insertó en reservas_pagos, quedando
+// solo como una nota de texto en comentarios) — pero sí es un hueco real
+// aparte: con el monto ya arreglado, cualquier pago que SÍ se escriba
+// aquí en adelante queda obligado a decir a qué cuenta fue, para que
+// nunca quede "huérfano" ese dato.
+//
 // Nota (165) sobre "excedente" en la tabla de habitaciones en uso: si a
 // una habitación le registraron más pagos de los que debía (por ejemplo,
 // un pago duplicado o una corrección hecha agregando plata de más en vez
@@ -702,6 +721,7 @@ async function abrirModalLiquidacion(container, item) {
         </label>
         <label>Método de pago
           <select name="metodo_pago">
+            <option value="" ${!metodoPrevio ? 'selected' : ''}>— Elige a qué cuenta va este pago —</option>
             ${METODOS_PAGO.map((m) => `<option value="${m}" ${metodoPrevio === m ? 'selected' : ''}>${m}</option>`).join('')}
           </select>
         </label>
@@ -879,6 +899,16 @@ async function abrirModalLiquidacion(container, item) {
     const metodoPago = form.get('metodo_pago');
     const comentarioCheckout = form.get('comentarios_checkout')?.trim() || null;
     const saldoRestante = saldoActual() - pagoFinal;
+
+    // (172) Si se va a registrar un pago, obligar a elegir a qué cuenta
+    // va — ver nota de cabecera "Método de pago obligatorio en el
+    // check-out". Sin esto, un <select> sin nada marcado explícito cae en
+    // "Efectivo" (la primera opción de METODOS_PAGO) por defecto del
+    // navegador, sin que la recepcionista lo haya elegido a propósito.
+    if (pagoFinal > 0 && !metodoPago) {
+      mostrarToast('Elige a qué cuenta va este pago antes de confirmar el check-out.', 'error');
+      return;
+    }
 
     if (saldoRestante > 0) {
       const ok = await mostrarConfirmacion({
