@@ -379,6 +379,7 @@ async function abrirModalReserva(container, reserva, prellenado) {
               </label>
               <label>Método de pago
                 <select name="metodo_pago_abono">
+                  <option value="">— Elige a qué cuenta va el abono —</option>
                   ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
                 </select>
               </label>
@@ -540,6 +541,21 @@ async function abrirModalReserva(container, reserva, prellenado) {
       return;
     }
 
+    // Si va a haber abono inicial, se valida el método de pago ANTES de
+    // crear nada — así nunca queda una reserva ya guardada con el abono
+    // bloqueado por falta de método (mismo candado que ya tiene el pago
+    // de liquidación al check-out en recepcion.js). Solo aplica al crear
+    // (!editando), que es cuando existe este bloque de abono inicial.
+    if (!editando) {
+      const tipoPagoInicialValidar = form.get('tipo_pago_inicial');
+      const abonoInicialValidar =
+        tipoPagoInicialValidar === 'total' ? valorNumericoInput(inputMonto) || 0 : valorNumericoInput(overlay.querySelector('#input-abono-inicial'));
+      if (abonoInicialValidar > 0 && !form.get('metodo_pago_abono')) {
+        mostrarToast('Elige a qué cuenta va el abono inicial antes de crear la reserva.', 'error');
+        return;
+      }
+    }
+
     // --- Verificación de disponibilidad: el estado de la habitación
     // (ocupada/limpieza/etc) por sí solo no alcanza para detectar un
     // cruce, porque una reserva puede ser para cualquier rango de fechas
@@ -663,7 +679,8 @@ async function cargarPagos(overlay, reservaId) {
         <input type="text" name="monto" id="input-monto-nuevo-pago" placeholder="$0" required />
       </label>
       <label>Método de pago
-        <select name="metodo_pago">
+        <select name="metodo_pago" required>
+          <option value="">— Elige a qué cuenta va —</option>
           ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
         </select>
       </label>
