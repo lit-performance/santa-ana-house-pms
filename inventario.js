@@ -1684,6 +1684,7 @@ async function abrirModalEditarCompra(compra, elementoSeccionCompras) {
           </label>
           <label>Pagado desde
             <select id="select-metodo-editar-compra" required>
+              <option value="" ${!compra.metodo_pago ? 'selected' : ''}>— Selecciona una cuenta —</option>
               ${METODOS_PAGO.map((m) => `<option value="${m}" ${compra.metodo_pago === m ? 'selected' : ''}>${m}</option>`).join('')}
             </select>
           </label>
