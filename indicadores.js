@@ -33,6 +33,16 @@
 // estadisticas.js) — sin librerías externas, para no depender de internet
 // el día de la demo.
 //
+// Nota (170): la tabla del "🗓️ Reporte por rango de fechas" tiene ahora
+// una columna final con botón "👁️ Ver" que abre la tarjeta emergente
+// "Detalle del día" (ver detalle-dia.js) — el desglose completo y a
+// colores de ESE día puntual (pagos de reservas, ventas de mostrador,
+// movimientos manuales y transferencias), con descarga en Excel y PDF.
+// Solo aparece cuando "Agrupar por" está en Día — con Semana o Mes cada
+// fila junta varios días y "detalle del día" ya no aplica a un solo
+// `fechaISO`, así que ahí la columna muestra un guión con una nota corta
+// en vez del botón (cambiar el agrupador a Día para ver el detalle).
+//
 // Nota (159): a pedido de Elssy se dejaron solo 8 mini-tarjetas/bloques
 // en este dashboard. Se quitaron tres bloques que existían antes:
 // "🔁 Huéspedes recurrentes" (con su propia función cargarHuespedesRecurrentes,
@@ -51,6 +61,7 @@ import { toISODate, addDays, formatFechaCorta, formatFechaHora } from './dates.j
 import { calcularCheckoutsEnRango } from './cuentas.js';
 import { mostrarResumenCheckout, descargarResumenCheckoutPDF } from './resumen-checkout.js';
 import { calcularSaldosPorCuenta } from './caja.js';
+import { mostrarModalDetalleDia } from './detalle-dia.js';
 
 const ESTADOS_NO_OCUPAN = ['cancelada', 'no_show'];
 const ALTURA_MAX_BARRA_PX = 150;
@@ -575,12 +586,17 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
 
   const filas = Array.from(periodos.entries())
     .sort((a, b) => (a[0] < b[0] ? 1 : -1)) // más reciente primero
-    .map(([, p]) => {
+    .map(([clave, p]) => {
       const totalIngresos = p.ingresosEfectivo + p.ingresosDigital;
       const totalEgresos = p.egresosEfectivo + p.egresosDigital;
       const capacidadNoches = totalHabitaciones * p.numDias;
       const ocupacionPct = capacidadNoches > 0 ? (p.nochesOcupadas / capacidadNoches) * 100 : 0;
-      return { ...p, totalIngresos, totalEgresos, neto: totalIngresos - totalEgresos, ocupacionPct };
+      // Cuando agrupacion === 'dia', claveYEtiquetaPeriodo() usa el propio
+      // fechaISO como clave (ver más abajo) — por eso sirve tal cual para
+      // el botón "👁️ Ver" de detalle-dia.js. Con semana/mes, clave es un
+      // inicio de semana o un "YYYY-MM", no un día puntual, así que ahí NO
+      // se usa (ver columna final en la tabla, más abajo).
+      return { ...p, clave, totalIngresos, totalEgresos, neto: totalIngresos - totalEgresos, ocupacionPct };
     });
 
   const totalIngresosRango = filas.reduce((sum, f) => sum + f.totalIngresos, 0);
@@ -637,6 +653,7 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
             <th>Egresos</th>
             <th>Neto</th>
             <th>Ocupación</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -651,9 +668,14 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
                   <td>${formatCOP(f.totalEgresos)}</td>
                   <td style="font-weight:700;">${formatCOP(f.neto)}</td>
                   <td>${f.ocupacionPct.toFixed(1)}% <span class="mensaje-vacio">(${f.nochesOcupadas}/${totalHabitaciones * f.numDias})</span></td>
+                  <td>${
+                    agrupacion === 'dia'
+                      ? `<button type="button" class="btn-editar btn-ver-detalle-periodo" data-fecha="${f.clave}">👁️ Ver</button>`
+                      : '<span class="mensaje-vacio" title="Cambia \'Agrupar por\' a Día para ver el detalle">—</span>'
+                  }</td>
                 </tr>`
               )
-              .join('') || '<tr><td colspan="7" class="mensaje-vacio">Sin datos en este rango.</td></tr>'
+              .join('') || '<tr><td colspan="8" class="mensaje-vacio">Sin datos en este rango.</td></tr>'
           }
         </tbody>
       </table>
@@ -662,6 +684,10 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
     <div style="height:1rem;"></div>
     ${bloqueMinibar}
   `;
+
+  wrap.querySelectorAll('.btn-ver-detalle-periodo').forEach((btn) => {
+    btn.addEventListener('click', () => mostrarModalDetalleDia(btn.dataset.fecha));
+  });
 }
 
 registerModule({
