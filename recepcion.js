@@ -128,6 +128,17 @@
 // navegador), así siempre hay un paso explícito de revisar el minibar
 // antes de cerrar la cuenta.
 //
+// Nota (165) sobre "excedente" en la tabla de habitaciones en uso: si a
+// una habitación le registraron más pagos de los que debía (por ejemplo,
+// un pago duplicado o una corrección hecha agregando plata de más en vez
+// de anular el pago original), el saldo pendiente se queda en $0 (nunca
+// muestra negativo, ver nota 164 en cuentas.js) pero debajo aparece en
+// morado "↑ excedente $X" para que quede visible que hay plata de más
+// registrada — así la recepcionista o quien revise sabe que ahí hay algo
+// que aclarar (¿hay que devolver esa plata?, ¿fue un error de digitación
+// en el monto?) en vez de que quede escondido detrás de un saldo en $0
+// que parece perfectamente normal.
+//
 // Nota sobre "➕ Consumo" en la tabla de habitaciones en uso: agrega un
 // consumo de mostrador (minibar/servicios) a una habitación ocupada en
 // cualquier momento de la estadía (no solo al check-out) — útil cuando el
@@ -454,6 +465,7 @@ async function cargarVistaHoy(container) {
             <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">
               ${formatCOP(i.saldoPendiente)}
               ${i.montoMinibar > 0 ? `<div style="font-size:0.72rem; font-weight:500; color:var(--color-texto-suave);">🥤 incluye ${formatCOP(i.montoMinibar)} de minibar</div>` : ''}
+              ${i.excedente > 0 ? `<div style="font-size:0.72rem; font-weight:700; color:#6a3fb5;">↑ excedente ${formatCOP(i.excedente)}</div>` : ''}
             </td>
             <td style="white-space:nowrap;">
               <button type="button" class="btn-editar btn-editar-checkin" data-checkin-id="${i.checkinId}">✏️ Editar</button>
