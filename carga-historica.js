@@ -162,6 +162,7 @@ async function cargarForm(container) {
           </label>
           <label>Método de pago
             <select name="metodo_pago" required>
+              <option value="">— Elige a qué cuenta va —</option>
               ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
             </select>
           </label>
