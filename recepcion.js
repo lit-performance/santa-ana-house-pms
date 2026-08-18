@@ -1105,6 +1105,7 @@ async function abrirModalEditarCheckin(container, item) {
           </label>
           <label>Método de pago
             <select name="metodo_pago" required>
+              <option value="" ${!checkin.metodo_pago ? 'selected' : ''}>— Elige a qué cuenta va —</option>
               ${METODOS_PAGO.map((m) => `<option value="${m}" ${checkin.metodo_pago === m ? 'selected' : ''}>${m}</option>`).join('')}
             </select>
           </label>
@@ -1919,6 +1920,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
           </label>
           <label>Método de pago
             <select name="metodo_pago" id="select-metodo-pago-estadia" required>
+              <option value="">— Elige a qué cuenta va —</option>
               ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
             </select>
           </label>
