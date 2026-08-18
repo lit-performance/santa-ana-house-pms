@@ -345,6 +345,10 @@ async function cargarSaldosCuentas(container) {
 // =========================================================
 // Checkouts del rango (existente) — cada fila tiene "Ver resumen" (abre
 // el modal completo) y "⬇ PDF" (descarga directa sin pasar por el modal).
+//
+// Nota (165): la columna Saldo nunca muestra negativo (ver nota 164 en
+// cuentas.js) — si el checkout quedó sobrepagado, debajo del $0 aparece
+// en morado "↑ excedente $X" (dato nuevo `excedente` de cuentas.js).
 // =========================================================
 async function cargarCheckouts(container, fechaInicioISO, fechaFinISO) {
   const wrap = container.querySelector('#indicadores-checkouts');
@@ -398,7 +402,10 @@ async function cargarCheckouts(container, fechaInicioISO, fechaFinISO) {
               <td>${c.cantidadNoches ?? '—'}</td>
               <td class="monto">${formatCOP(c.montoTotal)}</td>
               <td class="monto">${formatCOP(c.totalAbonado)}</td>
-              <td class="monto" style="color:${c.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">${formatCOP(c.saldoPendiente)}</td>
+              <td class="monto" style="color:${c.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">
+                ${formatCOP(c.saldoPendiente)}
+                ${c.excedente > 0 ? `<div style="font-size:0.72rem; font-weight:700; color:#6a3fb5;">↑ excedente ${formatCOP(c.excedente)}</div>` : ''}
+              </td>
               <td style="white-space:nowrap;">
                 <button type="button" class="btn-editar btn-ver-resumen-checkout">Ver resumen</button>
                 <button type="button" class="btn-editar btn-pdf-resumen-checkout" title="Descargar el PDF directo, sin abrir el resumen">⬇ PDF</button>
