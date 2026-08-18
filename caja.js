@@ -856,7 +856,8 @@ async function cargarVentasMostradorHoy(container, elemento) {
             <input type="number" name="cantidad" min="1" value="1" required />
           </label>
           <label>Método de pago
-            <select name="metodo_pago">
+            <select name="metodo_pago" required>
+              <option value="">— Elige a qué cuenta va —</option>
               ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
             </select>
           </label>
@@ -1145,7 +1146,8 @@ async function abrirModalMovimiento(container, elementoSeccion) {
             <input type="text" name="monto" id="input-monto-movimiento" placeholder="$0" required />
           </label>
           <label>Método de pago
-            <select name="metodo_pago">
+            <select name="metodo_pago" required>
+              <option value="">— Elige a qué cuenta va —</option>
               ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
             </select>
           </label>
