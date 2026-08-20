@@ -60,6 +60,52 @@ function puedeCorregir() {
   return Boolean(usuario) && ROLES_CORRIGEN.includes(usuario.rol);
 }
 
+// =========================================================
+// (Nota 184) Resumen por método de pago — SOLO el movimiento neto DENTRO
+// del rango de fechas consultado, no un saldo acumulado desde el inicio
+// (para eso existe `calcularSaldosPorCuenta` en caja.js, pensado para el
+// saldo corriente de cada cuenta). Este es el otro medio de una
+// auditoría de caja: cuánto debió moverse en Efectivo/Nequi/etc. durante
+// ESE periodo puntual, para comparar contra el extracto bancario o el
+// conteo físico de esos días — junto con la Bitácora de abajo (que trae
+// cada movimiento suelto para puntear uno por uno), quedan las dos
+// mitades de la auditoría: el detalle y el total esperado por cuenta.
+// =========================================================
+function calcularResumenPorMetodo(pagosReserva, movimientos, transferencias, ventasMostrador) {
+  const resumen = {};
+  METODOS_PAGO.forEach((m) => {
+    resumen[m] = { ingresos: 0, egresos: 0, transferenciasNeto: 0 };
+  });
+  const bucket = (metodo) => {
+    if (!resumen[metodo]) resumen[metodo] = { ingresos: 0, egresos: 0, transferenciasNeto: 0 };
+    return resumen[metodo];
+  };
+
+  (pagosReserva || []).forEach((p) => {
+    bucket(p.metodo_pago || 'Efectivo').ingresos += Number(p.monto);
+  });
+  (ventasMostrador || []).forEach((v) => {
+    bucket(v.metodo_pago || 'Efectivo').ingresos += Number(v.monto);
+  });
+  (movimientos || []).forEach((m) => {
+    const b = bucket(m.metodo_pago || 'Efectivo');
+    if (m.tipo === 'ingreso') b.ingresos += Number(m.monto);
+    else b.egresos += Number(m.monto);
+  });
+  (transferencias || []).forEach((t) => {
+    bucket(t.cuenta_origen).transferenciasNeto -= Number(t.monto);
+    bucket(t.cuenta_destino).transferenciasNeto += Number(t.monto);
+  });
+
+  return Object.entries(resumen).map(([metodo, r]) => ({
+    metodo,
+    ingresos: r.ingresos,
+    egresos: r.egresos,
+    transferenciasNeto: r.transferenciasNeto,
+    neto: r.ingresos - r.egresos + r.transferenciasNeto,
+  }));
+}
+
 function escaparHTML(texto) {
   const div = document.createElement('div');
   div.textContent = texto || '';
@@ -210,6 +256,7 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
       tipo: 'transferencia',
       usuarioId: t.registrado_por,
       descripcion: `${escaparHTML(t.cuenta_origen)} → ${escaparHTML(t.cuenta_destino)}${t.motivo ? ` — ${t.motivo}` : ''}`,
+      metodoPago: `${t.cuenta_origen} → ${t.cuenta_destino}`,
       monto: Number(t.monto),
       signo: 0,
     });
@@ -255,6 +302,14 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
   const totalEgresos = eventosFiltrados.filter((ev) => ev.signo === -1).reduce((sum, ev) => sum + ev.monto, 0);
   const totalTransferido = eventosFiltrados.filter((ev) => ev.tipo === 'transferencia').reduce((sum, ev) => sum + ev.monto, 0);
 
+  // (Nota 184) A propósito calculado sobre los datos CRUDOS del rango
+  // (pagosReserva, movimientos, transferencias, ventasMostrador), no
+  // sobre `eventosFiltrados` — así el resumen por cuenta siempre refleja
+  // TODO el movimiento del periodo, sin importar qué "Tipo de evento" se
+  // haya elegido arriba para mirar el detalle. Filtrar el detalle está
+  // bien; filtrar el resumen de cuentas daría un total que no cuadra.
+  const resumenPorMetodo = calcularResumenPorMetodo(pagosReserva, movimientos, transferencias, ventasMostrador);
+
   elemento.innerHTML = `
     <div class="grid-tres-columnas" style="margin-bottom:1.5rem;">
       <div class="stat-card stat-card-azul">
@@ -270,6 +325,35 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
         <div class="stat-card-valor">${formatCOP(totalTransferido)}</div>
       </div>
     </div>
+
+    <!-- (Nota 184) Para auditoría/punteo: cuánto debió moverse en CADA
+    cuenta dentro de este rango — para comparar contra extracto bancario
+    o conteo físico. No es el saldo total de la cuenta (ese vive en Caja),
+    es solo el movimiento neto de este periodo puntual. -->
+    <div class="tarjeta" style="margin-bottom:1.5rem;">
+      <h3 style="margin-top:0;">💰 Movimiento por cuenta en el rango — para cuadrar contra extracto/conteo físico</h3>
+      <div class="tabla-scroll">
+        <table class="tabla-simple">
+          <thead>
+            <tr><th>Cuenta</th><th style="text-align:right;">Ingresos</th><th style="text-align:right;">Egresos</th><th style="text-align:right;">Transferencias (neto)</th><th style="text-align:right;">Neto del rango</th></tr>
+          </thead>
+          <tbody>
+            ${resumenPorMetodo
+              .map(
+                (r) => `<tr>
+                <td>${escaparHTML(r.metodo)}</td>
+                <td style="text-align:right; color:var(--color-verde-oscuro, #2e7d32);">${formatCOP(r.ingresos)}</td>
+                <td style="text-align:right; color:var(--color-rojo-oscuro, #c62828);">${formatCOP(r.egresos)}</td>
+                <td style="text-align:right;">${r.transferenciasNeto >= 0 ? '+' : ''}${formatCOP(r.transferenciasNeto)}</td>
+                <td style="text-align:right; font-weight:700;">${formatCOP(r.neto)}</td>
+              </tr>`
+              )
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="tarjeta">
       <div class="acciones-tarjeta" style="justify-content:space-between; margin-bottom:1rem;">
         <h3 style="margin:0;">Bitácora (${fechaInicio} a ${fechaFin})</h3>
@@ -318,12 +402,34 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
   `;
 
   elemento.querySelector('#btn-exportar-auditoria').addEventListener('click', () => {
-    const filas = [['Fecha y hora', 'Tipo', 'Usuario', 'Descripción', 'Monto']];
+    // (Nota 184) El CSV ahora trae, en este orden: encabezado + resumen
+    // por cuenta (para cuadrar contra extracto/conteo físico), una fila
+    // en blanco, y luego la bitácora detallada con "Método de pago" como
+    // su propia columna (antes venía mezclado dentro de la descripción) y
+    // una columna "✓ Verificado" vacía al final, para ir puntéandola a
+    // mano en Excel movimiento por movimiento.
+    const filas = [
+      [`Auditoría — Santa Ana House 21 (${fechaInicio} a ${fechaFin})`],
+      ['Generado', formatFechaHora(new Date().toISOString())],
+      [],
+      ['Movimiento por cuenta en el rango — Cuenta', 'Ingresos', 'Egresos', 'Transferencias (neto)', 'Neto del rango'],
+      ...resumenPorMetodo.map((r) => [r.metodo, r.ingresos, r.egresos, r.transferenciasNeto, r.neto]),
+      [],
+      ['Fecha y hora', 'Tipo', 'Usuario', 'Descripción', 'Método de pago', 'Monto', '✓ Verificado'],
+    ];
     eventosFiltrados.forEach((ev) => {
       const info = ETIQUETA_TIPO[ev.tipo];
       const nombreUsuario = nombresUsuarios.get(ev.usuarioId) || (ev.usuarioId ? '—' : 'Sistema (huésped)');
       const prefijo = ev.signo === 1 ? '+' : ev.signo === -1 ? '-' : '';
-      filas.push([formatFechaHora(ev.fecha), info.label.replace(/^[^\s]+\s/, ''), nombreUsuario, ev.descripcion.replace(/<[^>]*>/g, ''), `${prefijo}${ev.monto}`]);
+      filas.push([
+        formatFechaHora(ev.fecha),
+        info.label.replace(/^[^\s]+\s/, ''),
+        nombreUsuario,
+        ev.descripcion.replace(/<[^>]*>/g, ''),
+        ev.metodoPago || '—',
+        `${prefijo}${ev.monto}`,
+        '',
+      ]);
     });
     const csv = filas.map((fila) => fila.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8;' });
