@@ -31,6 +31,15 @@
 // más delicados (transferencias no tienen "método de pago" como tal, y
 // una venta de mostrador también mueve inventario, que esto no revierte)
 // y quedan fuera de esta primera versión para no arriesgar datos.
+//
+// EXPORTAR A EXCEL DE VERDAD (ver 185) — "⬇ Descargar Excel" ya no baja
+// un CSV (texto plano): genera un .xlsx real con dos pestañas ("Resumen
+// por cuenta" y "Detalle") usando SheetJS, la PRIMERA librería externa
+// del proyecto. Se carga con import() dinámico desde el CDN oficial
+// (https://cdn.sheetjs.com) solo cuando alguien le da clic al botón — no
+// pesa la carga normal de la página. Si algún día se quiere quitar la
+// dependencia de internet para esto, tocaría empaquetar xlsx.mjs junto
+// con el resto de los archivos del repo en vez de traerlo del CDN.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -357,7 +366,7 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
     <div class="tarjeta">
       <div class="acciones-tarjeta" style="justify-content:space-between; margin-bottom:1rem;">
         <h3 style="margin:0;">Bitácora (${fechaInicio} a ${fechaFin})</h3>
-        <button type="button" id="btn-exportar-auditoria" class="btn btn-secundario btn-chico">Descargar CSV</button>
+        <button type="button" id="btn-exportar-auditoria" class="btn btn-secundario btn-chico">⬇ Descargar Excel</button>
       </div>
       ${permiteCorregir ? '<p class="mensaje-vacio" style="margin-top:-0.5rem; margin-bottom:0.75rem; font-size:0.78rem;">Las filas de Ingreso/Egreso manual y Pago de reserva se pueden corregir (método de pago y monto) o eliminar directo desde aquí.</p>' : ''}
       <div class="tabla-scroll">
@@ -401,46 +410,70 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
     </div>
   `;
 
-  elemento.querySelector('#btn-exportar-auditoria').addEventListener('click', () => {
-    // (Nota 184) El CSV ahora trae, en este orden: encabezado + resumen
-    // por cuenta (para cuadrar contra extracto/conteo físico), una fila
-    // en blanco, y luego la bitácora detallada con "Método de pago" como
-    // su propia columna (antes venía mezclado dentro de la descripción) y
-    // una columna "✓ Verificado" vacía al final, para ir puntéandola a
-    // mano en Excel movimiento por movimiento.
-    const filas = [
-      [`Auditoría — Santa Ana House 21 (${fechaInicio} a ${fechaFin})`],
-      ['Generado', formatFechaHora(new Date().toISOString())],
-      [],
-      ['Movimiento por cuenta en el rango — Cuenta', 'Ingresos', 'Egresos', 'Transferencias (neto)', 'Neto del rango'],
-      ...resumenPorMetodo.map((r) => [r.metodo, r.ingresos, r.egresos, r.transferenciasNeto, r.neto]),
-      [],
-      ['Fecha y hora', 'Tipo', 'Usuario', 'Descripción', 'Método de pago', 'Monto', '✓ Verificado'],
-    ];
-    eventosFiltrados.forEach((ev) => {
-      const info = ETIQUETA_TIPO[ev.tipo];
-      const nombreUsuario = nombresUsuarios.get(ev.usuarioId) || (ev.usuarioId ? '—' : 'Sistema (huésped)');
-      const prefijo = ev.signo === 1 ? '+' : ev.signo === -1 ? '-' : '';
-      filas.push([
-        formatFechaHora(ev.fecha),
-        info.label.replace(/^[^\s]+\s/, ''),
-        nombreUsuario,
-        ev.descripcion.replace(/<[^>]*>/g, ''),
-        ev.metodoPago || '—',
-        `${prefijo}${ev.monto}`,
-        '',
-      ]);
-    });
-    const csv = filas.map((fila) => fila.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const enlace = document.createElement('a');
-    enlace.href = url;
-    enlace.download = `auditoria_${fechaInicio}_a_${fechaFin}.csv`;
-    document.body.appendChild(enlace);
-    enlace.click();
-    enlace.remove();
-    URL.revokeObjectURL(url);
+  // (Nota 185) Antes esto descargaba un CSV (texto plano) — se cambió a
+  // un .xlsx de verdad, con dos pestañas separadas y columnas ordenadas,
+  // usando SheetJS (cargado solo cuando de verdad se necesita, con
+  // import() dinámico, para no pesar la carga de la página el resto del
+  // tiempo). Es la primera librería externa del proyecto — se trae desde
+  // el CDN oficial de SheetJS, sin instalar nada ni tocar cómo se sube el
+  // resto del código.
+  elemento.querySelector('#btn-exportar-auditoria').addEventListener('click', async () => {
+    const btnExportar = elemento.querySelector('#btn-exportar-auditoria');
+    const textoOriginalBtn = btnExportar.textContent;
+    btnExportar.disabled = true;
+    btnExportar.textContent = 'Generando…';
+
+    try {
+      const XLSX = await import('https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs');
+
+      // --- Pestaña 1: Resumen por cuenta (para cuadrar contra extracto
+      // bancario o conteo físico) ---
+      const filasResumen = [
+        [`Auditoría — Santa Ana House 21 (${fechaInicio} a ${fechaFin})`],
+        ['Generado', formatFechaHora(new Date().toISOString())],
+        [],
+        ['Cuenta', 'Ingresos', 'Egresos', 'Transferencias (neto)', 'Neto del rango'],
+        ...resumenPorMetodo.map((r) => [r.metodo, r.ingresos, r.egresos, r.transferenciasNeto, r.neto]),
+      ];
+      const hojaResumen = XLSX.utils.aoa_to_sheet(filasResumen);
+      hojaResumen['!cols'] = [{ wch: 22 }, { wch: 16 }, { wch: 16 }, { wch: 20 }, { wch: 16 }];
+
+      // --- Pestaña 2: Detalle — cada movimiento suelto, con "Método de
+      // pago" en su propia columna (antes venía mezclado dentro de la
+      // descripción) y "Verificado" en blanco al final para ir
+      // puntéandola movimiento por movimiento. El Monto queda como
+      // número de verdad (positivo en ingresos, negativo en egresos, tal
+      // cual lo venías viendo con +/- en el CSV) para poder sumarlo o
+      // filtrarlo directo en Excel. ---
+      const filasDetalle = [['Fecha y hora', 'Tipo', 'Usuario', 'Descripción', 'Método de pago', 'Monto', 'Verificado']];
+      eventosFiltrados.forEach((ev) => {
+        const info = ETIQUETA_TIPO[ev.tipo];
+        const nombreUsuario = nombresUsuarios.get(ev.usuarioId) || (ev.usuarioId ? '—' : 'Sistema (huésped)');
+        const montoConSigno = ev.signo === -1 ? -ev.monto : ev.monto;
+        filasDetalle.push([
+          formatFechaHora(ev.fecha),
+          info.label.replace(/^[^\s]+\s/, ''),
+          nombreUsuario,
+          ev.descripcion.replace(/<[^>]*>/g, ''),
+          ev.metodoPago || '—',
+          montoConSigno,
+          '',
+        ]);
+      });
+      const hojaDetalle = XLSX.utils.aoa_to_sheet(filasDetalle);
+      hojaDetalle['!cols'] = [{ wch: 20 }, { wch: 20 }, { wch: 18 }, { wch: 45 }, { wch: 20 }, { wch: 14 }, { wch: 12 }];
+
+      const libro = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(libro, hojaResumen, 'Resumen por cuenta');
+      XLSX.utils.book_append_sheet(libro, hojaDetalle, 'Detalle');
+
+      XLSX.writeFile(libro, `auditoria_${fechaInicio}_a_${fechaFin}.xlsx`);
+    } catch (err) {
+      mostrarToast(`No se pudo generar el Excel: ${err.message}. Revisa la conexión a internet e inténtalo de nuevo.`, 'error');
+    } finally {
+      btnExportar.disabled = false;
+      btnExportar.textContent = textoOriginalBtn;
+    }
   });
 
   if (!permiteCorregir) return;
