@@ -51,6 +51,18 @@
 // visible en esta misma tabla para cuando llegue más stock. No cambia
 // "Reabastecer habitación" (la del formulario aparte), que sigue igual.
 //
+// Nota (189): se detectó que ese mismo campo editable de "Reponer ahora"
+// SÍ dejaba subir la cantidad por encima de lo que realmente faltaba
+// (solo estaba topada contra el stock de bodega, nunca contra el
+// estándar de la habitación) — a diferencia de "Reabastecer habitación"
+// y "Reponer todo", que siempre usan exactamente la cantidad que falta y
+// nunca pueden pasarse. Eso dejaba minibares con más unidades de las que
+// les correspondían (ej. 4 en vez de 2), sin ningún aviso, cada vez que
+// alguien reponía "de más" en esa casilla — la causa real del
+// descuadre reportado entre el conteo físico y "Stock total". Ahora el
+// campo tiene tope real: si se pide más de lo que falta, se avisa y solo
+// se repone hasta el estándar, igual que las otras dos vías.
+//
 // Nota sobre "tiene_minibar" (ver 109/111): las habitaciones marcadas
 // como sin minibar (uso administrativo, arriendo mensual, etc.) no
 // aparecen en "Pendientes de reponer", "Reabastecer habitación" ni el
@@ -2369,7 +2381,7 @@ async function cargarPendientesReponer(elemento) {
                 ${
                   permitido
                     ? `<td style="white-space:nowrap;">
-                        <input type="number" class="input-cantidad-reponer" min="1" value="${x.falta}" style="width:55px; margin-right:0.4rem;" title="Cantidad a reponer (puedes bajarla si no hay suficiente en bodega)" />
+                        <input type="number" class="input-cantidad-reponer" min="1" max="${x.falta}" value="${x.falta}" style="width:55px; margin-right:0.4rem;" title="Cantidad a reponer (puedes bajarla si no hay suficiente en bodega — no se puede subir más de lo que falta según el estándar)" />
                         <button type="button" class="btn-editar btn-reponer-ahora">Reponer</button>
                       </td>`
                     : ''
@@ -2407,8 +2419,16 @@ async function cargarPendientesReponer(elemento) {
       const fila = e.target.closest('tr');
       const habitacionId = Number(fila.dataset.habitacionId);
       const productoId = Number(fila.dataset.productoId);
+      const falta = Number(fila.dataset.falta);
       const inputCantidad = fila.querySelector('.input-cantidad-reponer');
-      const cantidad = Math.max(1, Number(inputCantidad.value) || 0);
+      const cantidadPedida = Math.max(1, Number(inputCantidad.value) || 0);
+      // Nota 189: nunca se puede reponer más de lo que falta según el
+      // estándar — antes solo se topaba contra el stock de bodega, y eso
+      // dejaba minibares por encima de su estándar sin ningún aviso.
+      const cantidad = Math.min(cantidadPedida, falta);
+      if (cantidadPedida > falta) {
+        mostrarToast(`Esta habitación solo tiene pendiente ${falta} unidad(es) de este producto según el estándar — se repone ese máximo, no ${cantidadPedida}, para no dejarla por encima del estándar.`, 'error');
+      }
       btn.disabled = true;
       await reponerCantidadParcial(habitacionId, productoId, cantidad);
       await refrescarTrasReabastecer();
