@@ -2301,6 +2301,17 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
         ${filaResumen('Cantidad de noches', noches || '—', {})}
         ${cajonMonto('Monto estimado estadía', formatCOP(montoEstimado), '#0b5fae', '#eaf3ff', '#8ec1f5')}
         ${abonoPrevioActual > 0 ? cajonMonto('Ya abonado antes (reserva / check-in)', formatCOP(abonoPrevioActual), '#6a3fb5', '#f3edfb', '#c6acec') : ''}
+        ${
+          // (Nota 186) Aviso en vivo — antes de siquiera llegar al botón de
+          // enviar — cuando la reserva vinculada ya viene pagada por
+          // completo y de todas formas se está por cobrar algo más ahora.
+          // Es justo el patrón del caso real: pagó completo al reservar y
+          // en el check-in se volvió a registrar el mismo pago sin
+          // notarlo. Ver también el candado en el submit más abajo.
+          montoEstimado > 0 && abonoPrevioActual >= montoEstimado && montoACobrar > 0
+            ? `<div style="margin-top:0.75rem; padding:0.6rem 0.85rem; border-radius:8px; background:#fdeceb; border:1px solid #f0a8a0; color:#8a271f; font-weight:600; font-size:0.82rem;">⚠️ Esta reserva ya aparece pagada por completo (${formatCOP(abonoPrevioActual)}). Revisa que el cobro de ahora sea algo nuevo de verdad (una noche extra, por ejemplo) y no el mismo pago registrado dos veces.</div>`
+            : ''
+        }
         <div style="margin-top:0.75rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.4rem;">
           <span style="font-size:0.82rem; color:var(--color-texto-suave, #666);">¿Paga ahora?</span>
           <span style="display:inline-block; padding:0.3rem 0.7rem; border-radius:999px; background:${info.fondo}; color:${info.color}; font-weight:700; font-size:0.8rem; border:1px solid ${info.borde};">${estadoPago ? info.texto : '⚠️ Falta elegir arriba'}</span>
@@ -2476,6 +2487,22 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     const metodoPago = form.get('metodo_pago');
     const habitacionTexto = container.querySelector('#select-habitacion').selectedOptions[0]?.textContent || habitacionActual.numero;
     const saldoDespues = Math.max(0, montoEstimado - abonoPrevioActual - montoPagoCheckin);
+
+    // (Nota 186) Candado contra pago duplicado — caso real: Alexa Rojas,
+    // 405. Pagó completo al crear la reserva; en el check-in, sin darse
+    // cuenta de que ya estaba pagada, se registró el mismo pago otra vez
+    // (mismo monto, mismo método, mismo día) — el checkout mostró un
+    // "excedente" de $104.000 que en realidad nunca existió. No se
+    // bloquea del todo porque SÍ puede ser un cobro nuevo legítimo (una
+    // noche extra, por ejemplo) — se exige confirmar explícitamente.
+    if (estadoPagoCheckin !== 'pendiente' && montoPagoCheckin > 0 && montoEstimado > 0 && abonoPrevioActual >= montoEstimado) {
+      const confirmarPagoAdicional = await mostrarConfirmacion({
+        titulo: '¿Seguro que es un cobro nuevo?',
+        contenidoHTML: `Esta reserva ya aparece pagada por completo (<strong>${formatCOP(abonoPrevioActual)}</strong> abonados, para un estimado de <strong>${formatCOP(montoEstimado)}</strong>). Vas a registrar <strong>${formatCOP(montoPagoCheckin)}</strong> más ahora.<br><br>Confirma que el huésped SÍ está pagando algo adicional — y no que este pago ya se había registrado antes al hacer la reserva.`,
+        textoConfirmar: 'Sí, es un cobro nuevo, continuar',
+      });
+      if (!confirmarPagoAdicional) return;
+    }
 
     // --- Acompañantes: recolectar los bloques (si el checkbox está
     // marcado) y descartar cualquier bloque que haya quedado sin nombre. ---
