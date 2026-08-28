@@ -708,18 +708,24 @@ async function abrirModalReserva(container, reserva, prellenado) {
 
 async function cargarPagos(overlay, reservaId) {
   const wrap = overlay.querySelector('#pagos-wrap');
-  const { data: pagos, error } = await supabase
-    .from('reservas_pagos')
-    .select('*')
-    .eq('reserva_id', reservaId)
-    .order('fecha', { ascending: false });
+  const [
+    { data: pagos, error },
+    { data: reservaActual, error: errReserva },
+  ] = await Promise.all([
+    supabase.from('reservas_pagos').select('*').eq('reserva_id', reservaId).order('fecha', { ascending: false }),
+    supabase.from('reservas').select('monto_total').eq('id', reservaId).maybeSingle(),
+  ]);
 
   if (error) {
     wrap.innerHTML = `<p class="mensaje-vacio">Error cargando abonos: ${error.message}</p>`;
     return;
   }
+  if (errReserva) {
+    mostrarToast(`No se pudo confirmar el monto total de la reserva: ${errReserva.message}`, 'error');
+  }
 
   const totalAbonado = (pagos || []).reduce((sum, p) => sum + Number(p.monto), 0);
+  const montoTotalReserva = Number(reservaActual?.monto_total) || 0;
 
   wrap.innerHTML = `
     <h3>Abonos / Pagos — Total abonado: ${formatCOP(totalAbonado)}</h3>
@@ -754,6 +760,22 @@ async function cargarPagos(overlay, reservaId) {
     e.preventDefault();
     const form = new FormData(e.target);
     const montoNuevoPago = valorNumericoInput(wrap.querySelector('#input-monto-nuevo-pago'));
+
+    // (Nota 186) Mismo candado que en el check-in de Recepción — caso
+    // real: Alexa Rojas, 405, pagó completo al reservar y el mismo pago
+    // se volvió a registrar después, sin darse cuenta de que ya estaba
+    // cubierto. Si esta reserva ya aparece pagada por completo (o más) y
+    // de todas formas se va a agregar otro abono, se exige confirmar
+    // explícitamente que es plata nueva y no el mismo pago de antes.
+    if (montoTotalReserva > 0 && totalAbonado >= montoTotalReserva && montoNuevoPago > 0) {
+      const confirmarAbonoAdicional = await mostrarConfirmacion({
+        titulo: '¿Seguro que es un abono nuevo?',
+        contenidoHTML: `Esta reserva ya aparece pagada por completo (<strong>${formatCOP(totalAbonado)}</strong> abonados, para un total de <strong>${formatCOP(montoTotalReserva)}</strong>). Vas a registrar <strong>${formatCOP(montoNuevoPago)}</strong> más.<br><br>Confirma que el huésped SÍ está pagando algo adicional — y no que este abono ya se había registrado antes.`,
+        textoConfirmar: 'Sí, es un abono nuevo, continuar',
+      });
+      if (!confirmarAbonoAdicional) return;
+    }
+
     const { error: errInsert } = await supabase.from('reservas_pagos').insert({
       reserva_id: reservaId,
       monto: montoNuevoPago,
