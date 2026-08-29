@@ -84,6 +84,33 @@
 //    `inventario_conteo_lineas` con sus políticas RLS — sin eso esta
 //    sección da error al iniciar un conteo.
 //
+// Nota (191): dos correcciones a "Aplicar conteo" tras el primer conteo
+// físico real (29 de agosto de 2026):
+//  1) La restricción `inventario_movimientos_tipo_check` en la base de
+//     datos no incluía el valor 'ajuste_conteo' (se corrigió aparte por
+//     SQL, ampliando esa restricción — y de paso se agregaron
+//     'vaciado_a_bodega' y 'cortesia', que tampoco estaban y son de
+//     código ya existente, no de este conteo).
+//  2) Bug real de lógica: "Aplicar conteo" comparaba lo contado contra
+//     `cantidad_sistema` — la "foto" que se tomó al INICIAR el conteo —
+//     en vez de contra el valor VIGENTE al momento de aplicar. Como un
+//     conteo completo puede tardar más de una hora (pasó: 18:11 a
+//     19:44), si algo más movía esa misma bodega mientras tanto (una
+//     venta, un consumo), el conteo físico correcto podía coincidir con
+//     la foto vieja y el sistema concluía "no cambió nada" — dejando sin
+//     corregir el valor real, que ya se había ido para otro lado. Así
+//     pasó con Rosquitas y Snickers esa noche (corregidos aparte por
+//     SQL). Ahora, justo antes de escribir cada línea, se vuelve a leer
+//     el valor VIGENTE en ese instante y se compara el conteo físico
+//     contra ESE valor — nunca contra la foto del inicio. De paso, la
+//     rama de bodega ahora también busca-antes-de-escribir (select →
+//     update si existe fila, insert si no) igual que ya hacía la rama de
+//     habitación, en vez de un UPDATE ciego que no hacía nada si el
+//     producto nunca había tenido fila en inventario_bodega. Y cada
+//     escritura (bodega, habitación, movimiento) ahora sí cuenta como
+//     error si falla, así el toast final avisa en pantalla en vez de
+//     quedar solo en la consola.
+//
 // Nota sobre "tiene_minibar" (ver 109/111): las habitaciones marcadas
 // como sin minibar (uso administrativo, arriendo mensual, etc.) no
 // aparecen en "Pendientes de reponer", "Reabastecer habitación" ni el
@@ -754,39 +781,95 @@ async function cargarConteoFisico(elemento) {
       for (const f of filas) {
         if (f.cantidad_contada === null) continue;
         const nuevoValor = Number(f.cantidad_contada);
-        if (nuevoValor === Number(f.cantidad_sistema)) continue;
-        const diferencia = nuevoValor - Number(f.cantidad_sistema);
 
+        // Nota (191): comparar y escribir siempre contra el valor VIGENTE
+        // (leído justo aquí, en el instante de aplicar), nunca contra
+        // `f.cantidad_sistema` (la foto congelada de cuando se inició el
+        // conteo, que puede llevar más de una hora desactualizada).
         if (f.esBodega) {
-          const { error } = await supabase
+          const { data: filaBodega, error: errLeer } = await supabase
             .from('inventario_bodega')
-            .update({ cantidad_actual: nuevoValor, actualizado_en: new Date().toISOString() })
-            .eq('producto_id', f.producto_id);
-          if (error) {
+            .select('id, cantidad_actual')
+            .eq('producto_id', f.producto_id)
+            .maybeSingle();
+          if (errLeer) {
             errores++;
             continue;
           }
+          const valorVigente = Number(filaBodega?.cantidad_actual || 0);
+          if (nuevoValor === valorVigente) continue; // de verdad sin cambios, contra el dato de ahora
+
+          if (filaBodega) {
+            const { error } = await supabase
+              .from('inventario_bodega')
+              .update({ cantidad_actual: nuevoValor, actualizado_en: new Date().toISOString() })
+              .eq('id', filaBodega.id);
+            if (error) {
+              errores++;
+              continue;
+            }
+          } else {
+            const { error } = await supabase
+              .from('inventario_bodega')
+              .insert({ producto_id: f.producto_id, cantidad_actual: nuevoValor, cantidad_minima: 0 });
+            if (error) {
+              errores++;
+              continue;
+            }
+          }
+
+          const { error: errMov } = await supabase.from('inventario_movimientos').insert({
+            tipo: 'ajuste_conteo',
+            producto_id: f.producto_id,
+            habitacion_id: null,
+            cantidad: Math.abs(nuevoValor - valorVigente),
+            notas: `Conteo físico: sistema tenía ${valorVigente} al aplicar, se contó ${nuevoValor}.`,
+            registrado_por: usuario?.id || null,
+          });
+          if (errMov) errores++;
         } else {
-          const { data: filaHab } = await supabase
+          const { data: filaHab, error: errLeer } = await supabase
             .from('inventario_habitacion')
-            .select('id')
+            .select('id, cantidad_actual')
             .eq('habitacion_id', f.habitacion_id)
             .eq('producto_id', f.producto_id)
             .maybeSingle();
-          if (filaHab) {
-            await supabase.from('inventario_habitacion').update({ cantidad_actual: nuevoValor, actualizado_en: new Date().toISOString() }).eq('id', filaHab.id);
-          } else {
-            await supabase.from('inventario_habitacion').insert({ habitacion_id: f.habitacion_id, producto_id: f.producto_id, cantidad_actual: nuevoValor });
+          if (errLeer) {
+            errores++;
+            continue;
           }
-        }
+          const valorVigente = Number(filaHab?.cantidad_actual || 0);
+          if (nuevoValor === valorVigente) continue;
 
-        await supabase.from('inventario_movimientos').insert({
-          tipo: 'ajuste_conteo',
-          producto_id: f.producto_id,
-          habitacion_id: f.habitacion_id,
-          cantidad: Math.abs(diferencia),
-          registrado_por: usuario?.id || null,
-        });
+          if (filaHab) {
+            const { error } = await supabase
+              .from('inventario_habitacion')
+              .update({ cantidad_actual: nuevoValor, actualizado_en: new Date().toISOString() })
+              .eq('id', filaHab.id);
+            if (error) {
+              errores++;
+              continue;
+            }
+          } else {
+            const { error } = await supabase
+              .from('inventario_habitacion')
+              .insert({ habitacion_id: f.habitacion_id, producto_id: f.producto_id, cantidad_actual: nuevoValor });
+            if (error) {
+              errores++;
+              continue;
+            }
+          }
+
+          const { error: errMov } = await supabase.from('inventario_movimientos').insert({
+            tipo: 'ajuste_conteo',
+            producto_id: f.producto_id,
+            habitacion_id: f.habitacion_id,
+            cantidad: Math.abs(nuevoValor - valorVigente),
+            notas: `Conteo físico: sistema tenía ${valorVigente} al aplicar, se contó ${nuevoValor}.`,
+            registrado_por: usuario?.id || null,
+          });
+          if (errMov) errores++;
+        }
       }
 
       await supabase
