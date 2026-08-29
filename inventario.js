@@ -63,6 +63,27 @@
 // campo tiene tope real: si se pide más de lo que falta, se avisa y solo
 // se repone hasta el estándar, igual que las otras dos vías.
 //
+// Nota (190): primera parte del rediseño de Inventario acordado con
+// Elssy tras la noche del 29 de agosto de 2026 (bug de reposición sin
+// tope + descuadre de Coca-Cola/Cocosette/Pringles). Dos secciones
+// nuevas, mismo patrón de mini-tarjeta + "👁️ Ver" → modal ancho de
+// siempre:
+//  - "⚠️ Alertas": detecta solo (sin que nadie tenga que acordarse de
+//    preguntar) los dos huecos reales que encontramos esa noche: stock
+//    de bodega en negativo, y stock "huérfano" en habitaciones
+//    desactivadas sin pasar por "Vaciar minibar" (ver nota 188).
+//  - "🧮 Conteo físico": lleva DENTRO del sistema lo que esa noche
+//    tuvimos que hacer por fuera (SQL + Excel) — abre una sesión de
+//    conteo que congela una foto de "lo que el sistema dice" en
+//    inventario_conteos/inventario_conteo_lineas (tablas nuevas, ver
+//    SQL aparte), deja llenar "lo que se contó" producto por producto y
+//    ubicación por ubicación, calcula la diferencia al instante, y al
+//    aplicar FIJA cada cantidad al valor contado — nunca suma ni resta
+//    sobre lo que había, que fue exactamente el error de esa noche.
+//    Requiere las tablas `inventario_conteos` e
+//    `inventario_conteo_lineas` con sus políticas RLS — sin eso esta
+//    sección da error al iniciar un conteo.
+//
 // Nota sobre "tiene_minibar" (ver 109/111): las habitaciones marcadas
 // como sin minibar (uso administrativo, arriendo mensual, etc.) no
 // aparecen en "Pendientes de reponer", "Reabastecer habitación" ni el
@@ -263,6 +284,10 @@ const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Ban
 
 const ROLES_GESTIONAN = ['propietario', 'administrador', 'bodega'];
 
+// Categorías que no son producto físico contable (ej. un servicio) — se
+// excluyen del conteo físico (ver nota 190 al inicio del archivo).
+const CATEGORIAS_NO_FISICAS = ['Servicios'];
+
 function puedeGestionar() {
   const usuario = getUsuarioActual();
   return Boolean(usuario) && ROLES_GESTIONAN.includes(usuario.rol);
@@ -392,6 +417,8 @@ async function calcularResumenComprasHoy() {
 // sigue funcionando exactamente igual, sin tener que tocarlo. Todas las
 // emergentes usan el mismo ancho generoso (ver nota 132.1).
 const SECCIONES_INVENTARIO = {
+  alertas: { wrapId: 'inv-alertas-wrap', cargar: cargarAlertasInventario },
+  'conteo-fisico': { wrapId: 'inv-conteo-fisico-wrap', cargar: cargarConteoFisico },
   mapa: { wrapId: 'inv-mapa-wrap', cargar: cargarMapaMinibares },
   pendientes: { wrapId: 'inv-pendientes-wrap', cargar: cargarPendientesReponer },
   bodega: { wrapId: 'inv-bodega-wrap', cargar: cargarInventarioBodega },
@@ -431,20 +458,385 @@ function abrirModalSeccion(id, elementoResumen) {
   config.cargar(overlay.querySelector(`#${config.wrapId}`));
 }
 
+// =========================================================
+// ⚠️ Alertas (nota 190): detecta sola las dos anomalías reales que
+// encontramos la noche del 29 de agosto — nadie tiene que acordarse de
+// preguntar por ellas, aparecen solas en el resumen.
+// =========================================================
+async function calcularResumenAlertas() {
+  const [{ data: bodegaNegativa }, { data: huerfanos }] = await Promise.all([
+    supabase.from('inventario_bodega').select('producto_id, cantidad_actual, minibar_productos(nombre)').lt('cantidad_actual', 0),
+    supabase
+      .from('inventario_habitacion')
+      .select('habitacion_id, producto_id, cantidad_actual, habitaciones!inner(numero, tiene_minibar), minibar_productos(nombre)')
+      .eq('habitaciones.tiene_minibar', false)
+      .gt('cantidad_actual', 0),
+  ]);
+
+  const detalle = [
+    ...(bodegaNegativa || []).map(
+      (b) => `Bodega en negativo: ${b.minibar_productos?.nombre || `#${b.producto_id}`} (${b.cantidad_actual} unidad(es))`
+    ),
+    ...(huerfanos || []).map(
+      (h) =>
+        `Stock huérfano en habitación desactivada: ${h.minibar_productos?.nombre || `#${h.producto_id}`} en habitación ${
+          h.habitaciones?.numero || h.habitacion_id
+        } (${h.cantidad_actual} unidad(es)) — usa "Vaciar minibar" en Configuración → Habitaciones.`
+    ),
+  ];
+
+  return { cantidad: detalle.length, detalle };
+}
+
+async function cargarAlertasInventario(elemento) {
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+  const { cantidad, detalle } = await calcularResumenAlertas();
+
+  elemento.innerHTML = `
+    <div class="tarjeta${cantidad > 0 ? ' tarjeta-acento-rojo' : ''}">
+      <h3>⚠️ Alertas de inventario</h3>
+      <p class="mensaje-vacio" style="margin-bottom:1rem;">Anomalías que el sistema detecta solo — sin esperar a un conteo físico ni a que alguien pregunte por ellas.</p>
+      ${
+        cantidad === 0
+          ? '<p class="mensaje-vacio">✅ No se detectó ninguna anomalía — bodega sin negativos y sin stock huérfano en habitaciones desactivadas.</p>'
+          : `<ul style="margin:0; padding-left:1.2rem;">${detalle.map((d) => `<li style="margin-bottom:0.6rem;">${escaparHTML(d)}</li>`).join('')}</ul>`
+      }
+    </div>
+  `;
+}
+
+// =========================================================
+// 🧮 Conteo físico (nota 190): sesión formal de stocktake que reemplaza
+// la ronda de SQL + Excel de la noche del 29 de agosto. Congela una
+// foto de "lo que el sistema dice" al iniciar (inventario_conteos +
+// inventario_conteo_lineas), deja llenar "lo que se contó" y al aplicar
+// FIJA cada cantidad al valor contado — nunca suma ni resta sobre lo
+// que había, dejando un movimiento 'ajuste_conteo' por cada línea que
+// cambió para trazabilidad. Requiere las tablas nuevas con su RLS (ver
+// SQL entregado aparte) — sin eso, iniciar un conteo da error.
+// =========================================================
+async function obtenerConteoEnCurso() {
+  const { data } = await supabase
+    .from('inventario_conteos')
+    .select('*')
+    .eq('estado', 'en_curso')
+    .order('iniciado_en', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return data || null;
+}
+
+async function calcularResumenConteo() {
+  const conteo = await obtenerConteoEnCurso();
+  if (!conteo) return { enCurso: false };
+
+  const { data: lineas } = await supabase.from('inventario_conteo_lineas').select('cantidad_contada').eq('conteo_id', conteo.id);
+  const total = (lineas || []).length;
+  const contadas = (lineas || []).filter((l) => l.cantidad_contada !== null).length;
+  return { enCurso: true, total, contadas, conteoId: conteo.id };
+}
+
+// Congela la foto inicial: una línea por cada producto físico (activo,
+// sin categorías de servicio) × cada ubicación (bodega + cada
+// habitación con minibar activo), con `cantidad_sistema` = lo que el
+// sistema tenía en ese momento.
+async function iniciarConteoFisico() {
+  const usuario = getUsuarioActual();
+
+  const [{ data: productosTodos }, { data: habitaciones }, { data: bodega }, { data: habRows }] = await Promise.all([
+    supabase.from('minibar_productos').select('id, categoria').eq('activo', true),
+    supabase.from('habitaciones').select('id').eq('tiene_minibar', true),
+    supabase.from('inventario_bodega').select('producto_id, cantidad_actual'),
+    supabase.from('inventario_habitacion').select('habitacion_id, producto_id, cantidad_actual'),
+  ]);
+
+  const productos = (productosTodos || []).filter((p) => !CATEGORIAS_NO_FISICAS.includes(p.categoria));
+
+  const { data: conteo, error: errConteo } = await supabase
+    .from('inventario_conteos')
+    .insert({ iniciado_por: usuario?.id || null })
+    .select()
+    .single();
+  if (errConteo) {
+    mostrarToast(`Error iniciando el conteo: ${errConteo.message}`, 'error');
+    return null;
+  }
+
+  const bodegaPorProducto = new Map((bodega || []).map((b) => [b.producto_id, Number(b.cantidad_actual || 0)]));
+  const habPorClave = new Map((habRows || []).map((h) => [`${h.habitacion_id}_${h.producto_id}`, Number(h.cantidad_actual || 0)]));
+
+  const lineas = [];
+  productos.forEach((p) => {
+    lineas.push({ conteo_id: conteo.id, producto_id: p.id, habitacion_id: null, cantidad_sistema: bodegaPorProducto.get(p.id) || 0 });
+    (habitaciones || []).forEach((h) => {
+      lineas.push({ conteo_id: conteo.id, producto_id: p.id, habitacion_id: h.id, cantidad_sistema: habPorClave.get(`${h.id}_${p.id}`) || 0 });
+    });
+  });
+
+  const { error: errLineas } = await supabase.from('inventario_conteo_lineas').insert(lineas);
+  if (errLineas) {
+    mostrarToast(`Error preparando las líneas del conteo: ${errLineas.message}`, 'error');
+    return null;
+  }
+
+  return conteo.id;
+}
+
+async function cargarConteoFisico(elemento) {
+  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
+  const permitido = puedeGestionar();
+  const conteo = await obtenerConteoEnCurso();
+
+  if (!conteo) {
+    elemento.innerHTML = `
+      <div class="tarjeta">
+        <h3>🧮 Conteo físico</h3>
+        <p class="mensaje-vacio">No hay ningún conteo en curso. Un conteo físico compara, producto por producto y ubicación por ubicación, lo que el sistema tiene registrado contra lo que de verdad hay en bodega y en cada minibar — y al aplicarlo FIJA cada cantidad al valor contado (nunca suma ni resta sobre lo que había).</p>
+        ${permitido ? '<div class="acciones-tarjeta"><button type="button" class="btn btn-primario" id="btn-iniciar-conteo">🧮 Iniciar conteo físico</button></div>' : ''}
+      </div>
+    `;
+    const btnIniciar = elemento.querySelector('#btn-iniciar-conteo');
+    if (btnIniciar) {
+      btnIniciar.addEventListener('click', async () => {
+        const ok = await mostrarConfirmacion({
+          titulo: 'Iniciar conteo físico',
+          contenidoHTML:
+            'Esto toma una foto de lo que el sistema tiene registrado AHORA MISMO en bodega y en cada minibar, para comparar contra el conteo físico que van a hacer. Mientras el conteo esté en curso, se sigue pudiendo reponer y vender con normalidad — la comparación queda fija contra el momento de iniciar. ¿Confirmas?',
+          textoConfirmar: 'Sí, iniciar conteo',
+        });
+        if (!ok) return;
+        btnIniciar.disabled = true;
+        btnIniciar.textContent = 'Iniciando…';
+        const conteoId = await iniciarConteoFisico();
+        if (conteoId) {
+          mostrarToast('Conteo físico iniciado — ya puedes empezar a llenar los conteos.', 'exito');
+          await cargarConteoFisico(elemento);
+        } else {
+          btnIniciar.disabled = false;
+          btnIniciar.textContent = '🧮 Iniciar conteo físico';
+        }
+      });
+    }
+    return;
+  }
+
+  const [{ data: lineas, error: errLineas }, { data: productos }, { data: habitaciones }] = await Promise.all([
+    supabase.from('inventario_conteo_lineas').select('*').eq('conteo_id', conteo.id),
+    supabase.from('minibar_productos').select('id, nombre, categoria'),
+    supabase.from('habitaciones').select('id, numero'),
+  ]);
+
+  if (errLineas) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando el conteo: ${errLineas.message}</p>`;
+    return;
+  }
+
+  const productoPorId = new Map((productos || []).map((p) => [p.id, p]));
+  const habitacionPorId = new Map((habitaciones || []).map((h) => [h.id, h]));
+
+  const filas = (lineas || [])
+    .map((l) => ({
+      ...l,
+      productoNombre: productoPorId.get(l.producto_id)?.nombre || `#${l.producto_id}`,
+      categoria: productoPorId.get(l.producto_id)?.categoria || '',
+      ubicacionLabel: l.habitacion_id ? `Hab. ${habitacionPorId.get(l.habitacion_id)?.numero || l.habitacion_id}` : 'Bodega',
+      esBodega: l.habitacion_id === null,
+    }))
+    .sort((a, b) => {
+      if (a.esBodega !== b.esBodega) return a.esBodega ? -1 : 1;
+      return a.ubicacionLabel.localeCompare(b.ubicacionLabel) || a.productoNombre.localeCompare(b.productoNombre);
+    });
+
+  const total = filas.length;
+  const contadas = filas.filter((f) => f.cantidad_contada !== null).length;
+  const conDiferencia = filas.filter((f) => f.cantidad_contada !== null && Number(f.cantidad_contada) !== Number(f.cantidad_sistema)).length;
+  const porcentaje = total > 0 ? Math.round((contadas / total) * 100) : 0;
+  const completo = contadas === total && total > 0;
+
+  elemento.innerHTML = `
+    <div class="tarjeta" style="border:1.5px solid rgba(30,78,140,.25);">
+      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0;">
+        <h3 style="margin:0;">🧮 Conteo físico en curso</h3>
+        ${permitido ? '<button type="button" class="btn btn-secundario btn-chico" id="btn-descartar-conteo">Descartar conteo</button>' : ''}
+      </div>
+      <p class="mensaje-vacio">Iniciado ${formatFechaHora(conteo.iniciado_en)}. La diferencia se calcula contra lo que el sistema tenía registrado en ese momento.</p>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:0.75rem; margin-bottom:1rem;">
+        <div class="stat-card"><div class="stat-card-label">Contados</div><div class="stat-card-valor">${contadas} / ${total}</div></div>
+        <div class="stat-card stat-card-rojo"><div class="stat-card-label">Con diferencia</div><div class="stat-card-valor">${conDiferencia}</div></div>
+        <div class="stat-card"><div class="stat-card-label">Avance</div><div class="stat-card-valor">${porcentaje}%</div></div>
+      </div>
+      <div class="tabla-scroll">
+        <table class="tabla-simple">
+          <thead><tr><th>Ubicación</th><th>Producto</th><th>Sistema dice</th><th>Conteo físico</th><th>Diferencia</th></tr></thead>
+          <tbody>
+            ${filas
+              .map((f) => {
+                const diferencia = f.cantidad_contada !== null ? Number(f.cantidad_contada) - Number(f.cantidad_sistema) : null;
+                const colorDif = diferencia === null ? 'var(--color-texto-suave)' : diferencia === 0 ? 'var(--color-verde-oscuro)' : 'var(--color-rojo-oscuro)';
+                return `
+                <tr data-linea-id="${f.id}">
+                  <td>${escaparHTML(f.ubicacionLabel)}</td>
+                  <td>${escaparHTML(f.productoNombre)} <span class="mensaje-vacio">(${escaparHTML(f.categoria)})</span></td>
+                  <td>${f.cantidad_sistema}</td>
+                  <td>${
+                    permitido
+                      ? `<input type="number" min="0" class="input-conteo-linea" style="width:70px;" value="${f.cantidad_contada ?? ''}" placeholder="—" />`
+                      : f.cantidad_contada ?? '—'
+                  }</td>
+                  <td style="font-weight:700; color:${colorDif};">${diferencia === null ? '—' : diferencia > 0 ? `+${diferencia}` : diferencia}</td>
+                </tr>
+              `;
+              })
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+      ${
+        permitido
+          ? `<div class="acciones-tarjeta">
+              <button type="button" class="btn btn-primario" id="btn-aplicar-conteo" ${completo ? '' : 'disabled'}>
+                ✅ Aplicar conteo${completo ? '' : ` (${porcentaje}% completo)`}
+              </button>
+            </div>`
+          : ''
+      }
+    </div>
+  `;
+
+  elemento.querySelectorAll('.input-conteo-linea').forEach((input) => {
+    input.addEventListener('change', async () => {
+      const fila = input.closest('tr');
+      const lineaId = Number(fila.dataset.lineaId);
+      const valor = input.value === '' ? null : Math.max(0, Number(input.value) || 0);
+      const usuario = getUsuarioActual();
+      const { error } = await supabase
+        .from('inventario_conteo_lineas')
+        .update({ cantidad_contada: valor, contado_en: valor === null ? null : new Date().toISOString(), contado_por: usuario?.id || null })
+        .eq('id', lineaId);
+      if (error) {
+        mostrarToast(`Error guardando el conteo: ${error.message}`, 'error');
+        return;
+      }
+      await cargarConteoFisico(elemento);
+    });
+  });
+
+  const btnDescartar = elemento.querySelector('#btn-descartar-conteo');
+  if (btnDescartar) {
+    btnDescartar.addEventListener('click', async () => {
+      const ok = await mostrarConfirmacion({
+        titulo: 'Descartar conteo',
+        contenidoHTML: 'Se descarta este conteo y todo lo que se haya llenado — no se aplica ningún cambio al inventario. ¿Confirmas?',
+        textoConfirmar: 'Sí, descartar',
+      });
+      if (!ok) return;
+      await supabase.from('inventario_conteos').update({ estado: 'descartado' }).eq('id', conteo.id);
+      mostrarToast('Conteo descartado.', 'exito');
+      await cargarConteoFisico(elemento);
+    });
+  }
+
+  const btnAplicar = elemento.querySelector('#btn-aplicar-conteo');
+  if (btnAplicar && completo) {
+    btnAplicar.addEventListener('click', async () => {
+      const ok = await mostrarConfirmacion({
+        titulo: 'Aplicar conteo físico',
+        contenidoHTML: `Vas a FIJAR ${total} cantidad(es) al valor contado — ${conDiferencia} de ellas cambian respecto a lo que tenía el sistema. Esto no se puede deshacer desde aquí. ¿Confirmas?`,
+        textoConfirmar: 'Sí, aplicar conteo',
+      });
+      if (!ok) return;
+      btnAplicar.disabled = true;
+      btnAplicar.textContent = 'Aplicando…';
+
+      const usuario = getUsuarioActual();
+      let errores = 0;
+
+      for (const f of filas) {
+        if (f.cantidad_contada === null) continue;
+        const nuevoValor = Number(f.cantidad_contada);
+        if (nuevoValor === Number(f.cantidad_sistema)) continue;
+        const diferencia = nuevoValor - Number(f.cantidad_sistema);
+
+        if (f.esBodega) {
+          const { error } = await supabase
+            .from('inventario_bodega')
+            .update({ cantidad_actual: nuevoValor, actualizado_en: new Date().toISOString() })
+            .eq('producto_id', f.producto_id);
+          if (error) {
+            errores++;
+            continue;
+          }
+        } else {
+          const { data: filaHab } = await supabase
+            .from('inventario_habitacion')
+            .select('id')
+            .eq('habitacion_id', f.habitacion_id)
+            .eq('producto_id', f.producto_id)
+            .maybeSingle();
+          if (filaHab) {
+            await supabase.from('inventario_habitacion').update({ cantidad_actual: nuevoValor, actualizado_en: new Date().toISOString() }).eq('id', filaHab.id);
+          } else {
+            await supabase.from('inventario_habitacion').insert({ habitacion_id: f.habitacion_id, producto_id: f.producto_id, cantidad_actual: nuevoValor });
+          }
+        }
+
+        await supabase.from('inventario_movimientos').insert({
+          tipo: 'ajuste_conteo',
+          producto_id: f.producto_id,
+          habitacion_id: f.habitacion_id,
+          cantidad: Math.abs(diferencia),
+          registrado_por: usuario?.id || null,
+        });
+      }
+
+      await supabase
+        .from('inventario_conteos')
+        .update({ estado: 'aplicado', aplicado_en: new Date().toISOString(), aplicado_por: usuario?.id || null })
+        .eq('id', conteo.id);
+
+      if (errores > 0) {
+        mostrarToast(`Conteo aplicado con ${errores} error(es) — revisa el detalle en Movimientos.`, 'error');
+      } else {
+        mostrarToast('Conteo aplicado: todas las cantidades quedaron fijadas al valor contado.', 'exito');
+      }
+      document.dispatchEvent(new CustomEvent('inventario:actualizado'));
+      await cargarConteoFisico(elemento);
+    });
+  }
+}
+
 async function cargarResumenInventario(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando resumen…</p>';
   const permitido = puedeGestionar();
 
-  const [resumenMapa, resumenPendientes, resumenBodega, resumenStockTotal, resumenCompras, resumenReposicionesHoy] = await Promise.all([
+  const [resumenMapa, resumenPendientes, resumenBodega, resumenStockTotal, resumenCompras, resumenReposicionesHoy, resumenAlertas, resumenConteo] = await Promise.all([
     calcularResumenMapa(),
     calcularResumenPendientes(),
     calcularResumenBodega(),
     calcularResumenStockTotal(),
     calcularResumenComprasHoy(),
     calcularResumenReposicionesHoy(),
+    calcularResumenAlertas(),
+    calcularResumenConteo(),
   ]);
 
   const tarjetas = [
+    {
+      id: 'alertas',
+      icono: '⚠️',
+      titulo: 'Alertas',
+      resumen: resumenAlertas.cantidad > 0 ? `${resumenAlertas.cantidad} anomalía(s) detectada(s)` : '✅ Sin anomalías',
+      alerta: resumenAlertas.cantidad > 0,
+    },
+    {
+      id: 'conteo-fisico',
+      icono: '🧮',
+      titulo: 'Conteo físico',
+      resumen: resumenConteo.enCurso
+        ? `En curso: ${resumenConteo.contadas}/${resumenConteo.total} contados`
+        : 'Sin conteo en curso',
+      alerta: resumenConteo.enCurso,
+    },
     {
       id: 'mapa',
       icono: '🗺️',
