@@ -115,6 +115,19 @@
 // reserva ya existente (`reservaIdSeleccionada` con valor) no toca esto —
 // esa reserva ya trae su `monto_total` de cuando se creó en Reservas.
 //
+// Nota (192 / H24): "Monto total estimado" (noches × tarifa) ignoraba por
+// completo las tarifas "por días" (tipo 'por_dias', ver config-tarifas.js)
+// — esas guardan su precio real en `valor_convenido` (un total fijo para
+// toda la estadía, ej. $1.600.000 por 30 días) y dejan `precio_temporada_baja`
+// en 0 a propósito, porque no aplica. Como este archivo siempre hacía
+// `noches * precio_temporada_baja` sin revisar el tipo de tarifa, cualquier
+// tarifa "por días" (ej. Tarifa F) siempre daba $0 — bug real, reproducido
+// en vivo el 29 de agosto de 2026. Ahora, dondequiera que se sugiere o
+// calcula un monto a partir de una tarifa, primero se revisa si
+// `tarifa.tipo === 'por_dias'`: si es así, se usa `valor_convenido` tal
+// cual (precio de paquete fijo, sin importar cuántas noches se elijan);
+// si no, sigue siendo noches × precio por noche, igual que siempre.
+//
 // Nota sobre "adicionar días a la estadía": si un huésped que ya tenía su
 // reserva hecha (por ejemplo 2 noches) decide en el check-in quedarse más
 // días, la recepcionista solo tiene que aumentar el campo "Cantidad de
@@ -1096,7 +1109,7 @@ async function abrirModalEditarCheckin(container, item) {
             <select name="tarifa_id" required>
               <option value="">—</option>
               ${(tarifas || [])
-                .map((t) => `<option value="${t.id}" ${checkin.tarifa_id === t.id ? 'selected' : ''}>${t.codigo} / ${formatCOP(t.precio_temporada_baja)}</option>`)
+                .map((t) => `<option value="${t.id}" ${checkin.tarifa_id === t.id ? 'selected' : ''}>${t.codigo} / ${formatCOP(t.tipo === 'por_dias' ? t.valor_convenido : t.precio_temporada_baja)}</option>`)
                 .join('')}
             </select>
           </label>
@@ -1202,7 +1215,13 @@ async function abrirModalEditarCheckin(container, item) {
     if (cambiaron) {
       const tarifaSel = (tarifas || []).find((t) => t.id === Number(selectTarifaEditar.value));
       const nochesSel = Number(inputNochesEditar.value) || 0;
-      const sugerido = tarifaSel && nochesSel > 0 ? nochesSel * Number(tarifaSel.precio_temporada_baja) : 0;
+      const sugerido = !tarifaSel
+        ? 0
+        : tarifaSel.tipo === 'por_dias'
+        ? Number(tarifaSel.valor_convenido)
+        : nochesSel > 0
+        ? nochesSel * Number(tarifaSel.precio_temporada_baja)
+        : 0;
       spanMontoSugeridoEditar.textContent = formatCOP(sugerido);
     }
   }
@@ -2002,7 +2021,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
           <label>Tarifa
             <select name="tarifa_id" id="select-tarifa" required>
               <option value="">—</option>
-              ${(tarifas || []).map((t) => `<option value="${t.id}">${t.codigo} / ${formatCOP(t.precio_temporada_baja)}</option>`).join('')}
+              ${(tarifas || []).map((t) => `<option value="${t.id}">${t.codigo} / ${formatCOP(t.tipo === 'por_dias' ? t.valor_convenido : t.precio_temporada_baja)}</option>`).join('')}
             </select>
           </label>
           <label>Cantidad de noches
@@ -2268,8 +2287,10 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
   function calcularMontoEstimado() {
     const tarifa = (tarifas || []).find((t) => t.id === Number(selectTarifaEstadia.value));
+    if (!tarifa) return 0;
+    if (tarifa.tipo === 'por_dias') return Number(tarifa.valor_convenido);
     const noches = Number(inputNochesEstadia.value) || 0;
-    if (!tarifa || noches <= 0) return 0;
+    if (noches <= 0) return 0;
     return noches * Number(tarifa.precio_temporada_baja);
   }
 
