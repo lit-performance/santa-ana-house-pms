@@ -31,6 +31,16 @@
 // siguen viendo en el listado (cada una como su propio grupo de 1) y se
 // pueden eliminar, pero no editar como grupo (no hay forma de saber
 // cuáles iban juntas en la venta original).
+//
+// Nota (200 / auditoría H12): se sigue permitiendo que un consumo deje
+// el minibar de la habitación en negativo (puede ser real — faltó
+// reponer a tiempo), pero ya no en silencio: antes de abrir el resumen
+// de confirmación se revisa el stock actual de la habitación contra lo
+// que se va a consumir, y si algún producto quedaría en negativo se
+// avisa cuál y en cuánto, dejando cancelar si en realidad fue un error
+// de digitación. Además, "Alertas de inventario" (inventario.js) ahora
+// también detecta minibares de habitaciones ACTIVAS que ya quedaron en
+// negativo (antes solo miraba bodega y habitaciones desactivadas).
 
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -308,10 +318,35 @@ export function abrirModalRegistrarConsumo(opciones) {
         categorias,
         lineasIniciales: lineasPrevias.map((l) => ({ producto_id: l.productoId, cantidad: l.cantidad })),
         textoBoton: 'Continuar',
-        onContinuar: (lineas, habSeleccionada) => {
+        onContinuar: async (lineas, habSeleccionada) => {
           const habFinal = habitacionesEnUso
             ? { habitacionId: habSeleccionada.habitacionId, reservaId: habSeleccionada.reservaId, habitacionLabel: habSeleccionada.habitacionLabel, huespedNombre: habSeleccionada.huespedNombre }
             : { habitacionId, reservaId, habitacionLabel, huespedNombre };
+
+          // (200 / auditoría H12) Se permite quedar en negativo (puede
+          // ser un consumo real sin que alguien haya repuesto todavía),
+          // pero ya no en silencio: se avisa ANTES de guardar cuáles
+          // productos quedarían en negativo y en cuánto, para poder
+          // cancelar si en realidad es un error de digitación.
+          const { data: stockActual } = await supabase
+            .from('inventario_habitacion')
+            .select('producto_id, cantidad_actual')
+            .eq('habitacion_id', habFinal.habitacionId);
+          const stockPorProducto = new Map((stockActual || []).map((s) => [s.producto_id, Number(s.cantidad_actual)]));
+          const quedaranNegativos = lineas
+            .map((l) => ({ nombre: l.producto.nombre, resultado: (stockPorProducto.get(l.productoId) || 0) - l.cantidad }))
+            .filter((r) => r.resultado < 0);
+          if (quedaranNegativos.length > 0) {
+            const ok = await mostrarConfirmacion({
+              titulo: 'Esto dejará el minibar en negativo',
+              contenidoHTML: `Después de este consumo, ${habFinal.habitacionLabel} quedaría así: <ul style="margin:0.5rem 0 0; padding-left:1.2rem;">${quedaranNegativos
+                .map((r) => `<li>${escaparHTML(r.nombre)}: ${r.resultado}</li>`)
+                .join('')}</ul> Puede ser normal si falta reponer — pero si fue un error de digitación, mejor revisar la cantidad. ¿Continuar de todas formas?`,
+              textoConfirmar: 'Sí, continuar',
+            });
+            if (!ok) return;
+          }
+
           abrirModalResumenConsumo({
             habitacionLabel: habFinal.habitacionLabel,
             huespedNombre: habFinal.huespedNombre,
