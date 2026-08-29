@@ -92,6 +92,38 @@
 // 1100px, le sobra ancho), pero se dejó igual: no estorba y evita tener
 // que volver a decidir cuántas columnas mostrar si el modal se angosta
 // en pantallas chicas.
+//
+// Nota (200 / auditoría H3, H4, H5, H7, H8):
+//  - H3: los 3 formularios de dinero de este archivo (venta de
+//    mostrador, movimiento manual, transferencia entre cuentas) no
+//    tenían protección contra doble clic — ya pasó en producción (dos
+//    ventas idénticas de "Aguas con gas" por 4 milisegundos de
+//    diferencia, causa real detrás del descuadre de la cuenta "Llave").
+//    Ahora el botón de guardar se deshabilita apenas se envía el
+//    formulario y se reactiva si algo falla, en los 3 (y también en
+//    gastos.js, ver ahí).
+//  - H4: entre comprobar si ya había un turno abierto hoy y crear uno
+//    nuevo (`obtenerOCrearTurnoDeHoy`) había una ventana de carrera real
+//    — dos acciones casi simultáneas podían crear dos turnos abiertos a
+//    la vez. Se agregó un índice único parcial en la base de datos (solo
+//    puede haber UNA fila 'abierta' a la vez — ver SQL aparte) y el
+//    código ahora maneja ese choque (23505) leyendo cuál turno ganó la
+//    carrera en vez de fallar.
+//  - H5: la venta de mostrador ahora muestra una mini-tarjeta de
+//    confirmación (producto, cantidad, monto, cuenta, cliente) antes de
+//    grabar, y si el producto vendido nunca había tenido fila en
+//    inventario_bodega, ya no desaparece el descuento silenciosamente —
+//    se crea la fila en negativo, dejando rastro real.
+//  - H7: la validación de saldo suficiente en "Transferir entre cuentas"
+//    comparaba contra la foto del saldo tomada al abrir el modal — ahora
+//    se vuelve a leer el saldo VIGENTE justo antes de validar.
+//  - H8: el ajuste de continuidad (efectivo físico de antes del rediseño,
+//    ver nota de cabecera arriba) se sumaba a Efectivo sin dejar rastro
+//    visible — ahora "Saldos por cuenta" muestra una línea aparte
+//    explicando ese ajuste cuando aplica. `calcularSaldosPorCuenta` pasó
+//    de devolver el mapa de saldos directo a devolver
+//    `{ saldos, ajusteContinuidadEfectivo }` — se actualizaron sus 4
+//    usos (3 aquí, 1 en indicadores.js).
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -182,7 +214,31 @@ export async function obtenerOCrearTurnoDeHoy() {
     .select('id, abierto_en')
     .single();
 
-  if (errNuevo) throw errNuevo;
+  if (errNuevo) {
+    // (200 / auditoría H4) Entre el SELECT de arriba y este INSERT hay
+    // una ventana real (aunque corta) donde dos acciones casi
+    // simultáneas (dos formularios de dinero guardados a la vez, o dos
+    // pestañas abiertas) podían concluir ambas "no hay turno abierto" y
+    // las dos intentar crear uno — antes esto quedaba silencioso porque
+    // no había ninguna restricción en la base de datos que lo impidiera.
+    // Ahora existe un índice único parcial en caja_turnos (solo puede
+    // haber UNA fila con estado='abierta' a la vez — ver SQL aparte); si
+    // este INSERT choca contra esa restricción (23505), es porque la
+    // otra acción ganó la carrera una fracción de segundo antes — no es
+    // un error real, se vuelve a leer cuál quedó abierto y se usa ese.
+    if (errNuevo.code === '23505') {
+      const { data: turnoGanador, error: errGanador } = await supabase
+        .from('caja_turnos')
+        .select('id, abierto_en')
+        .eq('estado', 'abierta')
+        .order('abierto_en', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (errGanador) throw errGanador;
+      if (turnoGanador) return turnoGanador;
+    }
+    throw errNuevo;
+  }
   return turnoNuevo;
 }
 
@@ -285,14 +341,24 @@ export async function calcularSaldosPorCuenta() {
     .order('abierto_en', { ascending: true });
   if (errTurnos) throw errTurnos;
 
+  // (200 / auditoría H8) Este ajuste quedaba invisible: se sumaba directo
+  // a saldos['Efectivo'] sin dejar rastro de cuánto fue, así que "Saldos
+  // por cuenta" podía no cuadrar contra la suma visible de
+  // ingresos/egresos/transferencias y nadie tenía cómo explicar la
+  // diferencia desde la pantalla. Ahora se acumula aparte
+  // (ajusteContinuidadEfectivo) y se devuelve junto a `saldos`, para que
+  // la pantalla lo muestre como una línea propia del desglose.
+  let ajusteContinuidadEfectivo = 0;
   let saldoContadoAnterior = null;
   (turnos || []).forEach((t) => {
     const base = Number(t.saldo_inicial || 0);
-    saldos['Efectivo'] += saldoContadoAnterior === null ? base : base - saldoContadoAnterior;
+    const delta = saldoContadoAnterior === null ? base : base - saldoContadoAnterior;
+    saldos['Efectivo'] += delta;
+    ajusteContinuidadEfectivo += delta;
     if (t.estado === 'cerrada') saldoContadoAnterior = t.saldo_contado !== null ? Number(t.saldo_contado) : saldoContadoAnterior;
   });
 
-  return saldos;
+  return { saldos, ajusteContinuidadEfectivo };
 }
 
 // =========================================================
@@ -454,7 +520,7 @@ async function calcularResumenDesgloseHoy() {
 }
 
 async function calcularResumenSaldos() {
-  const saldos = await calcularSaldosPorCuenta();
+  const { saldos } = await calcularSaldosPorCuenta();
   return { total: METODOS_PAGO.reduce((s, m) => s + (saldos[m] || 0), 0) };
 }
 
@@ -903,6 +969,13 @@ async function cargarVentasMostradorHoy(container, elemento) {
 
   elemento.querySelector('#form-venta-mostrador').addEventListener('submit', async (e) => {
     e.preventDefault();
+    // (200 / auditoría H3) Protección de doble clic — ver nota de
+    // cabecera. Ya pasó en producción: doble clic mandó dos ventas
+    // idénticas con 4ms de diferencia.
+    const botonEnviarVenta = e.target.querySelector('button[type="submit"]');
+    if (botonEnviarVenta && botonEnviarVenta.disabled) return;
+    if (botonEnviarVenta) botonEnviarVenta.disabled = true;
+    try {
 
     const form = new FormData(e.target);
     const productoId = Number(form.get('producto_id'));
@@ -920,6 +993,33 @@ async function cargarVentasMostradorHoy(container, elemento) {
       if (!seguir) return;
     }
 
+    const monto = producto.precio * cantidad;
+    const metodoPagoElegido = form.get('metodo_pago');
+    const clienteNombre = form.get('cliente_nombre').trim();
+
+    // (200 / auditoría H5) Mini-tarjeta de confirmación antes de grabar:
+    // se ve exactamente lo que va a quedar registrado (producto,
+    // cantidad, monto, cuenta, cliente) para poder revisar antes de que
+    // se descuente bodega y se sume a la venta del día — mismo patrón de
+    // doble confirmación que ya usa "Registrar compra" en inventario.js.
+    const confirmarVenta = await mostrarConfirmacion({
+      titulo: 'Confirmar venta de mostrador',
+      contenidoHTML: `
+        <table class="tabla-simple">
+          <tbody>
+            <tr><td>Producto</td><td><strong>${escaparHTML(producto.nombre)}</strong></td></tr>
+            <tr><td>Cantidad</td><td>${cantidad}</td></tr>
+            <tr><td>Precio unitario</td><td>${formatCOP(producto.precio)}</td></tr>
+            <tr><td>Total</td><td><strong>${formatCOP(monto)}</strong></td></tr>
+            <tr><td>Pagado a</td><td>${escaparHTML(metodoPagoElegido || '—')}</td></tr>
+            <tr><td>Cliente</td><td>${escaparHTML(clienteNombre || '—')}</td></tr>
+          </tbody>
+        </table>
+      `,
+      textoConfirmar: 'Registrar venta',
+    });
+    if (!confirmarVenta) return;
+
     let turno;
     try {
       turno = await obtenerOCrearTurnoDeHoy();
@@ -928,7 +1028,6 @@ async function cargarVentasMostradorHoy(container, elemento) {
       return;
     }
 
-    const monto = producto.precio * cantidad;
     const usuario = getUsuarioActual();
 
     const { error: errVenta } = await supabase.from('ventas_mostrador').insert({
@@ -958,6 +1057,19 @@ async function cargarVentasMostradorHoy(container, elemento) {
         .from('inventario_bodega')
         .update({ cantidad_actual: filaBodega.cantidad_actual - cantidad, actualizado_en: new Date().toISOString() })
         .eq('id', filaBodega.id);
+    } else {
+      // (200 / auditoría H5) Antes, si el producto nunca había tenido
+      // fila en inventario_bodega, esta venta simplemente no dejaba
+      // ningún rastro en bodega (ni se creaba la fila, ni quedaba en
+      // negativo) — el descuento real desaparecía silenciosamente. Ahora
+      // se crea la fila igual que si hubiera existido, en negativo si
+      // corresponde (mismo criterio que el resto del sistema: se permite
+      // quedar en negativo, pero SIEMPRE queda un rastro real).
+      await supabase.from('inventario_bodega').insert({
+        producto_id: productoId,
+        cantidad_actual: -cantidad,
+        cantidad_minima: 0,
+      });
     }
 
     await supabase.from('inventario_movimientos').insert({
@@ -972,6 +1084,9 @@ async function cargarVentasMostradorHoy(container, elemento) {
     document.dispatchEvent(new CustomEvent('inventario:actualizado'));
     await cargarVentasMostradorHoy(container, elemento);
     await refrescarTrasMovimiento(container);
+    } finally {
+      if (botonEnviarVenta) botonEnviarVenta.disabled = false;
+    }
   });
 }
 
@@ -1179,6 +1294,11 @@ async function abrirModalMovimiento(container, elementoSeccion) {
 
   overlay.querySelector('#form-movimiento').addEventListener('submit', async (e) => {
     e.preventDefault();
+    // (200 / auditoría H3) Protección de doble clic — ver nota de cabecera.
+    const botonEnviarMovimiento = e.target.querySelector('button[type="submit"]');
+    if (botonEnviarMovimiento && botonEnviarMovimiento.disabled) return;
+    if (botonEnviarMovimiento) botonEnviarMovimiento.disabled = true;
+    try {
 
     const montoValor = valorNumericoInput(inputMontoMovimiento);
     if (montoValor <= 0) {
@@ -1218,6 +1338,9 @@ async function abrirModalMovimiento(container, elementoSeccion) {
 
     if (elementoSeccion) await cargarMovimientosManualesHoy(container, elementoSeccion);
     await refrescarTrasMovimiento(container);
+    } finally {
+      if (botonEnviarMovimiento) botonEnviarMovimiento.disabled = false;
+    }
   });
 }
 
@@ -1325,9 +1448,9 @@ async function cargarSaldosPorCuenta(container, elemento) {
   if (!elemento) return;
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando saldos por cuenta…</p>';
 
-  let saldos;
+  let saldos, ajusteContinuidadEfectivo;
   try {
-    saldos = await calcularSaldosPorCuenta();
+    ({ saldos, ajusteContinuidadEfectivo } = await calcularSaldosPorCuenta());
   } catch (error) {
     elemento.innerHTML = `<p class="mensaje-vacio">Error cargando saldos por cuenta: ${error.message}</p>`;
     return;
@@ -1358,6 +1481,11 @@ async function cargarSaldosPorCuenta(container, elemento) {
         </table>
       </div>
       <p class="mensaje-vacio" style="margin-top:0.6rem;">Es el saldo acumulado de siempre por cada medio de pago. Usa "Transferir entre cuentas" para mover saldo de un medio a otro — por ejemplo, consolidar lo acumulado en Nequi hacia Efectivo o hacia una cuenta bancaria.</p>
+      ${
+        ajusteContinuidadEfectivo !== 0
+          ? `<p class="mensaje-vacio" style="margin-top:0.4rem; font-size:0.78rem;">ℹ️ El saldo de Efectivo incluye un ajuste de continuidad de <strong>${formatCOP(ajusteContinuidadEfectivo)}</strong> proveniente de los cierres físicos históricos (de antes del rediseño de Registro diario) — no es un ingreso ni egreso nuevo, es efectivo que ya existía y que los conteos de esa época dejaron como base.</p>`
+          : ''
+      }
     </div>
   `;
 
@@ -1439,6 +1567,11 @@ async function abrirModalTransferencia(container, elementoSeccion, saldosActuale
 
   overlay.querySelector('#form-transferencia').addEventListener('submit', async (e) => {
     e.preventDefault();
+    // (200 / auditoría H3) Protección de doble clic — ver nota de cabecera.
+    const botonEnviarTransferencia = e.target.querySelector('button[type="submit"]');
+    if (botonEnviarTransferencia && botonEnviarTransferencia.disabled) return;
+    if (botonEnviarTransferencia) botonEnviarTransferencia.disabled = true;
+    try {
     const form = new FormData(e.target);
     const cuentaOrigen = form.get('cuenta_origen');
     const cuentaDestino = form.get('cuenta_destino');
@@ -1454,7 +1587,20 @@ async function abrirModalTransferencia(container, elementoSeccion, saldosActuale
       return;
     }
 
-    const saldoOrigen = saldosActuales[cuentaOrigen] || 0;
+    // (200 / auditoría H7) `saldosActuales` es la foto que había cuando
+    // se ABRIÓ este modal — si pasó tiempo (o entró otro movimiento a
+    // esa cuenta mientras tanto), validar contra esa foto vieja puede
+    // aprobar una transferencia que ya no correspondía, o advertir con
+    // un número que ya no es el real. Se vuelve a leer el saldo VIGENTE
+    // justo antes de validar.
+    let saldoOrigen = saldosActuales[cuentaOrigen] || 0;
+    try {
+      const { saldos: saldosVigentes } = await calcularSaldosPorCuenta();
+      saldoOrigen = saldosVigentes[cuentaOrigen] || 0;
+    } catch (errSaldos) {
+      // Si falla la relectura, se sigue con la foto que ya había en vez
+      // de bloquear la transferencia por completo.
+    }
     if (monto > saldoOrigen) {
       const ok = await mostrarConfirmacion({
         titulo: 'Saldo insuficiente en la cuenta de origen',
@@ -1481,6 +1627,9 @@ async function abrirModalTransferencia(container, elementoSeccion, saldosActuale
     mostrarToast(`Transferidos ${formatCOP(monto)} de ${cuentaOrigen} a ${cuentaDestino}.`, 'exito');
     overlay.remove();
     if (elementoSeccion) await cargarSaldosPorCuenta(container, elementoSeccion);
+    } finally {
+      if (botonEnviarTransferencia) botonEnviarTransferencia.disabled = false;
+    }
   });
 }
 
