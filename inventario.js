@@ -144,6 +144,14 @@
 // ahora (a este costo) — si no había existencias previas, se usa
 // directamente el costo de esta compra, igual que antes.
 //
+// Nota (200 / auditoría H12): "Alertas de inventario" solo detectaba
+// bodega en negativo y stock huérfano en habitaciones desactivadas —
+// una habitación ACTIVA cuyo minibar quedara en negativo (consumo
+// registrado sin stock real, por ejemplo) no se veía aquí. Se agregó
+// esa tercera detección (ver `calcularResumenAlertas`). El consumo
+// SIGUE permitiendo quedar en negativo (no se bloquea) — ver también la
+// advertencia agregada en consumo-minibar.js al momento de registrar.
+//
 // Nota sobre "tiene_minibar" (ver 109/111): las habitaciones marcadas
 // como sin minibar (uso administrativo, arriendo mensual, etc.) no
 // aparecen en "Pendientes de reponer", "Reabastecer habitación" ni el
@@ -524,13 +532,22 @@ function abrirModalSeccion(id, elementoResumen) {
 // preguntar por ellas, aparecen solas en el resumen.
 // =========================================================
 async function calcularResumenAlertas() {
-  const [{ data: bodegaNegativa }, { data: huerfanos }] = await Promise.all([
+  const [{ data: bodegaNegativa }, { data: huerfanos }, { data: negativosHabitacion }] = await Promise.all([
     supabase.from('inventario_bodega').select('producto_id, cantidad_actual, minibar_productos(nombre)').lt('cantidad_actual', 0),
     supabase
       .from('inventario_habitacion')
       .select('habitacion_id, producto_id, cantidad_actual, habitaciones!inner(numero, tiene_minibar), minibar_productos(nombre)')
       .eq('habitaciones.tiene_minibar', false)
       .gt('cantidad_actual', 0),
+    // (200 / auditoría H12): antes solo se alertaba negativo en bodega —
+    // un minibar de habitación ACTIVA en negativo (consumo registrado sin
+    // que hubiera stock real, por ejemplo) no se detectaba solo, había
+    // que toparse con él a mano.
+    supabase
+      .from('inventario_habitacion')
+      .select('habitacion_id, producto_id, cantidad_actual, habitaciones!inner(numero, tiene_minibar), minibar_productos(nombre)')
+      .eq('habitaciones.tiene_minibar', true)
+      .lt('cantidad_actual', 0),
   ]);
 
   const detalle = [
@@ -542,6 +559,12 @@ async function calcularResumenAlertas() {
         `Stock huérfano en habitación desactivada: ${h.minibar_productos?.nombre || `#${h.producto_id}`} en habitación ${
           h.habitaciones?.numero || h.habitacion_id
         } (${h.cantidad_actual} unidad(es)) — usa "Vaciar minibar" en Configuración → Habitaciones.`
+    ),
+    ...(negativosHabitacion || []).map(
+      (h) =>
+        `Minibar en negativo: ${h.minibar_productos?.nombre || `#${h.producto_id}`} en habitación ${
+          h.habitaciones?.numero || h.habitacion_id
+        } (${h.cantidad_actual} unidad(es)) — revisar si falta reponer o si se registró un consumo de más.`
     ),
   ];
 
@@ -558,7 +581,7 @@ async function cargarAlertasInventario(elemento) {
       <p class="mensaje-vacio" style="margin-bottom:1rem;">Anomalías que el sistema detecta solo — sin esperar a un conteo físico ni a que alguien pregunte por ellas.</p>
       ${
         cantidad === 0
-          ? '<p class="mensaje-vacio">✅ No se detectó ninguna anomalía — bodega sin negativos y sin stock huérfano en habitaciones desactivadas.</p>'
+          ? '<p class="mensaje-vacio">✅ No se detectó ninguna anomalía — bodega y minibares activos sin negativos, y sin stock huérfano en habitaciones desactivadas.</p>'
           : `<ul style="margin:0; padding-left:1.2rem;">${detalle.map((d) => `<li style="margin-bottom:0.6rem;">${escaparHTML(d)}</li>`).join('')}</ul>`
       }
     </div>
