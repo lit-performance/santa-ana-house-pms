@@ -1,4 +1,3 @@
-
 // gastos.js
 //
 // Módulo: Gastos. Registro rápido de gastos operativos del hotel (agua,
@@ -44,6 +43,10 @@
 // financiero sin dejar rastro. Ahora "🗑 Eliminar" queda bajo un rol
 // aparte (ROLES_ELIMINAN, propietario/administrador únicamente),
 // separado de quién puede registrar gastos nuevos.
+//
+// Nota (201 / auditoría H3): "Registrar gasto" no tenía protección de
+// doble clic — mismo patrón agregado en los 3 formularios de dinero de
+// caja.js (ver nota ahí, incluye el incidente real que lo motivó).
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -167,6 +170,13 @@ async function cargarFormNuevoGasto(elemento, container) {
 
   elemento.querySelector('#form-nuevo-gasto').addEventListener('submit', async (e) => {
     e.preventDefault();
+    // (201 / auditoría H3) Protección de doble clic — ver nota de
+    // cabecera en caja.js (mismo patrón, mismo incidente real que lo
+    // motivó).
+    const botonEnviarGasto = e.target.querySelector('button[type="submit"]');
+    if (botonEnviarGasto && botonEnviarGasto.disabled) return;
+    if (botonEnviarGasto) botonEnviarGasto.disabled = true;
+    try {
 
     const montoValor = valorNumericoInput(inputMonto);
     if (montoValor <= 0) {
@@ -216,6 +226,9 @@ async function cargarFormNuevoGasto(elemento, container) {
       const formFiltro = container.querySelector('#form-filtro-gastos');
       const fd = new FormData(formFiltro);
       await cargarListaGastos(wrapLista, fd.get('fecha_inicio'), fd.get('fecha_fin'));
+    }
+    } finally {
+      if (botonEnviarGasto) botonEnviarGasto.disabled = false;
     }
   });
 }
