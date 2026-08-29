@@ -133,6 +133,17 @@
 // dejarlo sin asignar), tanto en compra nueva como en edición de
 // compra, igual que ya hacía la edición directa desde Bodega.
 //
+// Nota (196 / auditoría H16): al registrar (o editar) una compra, el
+// precio_costo del producto se pisaba directo con el costo de la última
+// compra, sin importar cuánto stock ya hubiera a un costo distinto. Solo
+// afecta la ficha de valoración de este mismo módulo (Contabilidad no
+// usa este campo, ver H10/H11) pero sí puede distorsionar el costo real
+// del producto si el precio varía entre compras. Ahora, si ya había
+// existencias (cantidad > 0), el precio_costo que se guarda es el
+// promedio ponderado entre lo que ya había (a su costo) y lo que entra
+// ahora (a este costo) — si no había existencias previas, se usa
+// directamente el costo de esta compra, igual que antes.
+//
 // Nota sobre "tiene_minibar" (ver 109/111): las habitaciones marcadas
 // como sin minibar (uso administrativo, arriendo mensual, etc.) no
 // aparecen en "Pendientes de reponer", "Reabastecer habitación" ni el
@@ -1988,7 +1999,7 @@ async function guardarCompraNueva({ lineas, proveedorId, proveedorNombre, metodo
 
     const { data: filaBodega, error: errFila } = await supabase
       .from('inventario_bodega')
-      .select('id, cantidad_actual')
+      .select('id, cantidad_actual, precio_costo')
       .eq('producto_id', linea.productoId)
       .maybeSingle();
     if (errFila) {
@@ -1996,9 +2007,22 @@ async function guardarCompraNueva({ lineas, proveedorId, proveedorNombre, metodo
       continue;
     }
 
+    const cantidadExistente = Number(filaBodega?.cantidad_actual || 0);
+    const costoExistente = Number(filaBodega?.precio_costo || 0);
+    const cantidadNuevaTotal = cantidadExistente + linea.cantidad;
+    // (196 / H16) Promedio ponderado: si ya había existencias con un
+    // costo distinto, el nuevo precio_costo no es simplemente "lo último
+    // que se pagó" — es el promedio entre lo que ya había (a su costo) y
+    // lo que entra ahora (a este costo), ponderado por cantidad. Si no
+    // había existencias previas (o estaban en 0), el costo nuevo es
+    // directamente el de esta compra.
+    const precioCostoPromedio = cantidadNuevaTotal > 0 && cantidadExistente > 0
+      ? (cantidadExistente * costoExistente + linea.cantidad * linea.costo) / cantidadNuevaTotal
+      : linea.costo;
+
     const payloadUpdate = {
-      cantidad_actual: (filaBodega?.cantidad_actual || 0) + linea.cantidad,
-      precio_costo: linea.costo,
+      cantidad_actual: cantidadNuevaTotal,
+      precio_costo: precioCostoPromedio,
       actualizado_en: new Date().toISOString(),
     };
     payloadUpdate.proveedor_id = proveedorId;
@@ -2313,10 +2337,17 @@ async function guardarEdicionCompra({ compra, lineasAnteriores, lineasNuevas, pr
   for (const linea of lineasNuevas) {
     totalCompra += linea.cantidad * linea.costo;
 
-    const { data: filaBodega } = await supabase.from('inventario_bodega').select('id, cantidad_actual').eq('producto_id', linea.productoId).maybeSingle();
+    const { data: filaBodega } = await supabase.from('inventario_bodega').select('id, cantidad_actual, precio_costo').eq('producto_id', linea.productoId).maybeSingle();
+    const cantidadExistente = Number(filaBodega?.cantidad_actual || 0);
+    const costoExistente = Number(filaBodega?.precio_costo || 0);
+    const cantidadNuevaTotal = cantidadExistente + linea.cantidad;
+    // (196 / H16) Mismo promedio ponderado que en guardarCompraNueva.
+    const precioCostoPromedio = cantidadNuevaTotal > 0 && cantidadExistente > 0
+      ? (cantidadExistente * costoExistente + linea.cantidad * linea.costo) / cantidadNuevaTotal
+      : linea.costo;
     const payloadUpdate = {
-      cantidad_actual: (filaBodega?.cantidad_actual || 0) + linea.cantidad,
-      precio_costo: linea.costo,
+      cantidad_actual: cantidadNuevaTotal,
+      precio_costo: precioCostoPromedio,
       actualizado_en: new Date().toISOString(),
     };
     payloadUpdate.proveedor_id = proveedorId;
