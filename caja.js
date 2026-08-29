@@ -124,6 +124,9 @@
 //    de devolver el mapa de saldos directo a devolver
 //    `{ saldos, ajusteContinuidadEfectivo }` — se actualizaron sus 4
 //    usos (3 aquí, 1 en indicadores.js).
+//  - H6: la Categoría de "Nuevo movimiento" (texto libre) ahora se
+//    bloquea si coincide con una categoría reservada de Gastos o
+//    "Compras", para que no se mezcle silenciosamente en esas tarjetas.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -1317,10 +1320,23 @@ async function abrirModalMovimiento(container, elementoSeccion) {
     const form = new FormData(e.target);
     const usuario = getUsuarioActual();
     const fechaManual = form.get('fecha_manual');
+    const categoriaIngresada = form.get('categoria').trim();
+    // (200 / auditoría H6) Antes era texto libre sin ningún control — si
+    // por accidente coincidía con una categoría real de Gastos (Agua,
+    // Luz, Gas…) o "Compras", este movimiento manual se mezclaba
+    // silenciosamente en esas tarjetas (que filtran por nombre exacto de
+    // categoría), como si fuera un gasto o una compra real. Se bloquea
+    // esa coincidencia (sin importar mayúsculas/espacios) antes de
+    // guardar, con un mensaje que dice por dónde registrarlo en su lugar.
+    const categoriasReservadas = [...CATEGORIAS_GASTOS, CATEGORIA_COMPRAS];
+    if (categoriaIngresada && categoriasReservadas.some((c) => c.toLowerCase() === categoriaIngresada.toLowerCase())) {
+      mostrarToast(`"${categoriaIngresada}" es una categoría reservada para Gastos/Compras — regístralo desde ese módulo, no aquí como movimiento manual.`, 'error');
+      return;
+    }
     const payload = {
       turno_id: turno.id,
       tipo: form.get('tipo'),
-      categoria: form.get('categoria').trim() || null,
+      categoria: categoriaIngresada || null,
       monto: montoValor,
       metodo_pago: form.get('metodo_pago'),
       descripcion: form.get('descripcion').trim() || null,
