@@ -325,7 +325,7 @@ async function cargarPanelPropietario(container) {
 async function cargarSaldosCuentas(container) {
   const wrap = container.querySelector('#panel-saldos-wrap');
   try {
-    const saldos = await calcularSaldosPorCuenta();
+    const { saldos } = await calcularSaldosPorCuenta();
     const entradas = Object.entries(saldos).sort((a, b) => b[1] - a[1]);
     const colores = ['var(--color-azul)', 'var(--color-verde)', 'var(--color-pendiente)', '#6a3fb5', 'var(--color-rojo)', 'var(--color-azul-oscuro)', 'var(--color-verde-oscuro)'];
 
