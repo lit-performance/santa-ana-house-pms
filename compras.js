@@ -39,6 +39,13 @@
 // que hacen lo mismo. Antes de reactivarlo, hay que decidir cuál de los
 // dos flujos queda como el oficial (o unificarlos), no simplemente
 // volver a registrar el módulo.
+//
+// Nota (208 / auditoría H20): "Marcar recibido" no tenía protección de
+// doble clic ni revalidaba el estado vigente de la orden antes de sumar
+// a bodega — un doble clic (o una orden ya recibida por otra vía)
+// podía duplicar silenciosamente el stock y el costo. Se agregó ambas
+// protecciones. Sigue siendo código desactivado (ver arriba) — este
+// arreglo queda listo para cuando/si se reactive.
 
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -323,13 +330,33 @@ export async function cargarListaOrdenes(elemento) {
 
   elemento.querySelectorAll('.btn-recibido').forEach((btn) => {
     btn.addEventListener('click', async () => {
+      // (208 / auditoría H20) Protección de doble clic — mismo patrón
+      // que en caja.js/gastos.js (ver nota de cabecera de caja.js).
+      if (btn.disabled) return;
+      btn.disabled = true;
+
       const ordenId = Number(btn.dataset.ordenId);
       const ok = await mostrarConfirmacion({
         titulo: 'Marcar como recibido',
         contenidoHTML: 'Esto suma las cantidades de esta orden a las existencias de bodega y actualiza el precio de costo de cada producto. ¿Continuar?',
         textoConfirmar: 'Sí, ya llegó',
       });
-      if (!ok) return;
+      if (!ok) {
+        btn.disabled = false;
+        return;
+      }
+
+      // (208 / auditoría H20) Revalidación de estado: antes se sumaba a
+      // bodega sin volver a comprobar el estado VIGENTE de la orden —
+      // si ya estaba 'recibido' (por un doble clic, u otra pestaña),
+      // esto volvía a sumar todo de nuevo, duplicando stock y costo.
+      const { data: ordenVigente, error: errVigente } = await supabase.from('ordenes_compra').select('estado').eq('id', ordenId).maybeSingle();
+      if (errVigente || !ordenVigente || ordenVigente.estado === 'recibido' || ordenVigente.estado === 'cancelado') {
+        mostrarToast('Esta orden ya no está pendiente de recibir — revisa la lista actualizada.', 'error');
+        btn.disabled = false;
+        await cargarListaOrdenes(elemento);
+        return;
+      }
 
       const itemsOrden = itemsPorOrden.get(ordenId) || [];
       const usuario = getUsuarioActual();
@@ -376,6 +403,7 @@ export async function cargarListaOrdenes(elemento) {
 
       if (errOrden) {
         mostrarToast(`Bodega actualizada, pero no se pudo marcar la orden como recibida: ${errOrden.message}`, 'error');
+        btn.disabled = false;
         return;
       }
 
