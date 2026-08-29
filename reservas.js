@@ -5,6 +5,14 @@
 // (fechas, cambio de habitación, estado, abonos/pagos, comentarios) al
 // hacer clic en una reserva existente.
 //
+// Nota (193 / H24): igual que en recepcion.js, el monto sugerido (noches ×
+// tarifa) ignoraba las tarifas "por días" (tipo 'por_dias'), que guardan su
+// precio real en `valor_convenido` (total fijo de la estadía) y dejan
+// `precio_temporada_baja` en 0 a propósito. Eso hacía que cualquier tarifa
+// "por días" (ej. Tarifa F) sugiriera siempre $0. Ahora se revisa el tipo de
+// tarifa antes de calcular: "por días" usa `valor_convenido` tal cual, sin
+// importar la cantidad de noches.
+//
 // Nota de alcance: se implementó clic-para-crear/editar en vez de
 // arrastrar-y-soltar (drag & drop) — cumple la misma función ("cambio de
 // habitación", "modificar fechas") sin la complejidad de un motor de drag
@@ -348,7 +356,7 @@ async function abrirModalReserva(container, reserva, prellenado) {
             <select name="tarifa_id">
               <option value="">—</option>
               ${(tarifas || [])
-                .map((t) => `<option value="${t.id}" ${editando && reserva.tarifa_id === t.id ? 'selected' : ''}>${t.codigo} — ${formatCOP(t.precio_temporada_baja)}</option>`)
+                .map((t) => `<option value="${t.id}" ${editando && reserva.tarifa_id === t.id ? 'selected' : ''}>${t.codigo} — ${formatCOP(t.tipo === 'por_dias' ? t.valor_convenido : t.precio_temporada_baja)}</option>`)
                 .join('')}
             </select>
           </label>
@@ -430,8 +438,14 @@ async function abrirModalReserva(container, reserva, prellenado) {
   function recalcularMontoAutomatico() {
     if (montoEditadoManualmente) return;
     const tarifa = (tarifas || []).find((t) => t.id === Number(selectTarifa.value));
+    if (!tarifa) return;
+    if (tarifa.tipo === 'por_dias') {
+      inputMonto.value = Number(tarifa.valor_convenido);
+      activarInputDinero(inputMonto);
+      return;
+    }
     const noches = calcularNoches(inputCheckin.value, inputCheckout.value);
-    if (!tarifa || noches <= 0) return;
+    if (noches <= 0) return;
     inputMonto.value = noches * Number(tarifa.precio_temporada_baja);
     activarInputDinero(inputMonto);
   }
@@ -453,7 +467,13 @@ async function abrirModalReserva(container, reserva, prellenado) {
     avisoMontoCambioFechas.classList.toggle('oculto', !cambiaron);
     if (cambiaron) {
       const tarifa = (tarifas || []).find((t) => t.id === Number(selectTarifa.value));
-      const sugerido = tarifa && nochesAhora > 0 ? nochesAhora * Number(tarifa.precio_temporada_baja) : 0;
+      const sugerido = !tarifa
+        ? 0
+        : tarifa.tipo === 'por_dias'
+        ? Number(tarifa.valor_convenido)
+        : nochesAhora > 0
+        ? nochesAhora * Number(tarifa.precio_temporada_baja)
+        : 0;
       spanMontoSugeridoEditar.textContent = formatCOP(sugerido);
     }
   }
