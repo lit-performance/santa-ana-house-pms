@@ -123,6 +123,16 @@
 // negativo, bloqueando el guardado de la línea igual que ya hacía la
 // cantidad.
 //
+// Nota (195 / auditoría H18): al registrar o editar una compra, si se
+// dejaba el proveedor en blanco, `inventario_movimientos` sí guardaba
+// esa ausencia correctamente, pero `inventario_bodega` (la ficha
+// vigente del producto) NO se actualizaba — el payload solo incluía
+// `proveedor_id` cuando SÍ se elegía uno, así que el proveedor anterior
+// quedaba pegado aunque el usuario lo hubiera quitado a propósito al
+// editar. Ahora `proveedor_id` siempre se escribe (incluido `null` para
+// dejarlo sin asignar), tanto en compra nueva como en edición de
+// compra, igual que ya hacía la edición directa desde Bodega.
+//
 // Nota sobre "tiene_minibar" (ver 109/111): las habitaciones marcadas
 // como sin minibar (uso administrativo, arriendo mensual, etc.) no
 // aparecen en "Pendientes de reponer", "Reabastecer habitación" ni el
@@ -1991,7 +2001,7 @@ async function guardarCompraNueva({ lineas, proveedorId, proveedorNombre, metodo
       precio_costo: linea.costo,
       actualizado_en: new Date().toISOString(),
     };
-    if (proveedorId !== null) payloadUpdate.proveedor_id = proveedorId;
+    payloadUpdate.proveedor_id = proveedorId;
 
     if (filaBodega) {
       await supabase.from('inventario_bodega').update(payloadUpdate).eq('id', filaBodega.id);
@@ -2309,7 +2319,7 @@ async function guardarEdicionCompra({ compra, lineasAnteriores, lineasNuevas, pr
       precio_costo: linea.costo,
       actualizado_en: new Date().toISOString(),
     };
-    if (proveedorId !== null) payloadUpdate.proveedor_id = proveedorId;
+    payloadUpdate.proveedor_id = proveedorId;
 
     if (filaBodega) {
       await supabase.from('inventario_bodega').update(payloadUpdate).eq('id', filaBodega.id);
