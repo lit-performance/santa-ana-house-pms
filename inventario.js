@@ -152,6 +152,21 @@
 // SIGUE permitiendo quedar en negativo (no se bloquea) — ver también la
 // advertencia agregada en consumo-minibar.js al momento de registrar.
 //
+// Nota (207 / auditoría H14 + H19): dos operaciones que antes hacían
+// varios pasos sueltos desde el navegador (select → calcular → escribir)
+// ahora corren como funciones de Postgres (RPC), para que sean atómicas
+// de verdad — ver SQL entregado aparte:
+//  - `ajustarInventarioHabitacion` (H14): el incremento de stock de
+//    habitación ya no tiene la ventana de carrera entre leer y escribir.
+//  - Registrar/editar una compra (H19): `guardarCompraNueva` y
+//    `guardarEdicionCompra` ahora llaman a `registrar_compra_bodega` /
+//    `editar_compra_bodega`, que hacen TODA la compra (cada línea +
+//    el egreso de Caja) en una sola transacción — si algo falla a
+//    mitad de camino, se revierte solo, nunca queda a medias. Ambas
+//    funciones ahora devuelven `{ ok, total }` en vez de lanzar, así que
+//    quien las llama solo muestra "Compra registrada/actualizada" si de
+//    verdad se guardó.
+//
 // Nota sobre "tiene_minibar" (ver 109/111): las habitaciones marcadas
 // como sin minibar (uso administrativo, arriendo mensual, etc.) no
 // aparecen en "Pendientes de reponer", "Reabastecer habitación" ni el
@@ -2004,94 +2019,50 @@ function abrirModalResumenCompra({ lineas, proveedorNombre, metodoPago, textoCon
 // Ejecuta el guardado real de una compra NUEVA: suma cada línea a bodega,
 // deja registro en inventario_movimientos (con grupo_compra y
 // proveedor_id, ver nota 146/150) y un único egreso en caja_movimientos.
+// (207 / auditoría H19): antes esto era un for-loop que iba escribiendo
+// línea por línea (bodega + movimiento) y al final un insert aparte en
+// Caja, sumando el total ANTES de confirmar que cada línea se hubiera
+// guardado bien — si una línea fallaba a mitad de camino, Caja podía
+// quedar cobrando más de lo que realmente entró a bodega, sin aviso.
+// Ahora todo el proceso corre dentro de una función de Postgres
+// (`registrar_compra_bodega`, ver SQL entregado aparte) como una sola
+// transacción: si cualquier línea falla, TODA la compra se revierte
+// sola — nunca queda ni bodega ni Caja a medias. Devuelve
+// `{ ok, total }` en vez de lanzar, para que quien la llama sepa si de
+// verdad se guardó antes de mostrar "Compra registrada".
 async function guardarCompraNueva({ lineas, proveedorId, proveedorNombre, metodoPago, notas }) {
   let turno;
   try {
     turno = await obtenerOCrearTurnoDeHoy();
   } catch (errTurno) {
     mostrarToast(`No se pudo registrar la compra: ${errTurno.message}`, 'error');
-    throw errTurno;
+    return { ok: false };
   }
 
   const usuario = getUsuarioActual();
   const grupoCompra = generarGrupoCompra();
-  let totalCompra = 0;
-
-  for (const linea of lineas) {
-    totalCompra += linea.cantidad * linea.costo;
-
-    const { data: filaBodega, error: errFila } = await supabase
-      .from('inventario_bodega')
-      .select('id, cantidad_actual, precio_costo')
-      .eq('producto_id', linea.productoId)
-      .maybeSingle();
-    if (errFila) {
-      mostrarToast(`Error con "${linea.nombre}": ${errFila.message}`, 'error');
-      continue;
-    }
-
-    const cantidadExistente = Number(filaBodega?.cantidad_actual || 0);
-    const costoExistente = Number(filaBodega?.precio_costo || 0);
-    const cantidadNuevaTotal = cantidadExistente + linea.cantidad;
-    // (196 / H16) Promedio ponderado: si ya había existencias con un
-    // costo distinto, el nuevo precio_costo no es simplemente "lo último
-    // que se pagó" — es el promedio entre lo que ya había (a su costo) y
-    // lo que entra ahora (a este costo), ponderado por cantidad. Si no
-    // había existencias previas (o estaban en 0), el costo nuevo es
-    // directamente el de esta compra.
-    const precioCostoPromedio = cantidadNuevaTotal > 0 && cantidadExistente > 0
-      ? (cantidadExistente * costoExistente + linea.cantidad * linea.costo) / cantidadNuevaTotal
-      : linea.costo;
-
-    const payloadUpdate = {
-      cantidad_actual: cantidadNuevaTotal,
-      precio_costo: precioCostoPromedio,
-      actualizado_en: new Date().toISOString(),
-    };
-    payloadUpdate.proveedor_id = proveedorId;
-
-    if (filaBodega) {
-      await supabase.from('inventario_bodega').update(payloadUpdate).eq('id', filaBodega.id);
-    } else {
-      await supabase.from('inventario_bodega').insert({
-        producto_id: linea.productoId,
-        cantidad_actual: linea.cantidad,
-        cantidad_minima: 0,
-        precio_costo: linea.costo,
-        proveedor_id: proveedorId,
-      });
-    }
-
-    await supabase.from('inventario_movimientos').insert({
-      tipo: 'compra_bodega',
-      producto_id: linea.productoId,
-      cantidad: linea.cantidad,
-      precio_costo: linea.costo,
-      proveedor_id: proveedorId,
-      notas: notas || null,
-      registrado_por: usuario?.id || null,
-      grupo_compra: grupoCompra,
-    });
-  }
 
   const descripcion = [proveedorNombre ? `Proveedor: ${proveedorNombre}` : null, `Productos: ${lineas.map((l) => `${l.nombre} (${l.cantidad})`).join(', ')}`, notas || null]
     .filter(Boolean)
     .join(' — ');
 
-  const { error: errCaja } = await supabase.from('caja_movimientos').insert({
-    turno_id: turno.id,
-    tipo: 'egreso',
-    categoria: 'Compras',
-    monto: totalCompra,
-    metodo_pago: metodoPago,
-    descripcion,
-    registrado_por: usuario?.id || null,
-    grupo_compra: grupoCompra,
+  const { data: total, error } = await supabase.rpc('registrar_compra_bodega', {
+    p_lineas: lineas.map((l) => ({ producto_id: l.productoId, cantidad: l.cantidad, costo: l.costo })),
+    p_proveedor_id: proveedorId,
+    p_notas: notas || null,
+    p_grupo_compra: grupoCompra,
+    p_usuario_id: usuario?.id || null,
+    p_turno_id: turno.id,
+    p_metodo_pago: metodoPago,
+    p_descripcion: descripcion,
   });
 
-  if (errCaja) {
-    mostrarToast(`La compra quedó registrada en bodega, pero hubo un error registrando el pago en Caja: ${errCaja.message}`, 'error');
+  if (error) {
+    mostrarToast(`Error registrando la compra — no se guardó nada (se revirtió sola): ${error.message}`, 'error');
+    return { ok: false };
   }
+
+  return { ok: true, total: Number(total) };
 }
 
 async function cargarSeccionCompras(elemento) {
@@ -2211,9 +2182,9 @@ async function cargarSeccionCompras(elemento) {
       metodoPago,
       textoConfirmar: '✅ Confirmar compra',
       onConfirmar: async () => {
-        await guardarCompraNueva({ lineas, proveedorId, proveedorNombre, metodoPago, notas });
-        const total = lineas.reduce((sum, l) => sum + l.cantidad * l.costo, 0);
-        mostrarToast(`Compra registrada: ${formatCOP(total)} pagados desde ${metodoPago}.`, 'exito');
+        const resultado = await guardarCompraNueva({ lineas, proveedorId, proveedorNombre, metodoPago, notas });
+        if (!resultado.ok) return;
+        mostrarToast(`Compra registrada: ${formatCOP(resultado.total)} pagados desde ${metodoPago}.`, 'exito');
         document.dispatchEvent(new CustomEvent('inventario:actualizado'));
         const wrapBodega = document.querySelector('#inv-bodega-wrap');
         if (wrapBodega) await cargarInventarioBodega(wrapBodega);
@@ -2344,65 +2315,36 @@ async function eliminarCompraRegistrada(compra, elementoSeccionCompras) {
 // inserta) la fila de Caja de esa compra. Nota: las "Notas" originales no
 // se recuperan al editar (solo quedaban guardadas dentro del texto de la
 // descripción) — si hacían falta, se pueden volver a escribir.
+//
+// (207 / auditoría H19): mismo cambio que guardarCompraNueva — todo el
+// proceso (revertir líneas viejas, borrar sus movimientos, aplicar
+// líneas nuevas y actualizar Caja) corre dentro de una función de
+// Postgres (`editar_compra_bodega`) como una sola transacción. Devuelve
+// `{ ok, total }` en vez de lanzar.
 async function guardarEdicionCompra({ compra, lineasAnteriores, lineasNuevas, proveedorId, proveedorNombre, metodoPago }) {
   const usuario = getUsuarioActual();
-
-  for (const linea of lineasAnteriores) {
-    const { data: filaBodega } = await supabase.from('inventario_bodega').select('id, cantidad_actual').eq('producto_id', linea.producto_id).maybeSingle();
-    if (filaBodega) {
-      const nuevaCantidad = Math.max(0, Number(filaBodega.cantidad_actual) - Number(linea.cantidad));
-      await supabase.from('inventario_bodega').update({ cantidad_actual: nuevaCantidad, actualizado_en: new Date().toISOString() }).eq('id', filaBodega.id);
-    }
-  }
-  await supabase.from('inventario_movimientos').delete().eq('grupo_compra', compra.grupo_compra).eq('tipo', 'compra_bodega');
-
-  let totalCompra = 0;
-  for (const linea of lineasNuevas) {
-    totalCompra += linea.cantidad * linea.costo;
-
-    const { data: filaBodega } = await supabase.from('inventario_bodega').select('id, cantidad_actual, precio_costo').eq('producto_id', linea.productoId).maybeSingle();
-    const cantidadExistente = Number(filaBodega?.cantidad_actual || 0);
-    const costoExistente = Number(filaBodega?.precio_costo || 0);
-    const cantidadNuevaTotal = cantidadExistente + linea.cantidad;
-    // (196 / H16) Mismo promedio ponderado que en guardarCompraNueva.
-    const precioCostoPromedio = cantidadNuevaTotal > 0 && cantidadExistente > 0
-      ? (cantidadExistente * costoExistente + linea.cantidad * linea.costo) / cantidadNuevaTotal
-      : linea.costo;
-    const payloadUpdate = {
-      cantidad_actual: cantidadNuevaTotal,
-      precio_costo: precioCostoPromedio,
-      actualizado_en: new Date().toISOString(),
-    };
-    payloadUpdate.proveedor_id = proveedorId;
-
-    if (filaBodega) {
-      await supabase.from('inventario_bodega').update(payloadUpdate).eq('id', filaBodega.id);
-    } else {
-      await supabase.from('inventario_bodega').insert({
-        producto_id: linea.productoId,
-        cantidad_actual: linea.cantidad,
-        cantidad_minima: 0,
-        precio_costo: linea.costo,
-        proveedor_id: proveedorId,
-      });
-    }
-
-    await supabase.from('inventario_movimientos').insert({
-      tipo: 'compra_bodega',
-      producto_id: linea.productoId,
-      cantidad: linea.cantidad,
-      precio_costo: linea.costo,
-      proveedor_id: proveedorId,
-      registrado_por: usuario?.id || null,
-      grupo_compra: compra.grupo_compra,
-    });
-  }
 
   const descripcion = [proveedorNombre ? `Proveedor: ${proveedorNombre}` : null, `Productos: ${lineasNuevas.map((l) => `${l.nombre} (${l.cantidad})`).join(', ')}`]
     .filter(Boolean)
     .join(' — ');
 
-  await supabase.from('caja_movimientos').update({ monto: totalCompra, metodo_pago: metodoPago, descripcion }).eq('id', compra.id);
+  const { data: total, error } = await supabase.rpc('editar_compra_bodega', {
+    p_lineas_anteriores: lineasAnteriores.map((l) => ({ producto_id: l.producto_id, cantidad: l.cantidad })),
+    p_lineas_nuevas: lineasNuevas.map((l) => ({ producto_id: l.productoId, cantidad: l.cantidad, costo: l.costo })),
+    p_proveedor_id: proveedorId,
+    p_grupo_compra: compra.grupo_compra,
+    p_usuario_id: usuario?.id || null,
+    p_caja_movimiento_id: compra.id,
+    p_metodo_pago: metodoPago,
+    p_descripcion: descripcion,
+  });
+
+  if (error) {
+    mostrarToast(`Error editando la compra — no se guardó ningún cambio (se revirtió solo): ${error.message}`, 'error');
+    return { ok: false };
+  }
+
+  return { ok: true, total: Number(total) };
 }
 
 async function abrirModalEditarCompra(compra, elementoSeccionCompras) {
@@ -2495,7 +2437,8 @@ async function abrirModalEditarCompra(compra, elementoSeccionCompras) {
       metodoPago,
       textoConfirmar: '✅ Guardar cambios',
       onConfirmar: async () => {
-        await guardarEdicionCompra({ compra, lineasAnteriores: lineasDb, lineasNuevas: lineas, proveedorId, proveedorNombre, metodoPago });
+        const resultado = await guardarEdicionCompra({ compra, lineasAnteriores: lineasDb, lineasNuevas: lineas, proveedorId, proveedorNombre, metodoPago });
+        if (!resultado.ok) return;
         mostrarToast('Compra actualizada.', 'exito');
         document.dispatchEvent(new CustomEvent('inventario:actualizado'));
         const wrapBodega = document.querySelector('#inv-bodega-wrap');
@@ -2819,34 +2762,22 @@ async function cargarSeccionReabastecer(elemento) {
 // A propósito NUNCA toca inventario_bodega — quien la llama decide si
 // además debe moverse stock de bodega (ver ejecutarReabastecimiento /
 // trasladarSinConfirmar más arriba) o no.
+//
+// (207 / auditoría H14): antes esto era select → calcular en el
+// navegador → escribir, con una ventana real de carrera entre el select
+// y el update. Ahora es una sola llamada a una función de Postgres
+// (`ajustar_inventario_habitacion`, ver SQL entregado aparte) que hace
+// el incremento de forma atómica en la base de datos — ya no hay
+// ventana donde algo más se pueda meter en medio.
 export async function ajustarInventarioHabitacion(habitacionId, productoId, delta, usuarioId, tipoMovimiento) {
-  const { data: fila } = await supabase
-    .from('inventario_habitacion')
-    .select('id, cantidad_actual')
-    .eq('habitacion_id', habitacionId)
-    .eq('producto_id', productoId)
-    .maybeSingle();
-
-  if (fila) {
-    await supabase
-      .from('inventario_habitacion')
-      .update({ cantidad_actual: fila.cantidad_actual + delta, actualizado_en: new Date().toISOString() })
-      .eq('id', fila.id);
-  } else {
-    await supabase.from('inventario_habitacion').insert({
-      habitacion_id: habitacionId,
-      producto_id: productoId,
-      cantidad_actual: delta,
-    });
-  }
-
-  await supabase.from('inventario_movimientos').insert({
-    tipo: tipoMovimiento,
-    producto_id: productoId,
-    habitacion_id: habitacionId,
-    cantidad: Math.abs(delta),
-    registrado_por: usuarioId,
+  const { error } = await supabase.rpc('ajustar_inventario_habitacion', {
+    p_habitacion_id: habitacionId,
+    p_producto_id: productoId,
+    p_delta: delta,
+    p_usuario_id: usuarioId,
+    p_tipo_movimiento: tipoMovimiento,
   });
+  if (error) throw error;
 }
 
 // =========================================================
