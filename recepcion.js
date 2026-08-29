@@ -128,6 +128,12 @@
 // cual (precio de paquete fijo, sin importar cuántas noches se elijan);
 // si no, sigue siendo noches × precio por noche, igual que siempre.
 //
+// Nota (200 / auditoría H13): los dos consumos de minibar que se
+// agregan/editan directo desde la ventana de liquidación (sin pasar por
+// el flujo de 2 pasos de consumo-minibar.js) aceptaban cantidad
+// negativa sin avisar (`Number(input.value) || 1` solo atajaba
+// 0/vacío/NaN). Ahora se valida explícito, igual que consumo-minibar.js.
+//
 // Nota sobre "adicionar días a la estadía": si un huésped que ya tenía su
 // reserva hecha (por ejemplo 2 noches) decide en el check-in quedarse más
 // días, la recepcionista solo tiene que aumentar el campo "Cantidad de
@@ -818,7 +824,15 @@ async function abrirModalLiquidacion(container, item) {
         const consumo = consumos.find((c) => c.id === consumoId);
         if (!consumo) return;
         const input = cuerpo.querySelector(`.input-editar-cantidad-consumo[data-id="${consumoId}"]`);
-        const nuevaCantidad = Number(input.value) || 1;
+        const nuevaCantidad = Number(input.value);
+        // (200 / auditoría H13) Antes `Number(input.value) || 1` dejaba
+        // pasar cualquier negativo sin avisar (solo 0/vacío/NaN caían al
+        // valor por defecto) — mismo patrón de validación explícita que
+        // ya usa consumo-minibar.js.
+        if (!nuevaCantidad || nuevaCantidad <= 0) {
+          mostrarToast('Ingresa una cantidad válida.', 'error');
+          return;
+        }
         const deltaCantidad = nuevaCantidad - consumo.cantidad;
 
         if (deltaCantidad === 0) {
@@ -859,7 +873,12 @@ async function abrirModalLiquidacion(container, item) {
         const selectProducto = cuerpo.querySelector('#select-producto-liquidacion');
         const inputCantidad = cuerpo.querySelector('#input-cantidad-liquidacion');
         const productoId = Number(selectProducto.value);
-        const cantidad = Number(inputCantidad.value) || 1;
+        const cantidad = Number(inputCantidad.value);
+        // (200 / auditoría H13) Misma corrección que en "Guardar" edición.
+        if (!cantidad || cantidad <= 0) {
+          mostrarToast('Ingresa una cantidad válida.', 'error');
+          return;
+        }
         const producto = (productos || []).find((p) => p.id === productoId);
         if (!producto) return;
 
