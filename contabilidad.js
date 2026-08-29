@@ -10,14 +10,32 @@
 // ventas_mostrador y caja_movimientos son mutuamente excluyentes por
 // diseño (ver caja.js).
 //
-// Egresos = movimientos manuales de egreso en Caja + el costo de las
-// órdenes de compra ya recibidas en el rango (ver compras.js). Todavía no
-// existe un módulo dedicado de "Gastos" — cuando exista, se suma aquí
-// igual que Compras.
+// Egresos = TODO movimiento tipo='egreso' en caja_movimientos, separado
+// en dos líneas para el detalle: "Compras" (categoria='Compras', las
+// registra inventario.js en cada compra real a bodega — compras.js está
+// desactivado y no se usa) y "Otros egresos" (gastos.js y cualquier otro
+// egreso manual). Ambas líneas sacan la MISMA plata de la MISMA consulta
+// — es un desglose para lectura, no dos fuentes que se suman aparte, así
+// que no hay riesgo de duplicar el total.
 //
 // El rango de fechas se lee directo de las tablas fuente (no de
 // caja_turnos) para no perder dinero que entró con la caja cerrada, mismo
 // criterio que ya usa indicadores.js.
+//
+// Nota (196 / auditoría H10 y H11): antes este módulo leía el costo de
+// compras desde `ordenes_compra`/`ordenes_compra_items` — una tabla que
+// ya no usa nadie (inventario.js, el flujo real de compras, nunca
+// escribe ahí; solo lo hacía compras.js, hoy desactivado — ver H2). Esa
+// consulta casi siempre traía $0, y el comentario decía "todavía no
+// existe un módulo de Gastos" cuando gastos.js ya lleva tiempo en
+// producción. En la práctica el total SIEMPRE fue correcto (porque
+// "Egresos registrados en Caja" ya sumaba TODOS los egresos, compras
+// incluidas, al no filtrar por categoría) — el problema era que el
+// desglose visible mentía: mostraba "Compras recibidas (costo): $0"
+// aunque sí hubiera compras reales ese rango, folded silenciosamente
+// dentro de "Egresos en Caja". Ahora "Compras" y "Otros egresos" se
+// calculan de la misma consulta a caja_movimientos, separando por
+// categoría — mismo total de siempre, desglose real.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -70,21 +88,15 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
   const desde = `${fechaInicio}T00:00:00`;
   const hasta = `${fechaFin}T23:59:59`;
 
-  const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: ventasMostrador, error: errVentas }, { data: ordenes, error: errOrdenes }, { data: facturas, error: errFacturas }] =
+  const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: ventasMostrador, error: errVentas }, { data: facturas, error: errFacturas }] =
     await Promise.all([
       supabase.from('reservas_pagos').select('monto, fecha').gte('fecha', desde).lte('fecha', hasta),
-      supabase.from('caja_movimientos').select('tipo, monto, creado_en').gte('creado_en', desde).lte('creado_en', hasta),
+      supabase.from('caja_movimientos').select('tipo, categoria, monto, creado_en').gte('creado_en', desde).lte('creado_en', hasta),
       supabase.from('ventas_mostrador').select('monto, creado_en').gte('creado_en', desde).lte('creado_en', hasta),
-      supabase
-        .from('ordenes_compra')
-        .select('id, fecha_recibido, ordenes_compra_items(cantidad, precio_costo_unitario)')
-        .eq('estado', 'recibido')
-        .gte('fecha_recibido', desde)
-        .lte('fecha_recibido', hasta),
       supabase.from('facturas').select('total').eq('estado', 'emitida').gte('fecha_emision', fechaInicio).lte('fecha_emision', fechaFin),
     ]);
 
-  const error = errPagos || errMov || errVentas || errOrdenes || errFacturas;
+  const error = errPagos || errMov || errVentas || errFacturas;
   if (error) {
     elemento.innerHTML = `<p class="mensaje-vacio">Error calculando el consolidado: ${error.message}</p>`;
     return;
@@ -93,15 +105,13 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
   const ingresosPagos = (pagos || []).reduce((acc, p) => acc + Number(p.monto), 0);
   const ingresosMostrador = (ventasMostrador || []).reduce((acc, v) => acc + Number(v.monto), 0);
   const ingresosCaja = (movimientos || []).filter((m) => m.tipo === 'ingreso').reduce((acc, m) => acc + Number(m.monto), 0);
-  const egresosCaja = (movimientos || []).filter((m) => m.tipo === 'egreso').reduce((acc, m) => acc + Number(m.monto), 0);
-  const egresosCompras = (ordenes || []).reduce((acc, o) => {
-    const totalOrden = (o.ordenes_compra_items || []).reduce((s, it) => s + it.cantidad * it.precio_costo_unitario, 0);
-    return acc + totalOrden;
-  }, 0);
+  const egresos = (movimientos || []).filter((m) => m.tipo === 'egreso');
+  const egresosCompras = egresos.filter((m) => m.categoria === 'Compras').reduce((acc, m) => acc + Number(m.monto), 0);
+  const egresosOtros = egresos.filter((m) => m.categoria !== 'Compras').reduce((acc, m) => acc + Number(m.monto), 0);
   const totalFacturado = (facturas || []).reduce((acc, f) => acc + Number(f.total), 0);
 
   const ingresosTotales = ingresosPagos + ingresosMostrador + ingresosCaja;
-  const egresosTotales = egresosCaja + egresosCompras;
+  const egresosTotales = egresosOtros + egresosCompras;
   const neto = ingresosTotales - egresosTotales;
 
   elemento.innerHTML = `
@@ -134,8 +144,8 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
             <tr><td>Ventas por mostrador</td><td>${formatCOP(ingresosMostrador)}</td></tr>
             <tr><td>Ingresos varios registrados en Caja</td><td>${formatCOP(ingresosCaja)}</td></tr>
             <tr><td><strong>Total ingresos</strong></td><td><strong>${formatCOP(ingresosTotales)}</strong></td></tr>
-            <tr><td>Egresos registrados en Caja</td><td>${formatCOP(egresosCaja)}</td></tr>
-            <tr><td>Compras recibidas (costo)</td><td>${formatCOP(egresosCompras)}</td></tr>
+            <tr><td>Compras a bodega (costo)</td><td>${formatCOP(egresosCompras)}</td></tr>
+            <tr><td>Otros egresos en Caja (gastos, etc.)</td><td>${formatCOP(egresosOtros)}</td></tr>
             <tr><td><strong>Total egresos</strong></td><td><strong>${formatCOP(egresosTotales)}</strong></td></tr>
             <tr><td><strong>Neto</strong></td><td><strong>${formatCOP(neto)}</strong></td></tr>
           </tbody>
@@ -144,7 +154,6 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
       <div class="acciones-tarjeta" style="justify-content:flex-start; margin-top:1rem;">
         <button type="button" id="btn-exportar-csv" class="btn btn-secundario btn-chico">Descargar CSV</button>
       </div>
-      <p class="mensaje-vacio" style="margin-top:0.75rem; font-size:0.78rem;">Todavía no hay un módulo dedicado de "Gastos" — cuando exista, sus egresos se sumarán aquí igual que Compras.</p>
     </div>
   `;
 
@@ -156,8 +165,8 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
       ['Ventas por mostrador', ingresosMostrador],
       ['Ingresos varios en Caja', ingresosCaja],
       ['Total ingresos', ingresosTotales],
-      ['Egresos en Caja', egresosCaja],
-      ['Compras recibidas', egresosCompras],
+      ['Compras a bodega (costo)', egresosCompras],
+      ['Otros egresos en Caja', egresosOtros],
       ['Total egresos', egresosTotales],
       ['Neto', neto],
       ['Total facturado', totalFacturado],
