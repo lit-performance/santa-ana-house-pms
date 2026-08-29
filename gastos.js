@@ -1,3 +1,4 @@
+
 // gastos.js
 //
 // Módulo: Gastos. Registro rápido de gastos operativos del hotel (agua,
@@ -36,6 +37,13 @@
 // borrar un gasto mal registrado o duplicado — se agrega aquí, con
 // confirmación, borrando directo el caja_movimientos correspondiente
 // (mismo permiso que para registrar un gasto nuevo).
+//
+// Nota (196 / auditoría H9): eliminar un gasto usaba el mismo permiso
+// que registrarlo (ROLES_OPERAN, incluye recepcionista) — cualquiera
+// que pudiera registrar un gasto también podía borrar el historial
+// financiero sin dejar rastro. Ahora "🗑 Eliminar" queda bajo un rol
+// aparte (ROLES_ELIMINAN, propietario/administrador únicamente),
+// separado de quién puede registrar gastos nuevos.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -46,12 +54,18 @@ import { getUsuarioActual } from './auth.js';
 import { obtenerOCrearTurnoDeHoy } from './caja.js';
 
 const ROLES_OPERAN = ['propietario', 'administrador', 'recepcionista'];
+const ROLES_ELIMINAN = ['propietario', 'administrador'];
 const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
 const CATEGORIAS_GASTOS = ['Agua', 'Luz', 'Gas', 'Internet', 'Aseo', 'Mantenimiento', 'Insumos', 'Nómina', 'Otro'];
 
 function puedeOperar() {
   const usuario = getUsuarioActual();
   return Boolean(usuario) && ROLES_OPERAN.includes(usuario.rol);
+}
+
+function puedeEliminarGasto() {
+  const usuario = getUsuarioActual();
+  return Boolean(usuario) && ROLES_ELIMINAN.includes(usuario.rol);
 }
 
 function escaparHTML(texto) {
@@ -231,7 +245,7 @@ async function cargarListaGastos(elemento, fechaInicioISO, fechaFinISO) {
     return;
   }
 
-  const permitido = puedeOperar();
+  const permitidoEliminar = puedeEliminarGasto();
   const total = (gastos || []).reduce((sum, g) => sum + Number(g.monto), 0);
   const porCategoria = new Map();
   (gastos || []).forEach((g) => {
@@ -264,7 +278,7 @@ async function cargarListaGastos(elemento, fechaInicioISO, fechaFinISO) {
       </div>
       <div class="tabla-scroll">
         <table class="tabla-simple">
-          <thead><tr><th>Fecha</th><th>Categoría</th><th>Monto</th><th>Pagado desde</th><th>Detalle</th>${permitido ? '<th></th>' : ''}</tr></thead>
+          <thead><tr><th>Fecha</th><th>Categoría</th><th>Monto</th><th>Pagado desde</th><th>Detalle</th>${permitidoEliminar ? '<th></th>' : ''}</tr></thead>
           <tbody>
             ${
               (gastos || [])
@@ -275,10 +289,10 @@ async function cargarListaGastos(elemento, fechaInicioISO, fechaFinISO) {
                 <td class="monto">${formatCOP(g.monto)}</td>
                 <td>${escaparHTML(g.metodo_pago || '—')}</td>
                 <td>${g.descripcion ? linkificarDescripcion(g.descripcion) : '—'}</td>
-                ${permitido ? `<td><button type="button" class="btn-editar btn-eliminar-gasto">🗑 Eliminar</button></td>` : ''}
+                ${permitidoEliminar ? `<td><button type="button" class="btn-editar btn-eliminar-gasto">🗑 Eliminar</button></td>` : ''}
               </tr>`
                 )
-                .join('') || `<tr><td colspan="${permitido ? 6 : 5}" class="mensaje-vacio">Sin gastos registrados en este rango.</td></tr>`
+                .join('') || `<tr><td colspan="${permitidoEliminar ? 6 : 5}" class="mensaje-vacio">Sin gastos registrados en este rango.</td></tr>`
             }
           </tbody>
         </table>
@@ -307,7 +321,7 @@ async function cargarListaGastos(elemento, fechaInicioISO, fechaFinISO) {
     URL.revokeObjectURL(url);
   });
 
-  if (!permitido) return;
+  if (!permitidoEliminar) return;
 
   elemento.querySelectorAll('.btn-eliminar-gasto').forEach((btn) => {
     btn.addEventListener('click', async () => {
