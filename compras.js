@@ -23,6 +23,22 @@
 // que arma inventario.js (una sola, con pestañas internas "Entrada
 // rápida" / "Nueva orden formal" y el listado de órdenes siempre visible
 // debajo), así que ya no necesitan su propio título ni tarjeta aparte.
+//
+// ⚠️ Nota (197 / auditoría H2) — LEER ANTES DE REACTIVAR ESTE ARCHIVO:
+// desde la nota (141) de inventario.js, el flujo de este archivo
+// (órdenes solicitado → en camino → recibido, sobre las tablas
+// `ordenes_compra`/`ordenes_compra_items`) quedó DESACTIVADO — ya no se
+// importa desde ningún módulo activo. Se reemplazó por "🛒 Registrar
+// compra" en inventario.js, que hace directo a inventario_bodega +
+// caja_movimientos (categoría "Compras"), sin pasar por estas tablas.
+// Si en algún momento se reactiva este archivo, OJO: quedaría un
+// segundo camino paralelo para registrar compras, con su propio
+// registro de existencias y su propio egreso en Caja — separado del
+// que ya usa inventario.js — con riesgo real de duplicar entradas de
+// bodega o egresos si alguien usa los dos flujos sin darse cuenta de
+// que hacen lo mismo. Antes de reactivarlo, hay que decidir cuál de los
+// dos flujos queda como el oficial (o unificarlos), no simplemente
+// volver a registrar el módulo.
 
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
