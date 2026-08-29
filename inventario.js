@@ -111,6 +111,18 @@
 //     error si falla, así el toast final avisa en pantalla en vez de
 //     quedar solo en la consola.
 //
+// Nota (194 / auditoría H17): en el formulario de líneas de compra
+// (Registrar compra / Editar compra) solo se validaba que la cantidad
+// fuera mayor a 0 — el costo unitario, no. El `min="0"` del <input> es
+// solo una pista visual del navegador (no bloquea escribir un negativo,
+// y el código lee `.value` directo sin usar la validación nativa), así
+// que un costo negativo por error de digitación (ej. "-3000" en vez de
+// "3000") pasaba sin aviso: reducía el total de la compra, distorsionaba
+// el costo promedio ponderado del producto y el monto registrado en
+// Caja para esa compra. Ahora se valida también que el costo no sea
+// negativo, bloqueando el guardado de la línea igual que ya hacía la
+// cantidad.
+//
 // Nota sobre "tiene_minibar" (ver 109/111): las habitaciones marcadas
 // como sin minibar (uso administrativo, arriendo mensual, etc.) no
 // aparecen en "Pendientes de reponer", "Reabastecer habitación" ni el
@@ -1879,6 +1891,10 @@ function construirEditorLineasCompra({ wrapLineas, btnAgregar, elTotal, producto
         }
         if (!cantidad || cantidad <= 0) {
           mostrarToast('Falta una cantidad válida en una de las líneas.', 'error');
+          return null;
+        }
+        if (costo < 0) {
+          mostrarToast('El costo unitario no puede ser negativo en una de las líneas.', 'error');
           return null;
         }
         const producto = productos.find((p) => p.id === Number(valorSelect));
