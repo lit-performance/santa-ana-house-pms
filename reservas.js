@@ -18,6 +18,31 @@
 // habitación", "modificar fechas") sin la complejidad de un motor de drag
 // and drop hecho a mano. Puede añadirse más adelante si hace falta.
 //
+// Nota (213 / auditoría H27): editar desde AQUÍ (el calendario de
+// Reservas) una reserva que ya está 'hospedado' (tiene un check-in activo
+// vinculado en Recepción) ahora también sincroniza ese check-in y el
+// estado físico de las habitaciones si cambia habitacion_id o
+// fecha_checkout — antes solo pasaba si se editaba desde Recepción, así
+// que mover de habitación una reserva hospedada desde aquí dejaba el
+// check-in apuntando a la habitación/fecha vieja y ninguna de las dos
+// habitaciones cambiaba de estado físico.
+//
+// Nota (213 / auditoría H28): la verificación de disponibilidad de abajo
+// (SELECT de cruces antes de guardar) ahora tiene un respaldo real a
+// nivel de base de datos — un EXCLUDE constraint
+// ("reservas_no_cruce_habitacion", ver sql/212) que bloquea cualquier
+// guardado que de verdad cruce fechas en la misma habitación, incluso si
+// dos personas guardan casi al mismo tiempo (la condición de carrera que
+// un SELECT-antes-de-guardar no puede cerrar del todo). Si ese
+// constraint bloquea el guardado, Postgres devuelve el código 23P01 —
+// ver `mensajeErrorReserva` más abajo, que lo traduce a un aviso legible.
+//
+// Nota (213 / auditoría H31): cambiar el Estado a "Cancelada" en una
+// reserva que ya tiene abonos registrados ahora avisa el total abonado y
+// pide confirmar antes de guardar — cancelar no borra esa plata (sigue
+// en reservas_pagos), pero antes era fácil no darse cuenta de que hay
+// que gestionarla aparte (devolución o reasignación).
+//
 // Nota importante sobre el estado de la habitación (Housekeeping /
 // Configuración) frente al calendario:
 // - 'mantenimiento', 'bloqueada', 'fuera_servicio' son estados indefinidos
@@ -236,6 +261,16 @@ function escaparHTML(texto) {
   const div = document.createElement('div');
   div.textContent = texto || '';
   return div.innerHTML;
+}
+
+// (213 / auditoría H28) Ver la misma función en recepcion.js — traduce el
+// código 23P01 (violación del EXCLUDE constraint "reservas_no_cruce_habitacion",
+// ver sql/212) a un aviso legible en vez del mensaje técnico crudo de Postgres.
+function mensajeErrorReserva(error) {
+  if (error?.code === '23P01') {
+    return 'esa habitación ya tiene otra reserva que se cruza en esas fechas (lo detectó la base de datos justo al guardar — probablemente alguien más la guardó en el mismo instante). Refresca y elige otra habitación o fecha.';
+  }
+  return error?.message || 'error desconocido';
 }
 
 // Número de noches entre dos fechas 'YYYY-MM-DD'. Ambas se interpretan en
@@ -618,6 +653,24 @@ async function abrirModalReserva(container, reserva, prellenado) {
       }
     }
 
+    // (213 / auditoría H31) Si se está cancelando una reserva que ya
+    // tenía abonos registrados, se avisa el total antes de guardar —
+    // cancelar no borra el abono (sigue en reservas_pagos), pero hay que
+    // gestionar esa plata aparte (devolución o reasignación) y es fácil
+    // no darse cuenta.
+    if (editando && payload.estado === 'cancelada' && reserva.estado !== 'cancelada') {
+      const { data: abonosExistentes } = await supabase.from('reservas_pagos').select('monto').eq('reserva_id', reserva.id);
+      const totalAbonadoCancelar = (abonosExistentes || []).reduce((acc, a) => acc + Number(a.monto), 0);
+      if (totalAbonadoCancelar > 0) {
+        const okCancelar = await mostrarConfirmacion({
+          titulo: 'Cancelar reserva con abonos',
+          contenidoHTML: `Esta reserva tiene <strong>${formatCOP(totalAbonadoCancelar)}</strong> abonados. ¿Confirmas que quieres cancelarla? Cancelar no borra ese abono de los registros — recuerda gestionarlo aparte (devolución o reasignación).`,
+          textoConfirmar: 'Sí, cancelar de todas formas',
+        });
+        if (!okCancelar) return;
+      }
+    }
+
     // Si va a haber abono inicial, se valida el método de pago ANTES de
     // crear nada — así nunca queda una reserva ya guardada con el abono
     // bloqueado por falta de método (mismo candado que ya tiene el pago
@@ -672,8 +725,45 @@ async function abrirModalReserva(container, reserva, prellenado) {
 
     const { data: reservaGuardada, error } = await query;
     if (error) {
-      mostrarToast(`Error guardando: ${error.message}`, 'error');
+      // (213 / H28) Ver mensajeErrorReserva — 23P01 = el EXCLUDE
+      // constraint de la base de datos atrapó un cruce real (carrera).
+      mostrarToast(`Error guardando: ${mensajeErrorReserva(error)}`, 'error');
       return;
+    }
+
+    // (213 / auditoría H27) Si la reserva editada YA estaba 'hospedado'
+    // (tiene un check-in activo vinculado en Recepción) y cambió de
+    // habitación y/o de fecha de salida, hay que sincronizar también
+    // recepcion_checkins y el estado físico de las habitaciones — si no,
+    // el check-in en Recepción se queda apuntando a la habitación/fecha
+    // vieja y el tablero de habitaciones queda desincronizado del
+    // huésped real. La disponibilidad ya se validó arriba (verificación
+    // de disponibilidad + el EXCLUDE constraint de respaldo), así que
+    // aquí solo queda sincronizar.
+    if (editando && reserva.estado === 'hospedado') {
+      const habitacionCambioReserva = payload.habitacion_id !== reserva.habitacion_id;
+      const fechaCheckoutCambioReserva = payload.fecha_checkout !== reserva.fecha_checkout;
+      if (habitacionCambioReserva || fechaCheckoutCambioReserva) {
+        const { data: checkinVinculado } = await supabase
+          .from('recepcion_checkins')
+          .select('id')
+          .eq('reserva_id', reserva.id)
+          .is('check_out_en', null)
+          .maybeSingle();
+        if (checkinVinculado) {
+          const { error: errCheckinSync } = await supabase
+            .from('recepcion_checkins')
+            .update({ habitacion_id: payload.habitacion_id })
+            .eq('id', checkinVinculado.id);
+          if (errCheckinSync) {
+            mostrarToast(`Reserva guardada, pero no se pudo sincronizar el check-in vinculado: ${errCheckinSync.message}`, 'error');
+          }
+          if (habitacionCambioReserva) {
+            await supabase.rpc('cambiar_estado_habitacion', { p_habitacion_id: reserva.habitacion_id, p_estado: 'limpieza' });
+            await supabase.rpc('cambiar_estado_habitacion', { p_habitacion_id: payload.habitacion_id, p_estado: 'ocupada' });
+          }
+        }
+      }
     }
 
     // --- Abono inicial (solo aplica al crear, ver el bloque "¿Hubo abono
