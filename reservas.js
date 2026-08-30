@@ -43,6 +43,13 @@
 // en reservas_pagos), pero antes era fácil no darse cuenta de que hay
 // que gestionarla aparte (devolución o reasignación).
 //
+// Nota (214 / auditoría H35): los 2 inserts en reservas_pagos de este
+// archivo (abono al crear la reserva, y abono/pago adicional desde el
+// modal de Abonos) ahora guardan `registrado_por` — antes ningún pago de
+// reserva registraba quién lo cobró (a diferencia de caja_movimientos y
+// ventas_mostrador, que sí lo hacen), dejando un punto ciego total en
+// auditoria.js.
+//
 // Nota importante sobre el estado de la habitación (Housekeeping /
 // Configuración) frente al calendario:
 // - 'mantenimiento', 'bloqueada', 'fuera_servicio' son estados indefinidos
@@ -101,6 +108,7 @@ import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP, activarInputDinero, valorNumericoInput } from './currency.js';
 import { badgeEstadoReserva, opcionesEstadoReserva, badgeEstadoHabitacion } from './badges.js';
 import { toISODate, addDays, formatFechaHora } from './dates.js';
+import { getUsuarioActual } from './auth.js';
 
 const DIAS_VISIBLES = 14;
 let rangoInicio = new Date();
@@ -783,6 +791,9 @@ async function abrirModalReserva(container, reserva, prellenado) {
           monto: abonoInicial,
           metodo_pago: form.get('metodo_pago_abono'),
           comentarios: tipoPagoInicial === 'total' ? 'Pago total registrado al crear la reserva.' : 'Abono registrado al crear la reserva.',
+          // (214 / auditoría H35) registrado_por — antes ningún pago de
+          // reserva guardaba quién lo cobró.
+          registrado_por: getUsuarioActual()?.id || null,
         });
         if (errAbono) {
           mostrarToast(`Reserva creada, pero no se pudo registrar el abono: ${errAbono.message}`, 'error');
@@ -891,6 +902,8 @@ async function cargarPagos(overlay, reservaId) {
       monto: montoNuevoPago,
       metodo_pago: form.get('metodo_pago'),
       comentarios: form.get('comentarios').trim() || null,
+      // (214 / auditoría H35) Ver nota arriba en el abono inicial.
+      registrado_por: getUsuarioActual()?.id || null,
     });
     if (errInsert) {
       mostrarToast(`Error: ${errInsert.message}`, 'error');
