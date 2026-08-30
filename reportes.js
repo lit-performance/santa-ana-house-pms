@@ -15,6 +15,12 @@
 // Oculto temporalmente (roles: []) desde 160, a pedido de Elssy. El
 // código y los datos siguen intactos; reactivar es solo devolverle su
 // lista de roles al registerModule() de más abajo.
+//
+// Nota (215 / auditoría H40): "Reservas del período" no filtraba por
+// estado en absoluto — sumaba canceladas/no-show junto con las válidas,
+// a diferencia de "Ocupación por habitación" (más abajo), que sí excluye
+// esos estados con ESTADOS_NO_OCUPAN. Ahora ambos reportes son
+// consistentes entre sí.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -102,7 +108,7 @@ async function generarReporte(elemento, tipo, fechaInicio, fechaFin) {
 }
 
 async function reporteReservas(elemento, fechaInicio, fechaFin) {
-  const { data: reservas, error } = await supabase
+  const { data: reservasCrudas, error } = await supabase
     .from('reservas')
     .select('*, habitaciones(numero, nombre)')
     .gte('fecha_checkin', fechaInicio)
@@ -114,7 +120,13 @@ async function reporteReservas(elemento, fechaInicio, fechaFin) {
     return;
   }
 
-  if (!reservas || reservas.length === 0) {
+  // (215 / auditoría H40) Antes este reporte no filtraba por estado en
+  // absoluto — sumaba canceladas/no-show junto con las válidas, a
+  // diferencia de reporteOcupacion (más abajo), que sí usa esta misma
+  // constante ESTADOS_NO_OCUPAN para excluirlas.
+  const reservas = (reservasCrudas || []).filter((r) => !ESTADOS_NO_OCUPAN.includes(r.estado));
+
+  if (reservas.length === 0) {
     elemento.innerHTML = '<p class="mensaje-vacio">Sin reservas en este rango.</p>';
     return;
   }
