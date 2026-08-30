@@ -32,7 +32,17 @@
 // dejar referencias huérfanas). config-tipos.js se dejó oculto
 // (roles: []) — su código y los datos siguen intactos, ver su propia
 // nota de cabecera.
-
+//
+// Nota (215 / auditoría H38): los botones "Guardar" de las 2 tablas de
+// arriba son `type="button"` con un click-listener plano — NUNCA pasan
+// por la validación nativa del navegador (esa solo se dispara con un
+// `submit` real), así que los `min="..."` del HTML son solo una pista
+// visual. Antes el único chequeo era que el código/nombre no quedara
+// vacío: se podía guardar cualquier precio en $0 o negativo sin ningún
+// aviso, y eso se propaga en silencio a cualquier estadía nueva que use
+// esa tarifa. Ahora ambos guardan bloquean negativos, y piden confirmar
+// explícito si el precio principal (temporada baja / valor convenido)
+// queda en exactamente $0.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -130,6 +140,20 @@ function pintarTablaDiarias(wrap, filas, container) {
         mostrarToast('El código/nombre de la tarifa no puede quedar vacío.', 'error');
         return;
       }
+      // (215 / auditoría H38) Los `min="..."` del HTML no bloquean nada
+      // aquí (el botón no es un submit real) — validación explícita.
+      if (payload.precio_temporada_baja < 0 || payload.precio_temporada_alta < 0 || payload.precio_fin_semana < 0 || payload.iva_porcentaje < 0) {
+        mostrarToast('Los precios y el IVA no pueden ser negativos.', 'error');
+        return;
+      }
+      if (payload.precio_temporada_baja === 0) {
+        const ok = await mostrarConfirmacion({
+          titulo: 'Precio en $0',
+          contenidoHTML: `Vas a guardar "${escaparHTML(payload.codigo)}" con el precio de temporada baja en <strong>$0</strong> — cualquier estadía nueva que use esta tarifa calculará su monto total en $0. ¿Confirmas que es intencional?`,
+          textoConfirmar: 'Sí, guardar en $0',
+        });
+        if (!ok) return;
+      }
       const { error } = await supabase.from('tarifas').update(payload).eq('id', id);
       if (error) {
         mostrarToast(`Error: ${error.message}`, 'error');
@@ -174,6 +198,19 @@ function pintarTablaPorDias(wrap, filas, container) {
       if (!payload.codigo) {
         mostrarToast('El nombre de la tarifa no puede quedar vacío.', 'error');
         return;
+      }
+      // (215 / auditoría H38) Ver la misma validación en tarifas diarias.
+      if (payload.numero_dias < 0 || payload.valor_convenido < 0) {
+        mostrarToast('El número de días y el valor convenido no pueden ser negativos.', 'error');
+        return;
+      }
+      if (payload.valor_convenido === 0) {
+        const ok = await mostrarConfirmacion({
+          titulo: 'Valor convenido en $0',
+          contenidoHTML: `Vas a guardar "${escaparHTML(payload.codigo)}" con el valor convenido en <strong>$0</strong> — cualquier estadía nueva que use esta tarifa calculará su monto total en $0. ¿Confirmas que es intencional?`,
+          textoConfirmar: 'Sí, guardar en $0',
+        });
+        if (!ok) return;
       }
       const { error } = await supabase.from('tarifas').update(payload).eq('id', id);
       if (error) {
