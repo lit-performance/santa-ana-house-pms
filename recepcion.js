@@ -306,6 +306,11 @@
 // para tarifas por noche; el mismo monto original para tarifas "por
 // días", que son un total fijo) — pero el campo queda EDITABLE, porque
 // puede que se negocie otra cosa con el huésped en vez de prorratear.
+//
+// Nota (214 / auditoría H35): los 2 inserts en reservas_pagos de este
+// archivo (pago de liquidación al check-out, pago inicial al registrar
+// un check-in) ahora guardan `registrado_por` — antes ningún pago de
+// reserva registraba quién lo cobró.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -1077,6 +1082,8 @@ async function abrirModalLiquidacion(container, item) {
           monto: pagoFinal,
           metodo_pago: metodoPago,
           comentarios: comentarioCheckout ? `Pago de liquidación al check-out. ${comentarioCheckout}` : 'Pago de liquidación al check-out.',
+          // (214 / auditoría H35) registrado_por — ver nota de cabecera.
+          registrado_por: getUsuarioActual()?.id || null,
         });
         if (errPago) {
           mostrarToast(`Error registrando el pago: ${errPago.message}`, 'error');
@@ -2030,6 +2037,8 @@ async function ejecutarRegistroCheckin(p) {
         monto: montoPagoCheckin,
         metodo_pago: form.get('metodo_pago'),
         comentarios: estadoPagoCheckin === 'anticipado' ? 'Pago anticipado registrado en el check-in.' : 'Abono parcial registrado en el check-in.',
+        // (214 / auditoría H35) registrado_por — ver nota de cabecera.
+        registrado_por: getUsuarioActual()?.id || null,
       });
       if (errPagoInicial) {
         mostrarToast(`Check-in continuará, pero no se pudo registrar el pago en Caja: ${errPagoInicial.message}`, 'error');
