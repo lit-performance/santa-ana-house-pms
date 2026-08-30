@@ -543,7 +543,10 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
 
       const { error: errLog } = await supabase.from('auditoria_correcciones').insert({
         tabla_origen: tabla,
-        registro_id: id,
+        // (215 / H39) registro_id ahora es `text` en la base de datos —
+        // sirve tanto para ids numéricos (caja_movimientos,
+        // reservas_pagos) como para el uuid de usuarios.id.
+        registro_id: String(id),
         accion: 'eliminar',
         valor_anterior: filaAnterior || null,
         valor_nuevo: null,
@@ -616,7 +619,9 @@ function abrirModalEditarTransaccion(ev, recargar) {
     // abrió este modal), así que no hace falta otra consulta.
     const { error: errLog } = await supabase.from('auditoria_correcciones').insert({
       tabla_origen: ev.tabla,
-      registro_id: ev.id,
+      // (215 / H39) Ver nota de la misma columna en el handler de
+      // Eliminar, arriba.
+      registro_id: String(ev.id),
       accion: 'editar',
       valor_anterior: { metodo_pago: ev.metodoPago, monto: ev.monto },
       valor_nuevo: payload,
