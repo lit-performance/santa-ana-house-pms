@@ -274,6 +274,19 @@
 // el check-out. Si hay más de una reserva pendiente con el mismo
 // documento, no se elige ninguna sola — hay que seleccionarla a mano para
 // no adivinar cuál es.
+//
+// Nota (209 / auditoría H26): en "Editar check-in", cuando se cambia de
+// habitación y el check-in tiene una reserva vinculada, ANTES de tocar
+// cualquier tabla se valida que la nueva habitación no tenga otra reserva
+// activa que se cruce con las fechas ACTUALES de esta estadía (aparte del
+// chequeo, ya existente, de si se puede extender la fecha de salida al
+// cambiar la cantidad de noches). Si hay cruce, se bloquea TODO el cambio
+// de habitación (se guarda el resto de los cambios igual) y se avisa por
+// qué. Antes, si había cruce, solo se mostraba un aviso de "no se pudo
+// extender la estadía" pero la habitación se movía de todas formas en
+// recepcion_checkins, en reservas, y los estados físicos de ambas
+// habitaciones se actualizaban igual — podía terminar doble-reservando un
+// cuarto ya ocupado por otro huésped.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -1264,7 +1277,48 @@ async function abrirModalEditarCheckin(container, item) {
     const nuevaHabitacionId = Number(form.get('habitacion_id'));
     const habitacionCambio = nuevaHabitacionId !== habitacionOriginalId;
 
-    if (habitacionCambio) {
+    // (209 / auditoría H26) Si cambia de habitación y hay una reserva
+    // vinculada, se valida ANTES de tocar cualquier tabla que la nueva
+    // habitación no tenga otra reserva activa que se cruce con las fechas
+    // ACTUALES de esta estadía (no las que se vayan a extender — ese es
+    // el chequeo aparte, más abajo, que ya existía). Si hay cruce, se
+    // bloquea TODO el cambio de habitación: habitacionFinalId se queda en
+    // la original y las secciones de abajo usan esta variable en vez de
+    // nuevaHabitacionId para que nada — ni recepcion_checkins, ni
+    // reservas, ni el estado físico de las habitaciones — se mueva.
+    let habitacionFinalId = nuevaHabitacionId;
+    let crucePorCambioHabitacion = null;
+
+    if (habitacionCambio && checkin.reserva_id) {
+      const { data: reservaActualParaCruce } = await supabase
+        .from('reservas')
+        .select('fecha_checkin, fecha_checkout')
+        .eq('id', checkin.reserva_id)
+        .maybeSingle();
+
+      if (reservaActualParaCruce?.fecha_checkin && reservaActualParaCruce?.fecha_checkout) {
+        const { data: crucesCambioHabitacion } = await supabase
+          .from('reservas')
+          .select('id, huesped_nombre, fecha_checkin, fecha_checkout')
+          .eq('habitacion_id', nuevaHabitacionId)
+          .in('estado', ESTADOS_RESERVA_ACTIVOS)
+          .neq('id', checkin.reserva_id)
+          .lt('fecha_checkin', reservaActualParaCruce.fecha_checkout)
+          .gt('fecha_checkout', reservaActualParaCruce.fecha_checkin);
+
+        if (crucesCambioHabitacion && crucesCambioHabitacion.length > 0) {
+          habitacionFinalId = habitacionOriginalId;
+          crucePorCambioHabitacion = crucesCambioHabitacion[0];
+        }
+      }
+    }
+
+    if (crucePorCambioHabitacion) {
+      mostrarToast(
+        `No se cambió de habitación: ya tiene otra reserva activa (${crucePorCambioHabitacion.huesped_nombre}) que se cruza con las fechas de esta estadía. Se guardó el resto de los cambios igual.`,
+        'error'
+      );
+    } else if (habitacionCambio) {
       const nuevaHabitacion = (habitaciones || []).find((h) => h.id === nuevaHabitacionId);
       if (nuevaHabitacion && nuevaHabitacion.estado !== 'disponible') {
         const ok = await mostrarConfirmacion({
@@ -1275,6 +1329,12 @@ async function abrirModalEditarCheckin(container, item) {
         if (!ok) return;
       }
     }
+
+    // (209 / H26) A partir de aquí, todo lo que antes usaba
+    // nuevaHabitacionId para GUARDAR (no para decidir qué mostrar arriba)
+    // usa habitacionFinalId, que ya refleja si el cambio de habitación se
+    // bloqueó por cruce.
+    const cambioHabitacionAplicado = habitacionFinalId !== habitacionOriginalId;
 
     const bloquesAcomp = Array.from(listaAcompEditar.querySelectorAll('.bloque-acompanante'));
     let acompanantesDetalle = bloquesAcomp
@@ -1311,7 +1371,7 @@ async function abrirModalEditarCheckin(container, item) {
       foto_documento_url: form.get('foto_documento_url').trim() || null,
       observaciones: form.get('observaciones').trim() || null,
       acompanantes_detalle: acompanantesDetalle,
-      habitacion_id: nuevaHabitacionId,
+      habitacion_id: habitacionFinalId,
       tarifa_id: form.get('tarifa_id') ? Number(form.get('tarifa_id')) : null,
       cantidad_noches: form.get('cantidad_noches') ? Number(form.get('cantidad_noches')) : 1,
       metodo_pago: form.get('metodo_pago'),
@@ -1333,7 +1393,7 @@ async function abrirModalEditarCheckin(container, item) {
         huesped_nombre: nombre,
         huesped_documento: documento,
         huesped_telefono: celular,
-        habitacion_id: nuevaHabitacionId,
+        habitacion_id: habitacionFinalId,
       };
 
       const { data: reservaVinculadaActual } = await supabase
@@ -1347,7 +1407,7 @@ async function abrirModalEditarCheckin(container, item) {
         const { data: crucesEdicion } = await supabase
           .from('reservas')
           .select('id, huesped_nombre, fecha_checkin, fecha_checkout')
-          .eq('habitacion_id', nuevaHabitacionId)
+          .eq('habitacion_id', habitacionFinalId)
           .in('estado', ESTADOS_RESERVA_ACTIVOS)
           .neq('id', checkin.reserva_id)
           .lt('fecha_checkin', nuevaFechaCheckoutISO)
@@ -1376,9 +1436,12 @@ async function abrirModalEditarCheckin(container, item) {
     }
 
     // --- Cambio de habitación: liberar la anterior, ocupar la nueva ---
-    if (habitacionCambio) {
+    // (209 / H26) cambioHabitacionAplicado, no habitacionCambio: si el
+    // cambio se bloqueó arriba por cruce de reservas, no se toca el
+    // estado físico de ninguna habitación.
+    if (cambioHabitacionAplicado) {
       await supabase.rpc('cambiar_estado_habitacion', { p_habitacion_id: habitacionOriginalId, p_estado: 'limpieza' });
-      await supabase.rpc('cambiar_estado_habitacion', { p_habitacion_id: nuevaHabitacionId, p_estado: 'ocupada' });
+      await supabase.rpc('cambiar_estado_habitacion', { p_habitacion_id: habitacionFinalId, p_estado: 'ocupada' });
     }
 
     // --- Ficha de huésped (histórico), igual que en el check-in nuevo ---
