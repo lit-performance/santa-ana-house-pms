@@ -18,7 +18,18 @@
 // Oculto temporalmente (roles: []) porque por ahora el hotel no factura —
 // ver nota de cabecera en placeholders.js. El código y los datos siguen
 // intactos; reactivar es solo devolverle su lista de roles.
-
+//
+// Nota (214 / auditoría H32): mientras estaba oculto se detectaron 3
+// problemas, corregidos ahora para que queden listos el día que se
+// reactive: (1) el filtro de "reservas ya facturadas" era solo del lado
+// del cliente — no había nada que impidiera dos facturas "emitida" para
+// la misma reserva si dos personas guardaban casi al mismo tiempo; ahora
+// hay un índice único en la base de datos (ver sql/214) que lo bloquea
+// de raíz, más una revalidación justo antes de guardar con un aviso
+// legible. (2) El "% Impuesto" siempre arrancaba en 0 y había que
+// escribirlo a mano, sin conexión con `tarifas.iva_porcentaje` (ya
+// configurable por tarifa en Config → Tarifas) — ahora se precarga solo
+// con el IVA configurado en la tarifa de esa reserva (sigue editable).
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
@@ -64,7 +75,7 @@ async function cargarFormNuevaFactura(elemento) {
 
   const { data: reservas, error: errReservas } = await supabase
     .from('reservas')
-    .select('id, huesped_nombre, huesped_documento, fecha_checkin, fecha_checkout, monto_total, habitaciones(numero, nombre)')
+    .select('id, huesped_nombre, huesped_documento, fecha_checkin, fecha_checkout, monto_total, tarifas(iva_porcentaje), habitaciones(numero, nombre)')
     .eq('estado', 'check_out')
     .order('fecha_checkout', { ascending: false })
     .limit(100);
@@ -97,6 +108,10 @@ async function cargarFormNuevaFactura(elemento) {
     .map((r) => ({
       ...r,
       montoTotal: Number(r.monto_total || 0) + (minibarPorReserva.get(r.id) || 0),
+      // (214 / H32) IVA configurado en la tarifa de esa reserva — sigue
+      // siendo editable en el formulario, esto solo cambia el valor con
+      // el que arranca.
+      ivaPorcentaje: r.tarifas?.iva_porcentaje ?? 0,
     }));
 
   elemento.innerHTML = `
@@ -121,7 +136,7 @@ async function cargarFormNuevaFactura(elemento) {
             <input type="text" id="subtotal-preview" readonly value="${formatCOP(elegibles[0].montoTotal)}" />
           </label>
           <label>% Impuesto
-            <input type="number" name="impuesto_porcentaje" min="0" step="0.1" value="0" />
+            <input type="number" name="impuesto_porcentaje" id="impuesto-porcentaje-factura" min="0" step="0.1" value="${elegibles[0].ivaPorcentaje}" />
           </label>
           <label>Notas
             <input type="text" name="notas" placeholder="Opcional" />
@@ -137,9 +152,13 @@ async function cargarFormNuevaFactura(elemento) {
 
   const selectReserva = elemento.querySelector('#select-reserva-factura');
   const subtotalPreview = elemento.querySelector('#subtotal-preview');
+  const inputIva = elemento.querySelector('#impuesto-porcentaje-factura');
   selectReserva.addEventListener('change', () => {
     const r = elegibles.find((x) => x.id === Number(selectReserva.value));
     subtotalPreview.value = formatCOP(r ? r.montoTotal : 0);
+    // (214 / H32) Precarga el IVA configurado en la tarifa de la
+    // estadía elegida — sigue siendo editable.
+    inputIva.value = r ? r.ivaPorcentaje : 0;
   });
 
   elemento.querySelector('#form-nueva-factura').addEventListener('submit', async (e) => {
@@ -154,6 +173,26 @@ async function cargarFormNuevaFactura(elemento) {
     const total = subtotal + impuestoValor;
     const usuario = getUsuarioActual();
 
+    // (214 / auditoría H32) Revalidación justo antes de guardar — el
+    // filtro de la lista de arriba es solo del lado del cliente, así que
+    // si dos personas tenían este formulario abierto casi al mismo
+    // tiempo, esto atrapa el caso antes de duplicar. La red de seguridad
+    // real es el índice único en la base de datos (ver sql/214, error
+    // 23505 más abajo) — esto es solo para dar un aviso amigable en el
+    // caso normal (no una carrera de verdad).
+    const { data: facturaYaEmitida } = await supabase
+      .from('facturas')
+      .select('id')
+      .eq('reserva_id', reserva.id)
+      .eq('estado', 'emitida')
+      .maybeSingle();
+    if (facturaYaEmitida) {
+      mostrarToast('Esta reserva ya tiene una factura emitida — revisa la lista actualizada.', 'error');
+      const wrapNueva = document.querySelector('#facturacion-nueva-wrap');
+      if (wrapNueva) await cargarFormNuevaFactura(wrapNueva);
+      return;
+    }
+
     const { error } = await supabase.from('facturas').insert({
       reserva_id: reserva.id,
       huesped_nombre: reserva.huesped_nombre,
@@ -167,7 +206,13 @@ async function cargarFormNuevaFactura(elemento) {
     });
 
     if (error) {
-      mostrarToast(`Error generando la factura: ${error.message}`, 'error');
+      // (214 / H32) 23505 = el índice único de la base de datos atrapó
+      // una carrera real (dos guardados casi simultáneos).
+      const mensaje =
+        error.code === '23505'
+          ? 'esa reserva ya tiene una factura emitida (lo detectó la base de datos justo al guardar — probablemente alguien más la generó en el mismo instante). Refresca la lista.'
+          : error.message;
+      mostrarToast(`Error generando la factura: ${mensaje}`, 'error');
       return;
     }
 
