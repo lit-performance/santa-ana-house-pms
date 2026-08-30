@@ -32,6 +32,13 @@
 // Nota de reorganización: este módulo ahora es subpestaña de
 // Configuración (antes vivía en la pestaña "Administración", que quedó
 // oculta durante la capacitación — ver placeholders.js).
+//
+// Nota (215 / auditoría H39): antes, cambiar el rol de alguien (incluido
+// un escalamiento a administrador/propietario) o reactivar una cuenta no
+// dejaba ningún rastro en la Bitácora de Auditoría. Ahora, cuando el
+// guardado de verdad cambia `rol` o `activo` (no en cada edición de
+// nombre/correo), se inserta un registro en `auditoria_correcciones`
+// (misma tabla nueva de H34) con quién lo hizo y el antes/después.
 
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { registerModule } from './modules-registry.js';
@@ -153,11 +160,33 @@ async function cargarListaUsuarios(elemento) {
         return;
       }
 
+      // (215 / auditoría H39) Estado ANTES del cambio, para el rastro de
+      // auditoría — viene de la lista ya cargada, no hace falta otra
+      // consulta.
+      const usuarioOriginal = (usuarios || []).find((u) => String(u.id) === String(id));
+      const rolCambio = usuarioOriginal && usuarioOriginal.rol !== payload.rol;
+      const activoCambio = usuarioOriginal && usuarioOriginal.activo !== payload.activo;
+
       const { error } = await supabase.from('usuarios').update(payload).eq('id', id);
       if (error) {
         mostrarToast(`Error: ${error.message}`, 'error');
         return;
       }
+
+      if (rolCambio || activoCambio) {
+        const { error: errLog } = await supabase.from('auditoria_correcciones').insert({
+          tabla_origen: 'usuarios',
+          registro_id: String(id),
+          accion: 'editar',
+          valor_anterior: { rol: usuarioOriginal.rol, activo: usuarioOriginal.activo },
+          valor_nuevo: { rol: payload.rol, activo: payload.activo },
+          usuario_id: yo?.id || null,
+        });
+        if (errLog) {
+          mostrarToast('Usuario actualizado, pero no se pudo guardar el rastro de auditoría de este cambio.', 'error');
+        }
+      }
+
       mostrarToast('Usuario actualizado.', 'exito');
       await cargarListaUsuarios(elemento);
     });
