@@ -3,10 +3,15 @@
 // Módulo: Estadísticas. Tendencias históricas de ocupación e ingresos mes
 // a mes (por defecto últimos 12 meses), más un ranking de las habitaciones
 // más rentables del rango. Usa el mismo cálculo por día que indicadores.js
-// (reservas_pagos + caja_movimientos para dinero, reservas activas para
-// ocupación) pero agrupado siempre por mes y con gráficas de barras en
-// CSS puro (sin librerías externas, para no depender de internet el día
-// de la demo).
+// (reservas_pagos + caja_movimientos + ventas_mostrador para dinero,
+// reservas activas para ocupación) pero agrupado siempre por mes y con
+// gráficas de barras en CSS puro (sin librerías externas, para no
+// depender de internet el día de la demo).
+//
+// Nota (215 / auditoría H37): faltaba sumar ventas_mostrador a los
+// ingresos — indicadores.js/auditoria.js/detalle-dia.js sí la incluyen,
+// así que esta pantalla mostraba una cifra de ingresos menor a la de
+// esas otras para el mismo período.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -100,11 +105,16 @@ async function generarEstadisticas(elemento, fechaInicio, fechaFin) {
     { data: habitaciones, error: errHab },
     { data: pagos, error: errPagos },
     { data: movimientos, error: errMov },
+    { data: ventas, error: errVentas },
     { data: reservas, error: errReservas },
   ] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre').order('numero'),
     supabase.from('reservas_pagos').select('fecha, monto').gte('fecha', fechaInicio).lt('fecha', finExclusivoISO),
     supabase.from('caja_movimientos').select('creado_en, tipo, monto').gte('creado_en', fechaInicio).lt('creado_en', finExclusivoISO),
+    // (215 / auditoría H37) Antes faltaba ventas_mostrador — indicadores.js
+    // sí la incluye, así que esta pantalla mostraba un ingreso menor para
+    // el mismo período.
+    supabase.from('ventas_mostrador').select('creado_en, monto').gte('creado_en', fechaInicio).lt('creado_en', finExclusivoISO),
     supabase
       .from('reservas')
       .select('habitacion_id, fecha_checkin, fecha_checkout, estado, monto_total')
@@ -112,7 +122,7 @@ async function generarEstadisticas(elemento, fechaInicio, fechaFin) {
       .gt('fecha_checkout', fechaInicio),
   ]);
 
-  const error = errHab || errPagos || errMov || errReservas;
+  const error = errHab || errPagos || errMov || errVentas || errReservas;
   if (error) {
     elemento.innerHTML = `<p class="mensaje-vacio">Error calculando estadísticas: ${error.message}</p>`;
     return;
@@ -138,6 +148,12 @@ async function generarEstadisticas(elemento, fechaInicio, fechaFin) {
     const dia = toISODate(new Date(m.creado_en));
     const b = porDia.get(dia);
     if (b) b.ingresos += Number(m.monto);
+  });
+  // (215 / H37) Ver nota arriba.
+  (ventas || []).forEach((v) => {
+    const dia = toISODate(new Date(v.creado_en));
+    const b = porDia.get(dia);
+    if (b) b.ingresos += Number(v.monto);
   });
   dias.forEach((dia) => {
     const b = porDia.get(dia);
