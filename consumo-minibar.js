@@ -32,6 +32,11 @@
 // pueden eliminar, pero no editar como grupo (no hay forma de saber
 // cuáles iban juntas en la venta original).
 //
+// Nota (209 / auditoría H23): de los 3 flujos que ajustan inventario de
+// habitación (registrar consumo nuevo, editar venta — 2 puntos —, y
+// eliminar venta), solo "eliminar" avisaba si el ajuste fallaba; los
+// otros dos quedaban en silencio. Ahora los 3 avisan igual.
+//
 // Nota (200 / auditoría H12): se sigue permitiendo que un consumo deje
 // el minibar de la habitación en negativo (puede ser real — faltó
 // reponer a tiempo), pero ya no en silencio: antes de abrir el resumen
@@ -267,8 +272,11 @@ async function guardarConsumoNuevo({ habitacionId, reservaId, lineas }) {
     try {
       await ajustarInventarioHabitacion(habitacionId, linea.productoId, -linea.cantidad, usuario?.id || null, 'consumo');
     } catch (errInv) {
-      // No bloquea el registro del consumo — igual que antes, es un
-      // registro complementario para saber qué reponer.
+      // (209 / auditoría H23) No bloquea el registro del consumo — es un
+      // registro complementario para saber qué reponer — pero ahora sí
+      // avisa (antes quedaba en silencio, a diferencia de "Eliminar
+      // consumo" que ya avisaba).
+      mostrarToast(`Consumo registrado, pero no se pudo ajustar el inventario de "${linea.producto.nombre}" en la habitación.`, 'error');
     }
   }
 }
@@ -379,8 +387,10 @@ async function guardarEdicionVenta(grupo, lineasNuevas) {
     try {
       await ajustarInventarioHabitacion(fila.habitacion_id, fila.producto_id, fila.cantidad, usuario?.id || null, 'ajuste_habitacion');
     } catch (errInv) {
-      // continúa igual — si algo queda inconsistente, sigue siendo
-      // corregible a mano desde Bodega/Mapa de minibares.
+      // (209 / auditoría H23) Antes quedaba en silencio — si algo queda
+      // inconsistente, sigue siendo corregible a mano desde
+      // Bodega/Mapa de minibares, pero ahora al menos se avisa.
+      mostrarToast(`No se pudo revertir el inventario de "${fila.minibar_productos?.nombre || 'un producto'}" al editar — revísalo en Bodega/Mapa de minibares.`, 'error');
     }
   }
 
@@ -409,7 +419,8 @@ async function guardarEdicionVenta(grupo, lineasNuevas) {
     try {
       await ajustarInventarioHabitacion(habitacionId, linea.productoId, -linea.cantidad, usuario?.id || null, 'consumo');
     } catch (errInv) {
-      // no bloquea
+      // (209 / auditoría H23) No bloquea, pero ahora avisa.
+      mostrarToast(`Consumo editado, pero no se pudo ajustar el inventario de "${linea.producto.nombre}" en la habitación.`, 'error');
     }
   }
 }
