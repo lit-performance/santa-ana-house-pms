@@ -32,6 +32,22 @@
 // una venta de mostrador también mueve inventario, que esto no revierte)
 // y quedan fuera de esta primera versión para no arriesgar datos.
 //
+// Nota (214 / auditoría H34): irónicamente, hasta ahora "✏️ Editar" y "🗑
+// Eliminar" de ARRIBA (las correcciones que hace este mismo módulo de
+// auditoría) eran las únicas acciones del sistema que no dejaban
+// rastro — el UPDATE/DELETE iba directo a caja_movimientos/
+// reservas_pagos sin guardar el valor anterior ni quién hizo el cambio.
+// Ahora cada corrección también inserta una fila en la tabla nueva
+// `auditoria_correcciones` (tabla_origen, registro_id, acción,
+// valor_anterior/valor_nuevo en jsonb, usuario_id, ver sql/214) — un
+// registro de auditoría de las propias correcciones de auditoría.
+//
+// Nota (214 / auditoría H35): la fila de "Pago de reserva" en la
+// Bitácora ahora muestra el usuario real que cobró (columna
+// `reservas_pagos.registrado_por`, nueva) en vez de un "usuarioId: null"
+// fijo en el código — los pagos registrados ANTES de este cambio se
+// quedan sin usuario (nunca se guardó, no hay forma de reconstruirlo).
+//
 // EXPORTAR A EXCEL DE VERDAD (ver 185) — "⬇ Descargar Excel" ya no baja
 // un CSV (texto plano): genera un .xlsx real con dos pestañas ("Resumen
 // por cuenta" y "Detalle") usando SheetJS, la PRIMERA librería externa
@@ -207,7 +223,9 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
       .lte('creado_en', hasta),
     supabase
       .from('reservas_pagos')
-      .select('id, reserva_id, monto, metodo_pago, comentarios, fecha, reservas(huesped_nombre, habitaciones(numero))')
+      // (214 / auditoría H35) registrado_por — antes esta bitácora
+      // mostraba "usuarioId: null" fijo para todo pago de reserva.
+      .select('id, reserva_id, monto, metodo_pago, comentarios, fecha, registrado_por, reservas(huesped_nombre, habitaciones(numero))')
       .gte('fecha', fechaInicio)
       .lt('fecha', finExclusivoFecha),
   ]);
@@ -291,7 +309,10 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
       tabla: 'reservas_pagos',
       fecha: p.fecha,
       tipo: 'pago_reserva',
-      usuarioId: null,
+      // (214 / auditoría H35) p.registrado_por, no null fijo — solo
+      // tendrá dato en pagos registrados DESPUÉS de este cambio; los
+      // históricos anteriores se quedan sin usuario (nunca se guardó).
+      usuarioId: p.registrado_por,
       descripcion: `${escaparHTML(huesped)}${habitacion ? ` (hab. ${escaparHTML(habitacion)})` : ''} — ${p.comentarios || 'Pago de reserva'} (${p.metodo_pago})`,
       metodoPago: p.metodo_pago,
       monto: Number(p.monto),
@@ -508,11 +529,30 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
       });
       if (!ok) return;
 
+      // (214 / auditoría H34) Antes de borrar, se guarda la fila completa
+      // tal como estaba — si no, esta eliminación (justo la que hace este
+      // módulo de auditoría) no dejaría ningún rastro de qué había ni
+      // quién la borró.
+      const { data: filaAnterior } = await supabase.from(tabla).select('*').eq('id', id).maybeSingle();
+
       const { error: errDelete } = await supabase.from(tabla).delete().eq('id', id);
       if (errDelete) {
         mostrarToast(`Error eliminando: ${errDelete.message}`, 'error');
         return;
       }
+
+      const { error: errLog } = await supabase.from('auditoria_correcciones').insert({
+        tabla_origen: tabla,
+        registro_id: id,
+        accion: 'eliminar',
+        valor_anterior: filaAnterior || null,
+        valor_nuevo: null,
+        usuario_id: getUsuarioActual()?.id || null,
+      });
+      if (errLog) {
+        mostrarToast('Transacción eliminada, pero no se pudo guardar el rastro de auditoría de esta corrección.', 'error');
+      }
+
       mostrarToast('Transacción eliminada.', 'exito');
       await recargar();
     });
@@ -569,6 +609,21 @@ function abrirModalEditarTransaccion(ev, recargar) {
     if (error) {
       mostrarToast(`Error corrigiendo la transacción: ${error.message}`, 'error');
       return;
+    }
+
+    // (214 / auditoría H34) Rastro de auditoría de esta misma corrección
+    // — valor_anterior ya lo teníamos en `ev` (viene de la fila que
+    // abrió este modal), así que no hace falta otra consulta.
+    const { error: errLog } = await supabase.from('auditoria_correcciones').insert({
+      tabla_origen: ev.tabla,
+      registro_id: ev.id,
+      accion: 'editar',
+      valor_anterior: { metodo_pago: ev.metodoPago, monto: ev.monto },
+      valor_nuevo: payload,
+      usuario_id: getUsuarioActual()?.id || null,
+    });
+    if (errLog) {
+      mostrarToast('Transacción corregida, pero no se pudo guardar el rastro de auditoría de esta corrección.', 'error');
     }
 
     mostrarToast('Transacción corregida.', 'exito');
