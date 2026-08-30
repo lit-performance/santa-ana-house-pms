@@ -20,7 +20,12 @@ export function formatFechaCorta(fechaISO) {
 
 export function formatFechaHora(fechaISO) {
   if (!fechaISO) return '—';
-  const d = new Date(fechaISO);
+  // (214 / auditoría H36) Mismo guardia que formatFechaCorta (ver 106) —
+  // defensivo: hoy ningún uso pasa una fecha simple sin hora (todos pasan
+  // timestamps completos, como `creado_en`), pero si alguno lo hiciera en
+  // el futuro, esto evita el mismo corrimiento de un día por interpretar
+  // la fecha en UTC en vez de hora local.
+  const d = fechaISO.length <= 10 ? new Date(`${fechaISO}T00:00:00`) : new Date(fechaISO);
   return d.toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
