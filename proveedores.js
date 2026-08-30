@@ -28,6 +28,11 @@
 // directorio) sin duplicar el formulario. El uso interno de este mismo
 // archivo (botón "+ Nuevo proveedor" del directorio) sigue funcionando
 // igual, solo ignora ese argumento.
+//
+// Nota (209 / auditoría H22): "🗑 Eliminar" no avisaba si el proveedor
+// tenía productos de Bodega asignados (`inventario_bodega.proveedor_id`)
+// — ahora se revisa antes de confirmar y se avisa cuántos hay. El
+// borrado sigue sin tocar esos productos, solo quedan sin proveedor.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
@@ -190,9 +195,23 @@ function abrirModalDetalleProveedor(p, elemento, permitido) {
     const btnEliminar = overlay.querySelector('#btn-eliminar-detalle-proveedor');
     if (btnEliminar) {
       btnEliminar.addEventListener('click', async () => {
+        // (209 / auditoría H22) Antes se borraba sin avisar si el
+        // proveedor tenía productos asociados en Bodega — ahora se
+        // revisa primero y, si hay, se avisa cuántos antes de confirmar
+        // (el borrado no toca esos productos, solo los deja sin
+        // proveedor asignado).
+        const { count: cantidadAsociados } = await supabase
+          .from('inventario_bodega')
+          .select('id', { count: 'exact', head: true })
+          .eq('proveedor_id', p.id);
+        const avisoAsociados =
+          (cantidadAsociados || 0) > 0
+            ? ` <strong>Tiene ${cantidadAsociados} producto(s) de Bodega asignados a este proveedor</strong> — no se borran, pero quedarán sin proveedor asignado.`
+            : '';
+
         const ok = await mostrarConfirmacion({
           titulo: 'Eliminar proveedor',
-          contenidoHTML: `¿Eliminar a <strong>${escaparHTML(p.nombre_comercial)}</strong>? Esta acción no se puede deshacer.`,
+          contenidoHTML: `¿Eliminar a <strong>${escaparHTML(p.nombre_comercial)}</strong>?${avisoAsociados} Esta acción no se puede deshacer.`,
           textoConfirmar: 'Eliminar',
         });
         if (!ok) return;
