@@ -1,56 +1,63 @@
-// minibar.js
+// compras.js
 //
-// Módulo: Minibar. Catálogo de productos (nombre, categoría, precio,
-// cantidad estándar por habitación, ubicación en la repisa/nevera — para
-// que housekeeping sepa qué reponer) y registro de consumo por habitación
-// actualmente en uso.
+// Módulo: Compras. Órdenes de compra formales a proveedores, con líneas de
+// producto y seguimiento de estado (solicitado → en camino → recibido).
+// Al marcar una orden como "recibido", este módulo suma automáticamente las
+// cantidades a inventario_bodega (mismo mecanismo que la "Registrar compra"
+// rápida de Inventario) y actualiza el precio de costo — así no toca
+// registrar la entrada dos veces.
 //
-// El consumo registrado NO modifica reservas.monto_total — se suma aparte
-// en cuentas.js (montoMinibar) para que la tarifa de la habitación y los
-// extras de minibar queden separados pero se cobren juntos al liquidar en
-// Recepción al hacer check-out. Una vez liquidado (ver recepcion.js), ese
-// pago cae en reservas_pagos igual que cualquier abono, así que también
-// aparece automático en Caja e Indicadores.
+// Nota (136): este archivo YA NO se registra como pestaña propia — sus dos
+// secciones (`cargarFormNuevaOrden` y `cargarListaOrdenes`, ahora
+// exportadas) se muestran como dos mini-tarjetas más dentro del tablero de
+// Inventario ("📝 Nueva orden de compra" y "📦 Órdenes de compra"), junto a
+// "Registrar compra" y el resto — Compras solo tenía 2 secciones y ya
+// vivía en el mismo grupo de menú que Inventario, así que tenerlas
+// separadas en dos pestañas distintas era más navegación de la necesaria
+// para algo tan relacionado. Este archivo se deja tal cual por dentro
+// (la lógica de crear/recibir/cancelar órdenes no cambió en nada) — solo
+// se quitó el registro como módulo independiente.
 //
-// Cada consumo también descuenta el stock físico del minibar de esa
-// habitación en inventario_habitacion (ver inventario.js). Si se elimina un
-// consumo por error, el descuento se revierte. Esto es un registro
-// complementario para saber qué reponer — si falla no bloquea el cobro.
+// Nota (138): las dos secciones también perdieron su envoltorio propio
+// (`.tarjeta` + `<h3>`) — ahora viven DENTRO de la tarjeta "🛒 Compras"
+// que arma inventario.js (una sola, con pestañas internas "Entrada
+// rápida" / "Nueva orden formal" y el listado de órdenes siempre visible
+// debajo), así que ya no necesitan su propio título ni tarjeta aparte.
 //
-// Nota (148): "Registrar consumo" ya NO es un formulario siempre visible
-// en la pantalla (con un producto y cantidad quedando precargados por
-// defecto, lo que exponía a un envío accidental). Ahora es un botón que
-// abre la tarjeta emergente compartida de consumo-minibar.js — el mismo
-// flujo de 2 pasos (líneas de producto sin nada preseleccionado → resumen
-// de confirmación → guardar) que usa también Recepción en "➕ Consumo".
-// El listado de abajo ("Consumos de habitaciones en uso") ahora agrupa
-// cada venta (una o varias líneas juntas) y permite editarla o
-// eliminarla completa — ver `cargarListaVentasMinibar` en
-// consumo-minibar.js.
+// ⚠️ Nota (197 / auditoría H2) — LEER ANTES DE REACTIVAR ESTE ARCHIVO:
+// desde la nota (141) de inventario.js, el flujo de este archivo
+// (órdenes solicitado → en camino → recibido, sobre las tablas
+// `ordenes_compra`/`ordenes_compra_items`) quedó DESACTIVADO — ya no se
+// importa desde ningún módulo activo. Se reemplazó por "🛒 Registrar
+// compra" en inventario.js, que hace directo a inventario_bodega +
+// caja_movimientos (categoría "Compras"), sin pasar por estas tablas.
+// Si en algún momento se reactiva este archivo, OJO: quedaría un
+// segundo camino paralelo para registrar compras, con su propio
+// registro de existencias y su propio egreso en Caja — separado del
+// que ya usa inventario.js — con riesgo real de duplicar entradas de
+// bodega o egresos si alguien usa los dos flujos sin darse cuenta de
+// que hacen lo mismo. Antes de reactivarlo, hay que decidir cuál de los
+// dos flujos queda como el oficial (o unificarlos), no simplemente
+// volver a registrar el módulo.
 //
-// Nota (148): en "Catálogo de productos", el formulario "+ Nuevo
-// producto" se movió ARRIBA de la tabla (antes quedaba debajo, había que
-// scrollear toda la lista para llegar a él).
+// Nota (208 / auditoría H20): "Marcar recibido" no tenía protección de
+// doble clic ni revalidaba el estado vigente de la orden antes de sumar
+// a bodega — un doble clic (o una orden ya recibida por otra vía)
+// podía duplicar silenciosamente el stock y el costo. Se agregó ambas
+// protecciones. Sigue siendo código desactivado (ver arriba) — este
+// arreglo queda listo para cuando/si se reactive.
 
-import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
-import { mostrarToast } from './ui.js';
+import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
+import { formatFechaHora } from './dates.js';
 import { getUsuarioActual } from './auth.js';
-import { calcularHabitacionesEnUso } from './cuentas.js';
-import { abrirModalRegistrarConsumo, cargarListaVentasMinibar } from './consumo-minibar.js';
 
-const ROLES_REGISTRAN_CONSUMO = ['propietario', 'administrador', 'recepcionista'];
-const ROLES_EDITAN_CATALOGO = ['propietario', 'administrador'];
+const ROLES_GESTIONAN = ['propietario', 'administrador', 'bodega'];
 
-function puedeRegistrarConsumo() {
+function puedeGestionar() {
   const usuario = getUsuarioActual();
-  return Boolean(usuario) && ROLES_REGISTRAN_CONSUMO.includes(usuario.rol);
-}
-
-function puedeEditarCatalogo() {
-  const usuario = getUsuarioActual();
-  return Boolean(usuario) && ROLES_EDITAN_CATALOGO.includes(usuario.rol);
+  return Boolean(usuario) && ROLES_GESTIONAN.includes(usuario.rol);
 }
 
 function escaparHTML(texto) {
@@ -59,187 +66,349 @@ function escaparHTML(texto) {
   return div.innerHTML;
 }
 
-async function render(container) {
-  container.innerHTML = `
-    <h2>Minibar</h2>
-    <div id="minibar-consumo-wrap" style="margin-bottom:1.5rem;">
-      <p class="mensaje-vacio">Cargando…</p>
-    </div>
-    <div id="minibar-catalogo-wrap">
-      <p class="mensaje-vacio">Cargando…</p>
-    </div>
-  `;
-  await Promise.all([
-    cargarSeccionConsumo(container.querySelector('#minibar-consumo-wrap'), container),
-    cargarCatalogo(container.querySelector('#minibar-catalogo-wrap')),
+const ETIQUETAS_ESTADO = {
+  solicitado: '🟡 Solicitado',
+  en_camino: '🔵 En camino',
+  recibido: '🟢 Recibido',
+  cancelado: '⚪ Cancelado',
+};
+
+// =========================================================
+// Nueva orden de compra
+// =========================================================
+export async function cargarFormNuevaOrden(elemento) {
+  if (!puedeGestionar()) {
+    elemento.innerHTML = '';
+    return;
+  }
+
+  const [{ data: proveedores }, { data: productos }] = await Promise.all([
+    supabase.from('proveedores').select('id, nombre_comercial').eq('activo', true).order('nombre_comercial'),
+    supabase.from('minibar_productos').select('id, nombre, categoria').order('categoria').order('nombre'),
   ]);
-}
 
-async function cargarSeccionConsumo(elemento, container) {
-  elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
-  const permitido = puedeRegistrarConsumo();
+  const categorias = [...new Set((productos || []).map((p) => p.categoria))];
 
-  let habitacionesEnUso = [];
-  try {
-    habitacionesEnUso = await calcularHabitacionesEnUso();
-  } catch (error) {
-    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando habitaciones: ${error.message}</p>`;
-    return;
+  function opcionesProducto() {
+    return categorias
+      .map(
+        (cat) => `
+      <optgroup label="${escaparHTML(cat)}">
+        ${(productos || [])
+          .filter((p) => p.categoria === cat)
+          .map((p) => `<option value="${p.id}">${escaparHTML(p.nombre)}</option>`)
+          .join('')}
+      </optgroup>
+    `
+      )
+      .join('');
+  }
+
+  function filaItem() {
+    const fila = document.createElement('div');
+    fila.className = 'form-grid fila-item-compra';
+    fila.style.cssText = 'grid-template-columns:2fr 1fr 1fr auto; align-items:end; margin-bottom:0.5rem;';
+    fila.innerHTML = `
+      <label>Producto
+        <select class="item-producto" required>${opcionesProducto()}</select>
+      </label>
+      <label>Cantidad
+        <input type="number" class="item-cantidad" min="1" value="1" required />
+      </label>
+      <label>Precio costo unit.
+        <input type="number" class="item-precio" min="0" step="100" value="0" required />
+      </label>
+      <button type="button" class="btn-editar btn-quitar-item">Quitar</button>
+    `;
+    fila.querySelector('.btn-quitar-item').addEventListener('click', () => fila.remove());
+    return fila;
   }
 
   elemento.innerHTML = `
-    <div class="tarjeta">
-      <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0;">
-        <h3 style="margin:0;">🥤 Registrar consumo</h3>
-        ${permitido && habitacionesEnUso.length > 0 ? '<button type="button" id="btn-registrar-consumo" class="btn btn-primario btn-chico">+ Registrar consumo</button>' : ''}
-      </div>
-      ${
-        habitacionesEnUso.length === 0
-          ? '<p class="mensaje-vacio">No hay habitaciones ocupadas ahora mismo.</p>'
-          : !permitido
-          ? '<p class="mensaje-vacio">Tu rol no tiene permiso para registrar consumo.</p>'
-          : '<p class="mensaje-vacio">Elige la habitación y uno o varios productos — se te pedirá confirmar el resumen antes de guardar.</p>'
-      }
-    </div>
-    <div id="minibar-ventas-wrap"></div>
+      <p class="texto-ayuda">Pedido formal a un proveedor con varios productos — NO se suma a bodega hasta marcarla "recibido" en la lista de abajo.</p>
+      <form id="form-nueva-orden">
+        <div class="form-grid">
+          <label>Proveedor
+            <select name="proveedor_id" required>
+              <option value="">—</option>
+              ${(proveedores || []).map((p) => `<option value="${p.id}">${escaparHTML(p.nombre_comercial)}</option>`).join('')}
+            </select>
+          </label>
+          <label>Fecha del pedido
+            <input type="date" name="fecha_pedido" value="${new Date().toISOString().slice(0, 10)}" />
+          </label>
+          <label>Notas
+            <input type="text" name="notas" placeholder="Opcional" />
+          </label>
+        </div>
+        <p style="font-size:0.78rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--color-texto-suave); margin:1rem 0 0.4rem;">Productos a pedir</p>
+        <div id="items-orden-wrap"></div>
+        <button type="button" id="btn-agregar-item" class="btn btn-secundario btn-chico">+ Agregar producto</button>
+        <div class="modal-acciones" style="margin-top:1rem;">
+          <button type="submit" class="btn btn-primario">Crear orden</button>
+        </div>
+      </form>
   `;
 
-  if (permitido && habitacionesEnUso.length > 0) {
-    elemento.querySelector('#btn-registrar-consumo').addEventListener('click', () => {
-      abrirModalRegistrarConsumo({
-        habitacionesEnUso,
-        onGuardado: () => cargarSeccionConsumo(elemento, container),
-      });
-    });
-  }
+  const wrapItems = elemento.querySelector('#items-orden-wrap');
+  wrapItems.appendChild(filaItem());
+  elemento.querySelector('#btn-agregar-item').addEventListener('click', () => {
+    wrapItems.appendChild(filaItem());
+  });
 
-  await cargarListaVentasMinibar(elemento.querySelector('#minibar-ventas-wrap'), { habitacionesEnUso, permitido });
+  elemento.querySelector('#form-nueva-orden').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const proveedorId = form.get('proveedor_id') ? Number(form.get('proveedor_id')) : null;
+
+    const filas = [...wrapItems.querySelectorAll('.fila-item-compra')];
+    if (filas.length === 0) {
+      mostrarToast('Agrega al menos un producto a la orden.', 'error');
+      return;
+    }
+
+    const items = filas.map((fila) => ({
+      producto_id: Number(fila.querySelector('.item-producto').value),
+      cantidad: Number(fila.querySelector('.item-cantidad').value),
+      precio_costo_unitario: Number(fila.querySelector('.item-precio').value),
+    }));
+
+    const usuario = getUsuarioActual();
+    const { data: orden, error: errOrden } = await supabase
+      .from('ordenes_compra')
+      .insert({
+        proveedor_id: proveedorId,
+        fecha_pedido: form.get('fecha_pedido') || new Date().toISOString().slice(0, 10),
+        notas: form.get('notas').trim() || null,
+        creado_por: usuario?.id || null,
+      })
+      .select('id')
+      .single();
+
+    if (errOrden) {
+      mostrarToast(`Error creando la orden: ${errOrden.message}`, 'error');
+      return;
+    }
+
+    const { error: errItems } = await supabase
+      .from('ordenes_compra_items')
+      .insert(items.map((it) => ({ ...it, orden_id: orden.id })));
+
+    if (errItems) {
+      mostrarToast(`Orden creada, pero hubo un error agregando los productos: ${errItems.message}`, 'error');
+      return;
+    }
+
+    mostrarToast('Orden de compra creada.', 'exito');
+    e.target.reset();
+    wrapItems.innerHTML = '';
+    wrapItems.appendChild(filaItem());
+    const wrapLista = document.querySelector('#compras-lista-wrap');
+    if (wrapLista) await cargarListaOrdenes(wrapLista);
+  });
 }
 
-async function cargarCatalogo(elemento) {
+// =========================================================
+// Lista de órdenes
+// =========================================================
+export async function cargarListaOrdenes(elemento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
-  const permitido = puedeEditarCatalogo();
+  const permitido = puedeGestionar();
 
-  const { data: productos, error } = await supabase.from('minibar_productos').select('*').order('categoria').order('nombre');
-  if (error) {
-    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando catálogo: ${error.message}</p>`;
+  const { data: ordenes, error: errOrdenes } = await supabase
+    .from('ordenes_compra')
+    .select('*, proveedores(nombre_comercial)')
+    .order('creado_en', { ascending: false });
+
+  if (errOrdenes) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando órdenes: ${errOrdenes.message}</p>`;
     return;
   }
 
+  const ordenIds = (ordenes || []).map((o) => o.id);
+  const { data: items, error: errItems } = ordenIds.length
+    ? await supabase.from('ordenes_compra_items').select('*, minibar_productos(nombre)').in('orden_id', ordenIds)
+    : { data: [], error: null };
+
+  if (errItems) {
+    elemento.innerHTML = `<p class="mensaje-vacio">Error cargando los productos de las órdenes: ${errItems.message}</p>`;
+    return;
+  }
+
+  const itemsPorOrden = new Map();
+  (items || []).forEach((it) => {
+    if (!itemsPorOrden.has(it.orden_id)) itemsPorOrden.set(it.orden_id, []);
+    itemsPorOrden.get(it.orden_id).push(it);
+  });
+
   elemento.innerHTML = `
-    <div class="tarjeta">
-      <h3>Catálogo de productos</h3>
+      <p class="texto-ayuda">Marca "recibido" cuando llegue la mercancía — eso suma las cantidades a bodega automáticamente y actualiza el precio de costo.</p>
       ${
-        permitido
-          ? `
-        <form id="form-nuevo-producto" class="form-grid" style="margin-bottom:1.25rem;">
-          <label>Categoría
-            <input type="text" name="categoria" required placeholder="Ej: Bebidas" />
-          </label>
-          <label>Nombre
-            <input type="text" name="nombre" required />
-          </label>
-          <label>Precio
-            <input type="number" name="precio" step="1000" min="0" required />
-          </label>
-          <label>Cant. estándar
-            <input type="number" name="cantidad_estandar" min="0" placeholder="Opcional" />
-          </label>
-          <label>Ubicación
-            <input type="text" name="ubicacion" placeholder="Opcional" />
-          </label>
-          <button type="submit" class="btn btn-secundario btn-chico">+ Agregar producto</button>
-        </form>
-      `
-          : ''
+        (ordenes || []).length === 0
+          ? '<p class="mensaje-vacio">Sin órdenes registradas todavía.</p>'
+          : ordenes
+              .map((o) => {
+                const itemsOrden = itemsPorOrden.get(o.id) || [];
+                const total = itemsOrden.reduce((acc, it) => acc + it.cantidad * it.precio_costo_unitario, 0);
+                return `
+              <div class="tarjeta" style="margin-bottom:0.75rem; box-shadow:none; border:1px solid var(--color-borde);">
+                <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:0.5rem; align-items:center;">
+                  <div>
+                    <strong>Orden #${o.id}</strong> — ${escaparHTML(o.proveedores?.nombre_comercial || 'Sin proveedor')}
+                    <div class="mensaje-vacio" style="margin:0.15rem 0 0;">Pedida: ${o.fecha_pedido}${o.fecha_recibido ? ` · Recibida: ${formatFechaHora(o.fecha_recibido)}` : ''}</div>
+                  </div>
+                  <div style="text-align:right;">
+                    <div>${ETIQUETAS_ESTADO[o.estado] || o.estado}</div>
+                    <div style="font-weight:700;">${formatCOP(total)}</div>
+                  </div>
+                </div>
+                <div class="tabla-scroll" style="margin-top:0.6rem;">
+                  <table class="tabla-simple">
+                    <thead><tr><th>Producto</th><th>Cant.</th><th>Costo unit.</th><th>Subtotal</th></tr></thead>
+                    <tbody>
+                      ${itemsOrden
+                        .map(
+                          (it) => `<tr>
+                        <td>${escaparHTML(it.minibar_productos?.nombre || '—')}</td>
+                        <td>${it.cantidad}</td>
+                        <td>${formatCOP(it.precio_costo_unitario)}</td>
+                        <td>${formatCOP(it.cantidad * it.precio_costo_unitario)}</td>
+                      </tr>`
+                        )
+                        .join('')}
+                    </tbody>
+                  </table>
+                </div>
+                ${o.notas ? `<p class="mensaje-vacio" style="margin-top:0.5rem;">Nota: ${escaparHTML(o.notas)}</p>` : ''}
+                ${
+                  permitido && (o.estado === 'solicitado' || o.estado === 'en_camino')
+                    ? `<div class="acciones-tarjeta" style="justify-content:flex-start; margin-top:0.75rem;">
+                        ${o.estado === 'solicitado' ? `<button type="button" class="btn-editar btn-en-camino" data-orden-id="${o.id}">Marcar en camino</button>` : ''}
+                        <button type="button" class="btn-editar btn-recibido" data-orden-id="${o.id}">Marcar recibido</button>
+                        <button type="button" class="btn-editar btn-cancelar-orden" data-orden-id="${o.id}">Cancelar orden</button>
+                      </div>`
+                    : ''
+                }
+              </div>
+            `;
+              })
+              .join('')
       }
-      <div class="tabla-scroll">
-        <table class="tabla-simple">
-          <thead>
-            <tr>
-              <th>Categoría</th>
-              <th>Producto</th>
-              <th>Precio</th>
-              <th>Cant. estándar</th>
-              <th>Ubicación</th>
-              <th>Activo</th>
-              ${permitido ? '<th></th>' : ''}
-            </tr>
-          </thead>
-          <tbody>
-            ${
-              (productos || [])
-                .map(
-                  (p) => `
-              <tr data-id="${p.id}">
-                <td>${escaparHTML(p.categoria)}</td>
-                <td>${escaparHTML(p.nombre)}</td>
-                <td>${permitido ? `<input type="number" class="input-producto" data-campo="precio" value="${p.precio}" style="width:100px" />` : formatCOP(p.precio)}</td>
-                <td>${permitido ? `<input type="number" class="input-producto" data-campo="cantidad_estandar" value="${p.cantidad_estandar ?? ''}" style="width:70px" />` : p.cantidad_estandar ?? '—'}</td>
-                <td>${permitido ? `<input type="text" class="input-producto" data-campo="ubicacion" value="${escaparHTML(p.ubicacion || '')}" style="width:170px" />` : escaparHTML(p.ubicacion || '—')}</td>
-                <td>${p.activo ? '✅' : '🚫'}</td>
-                ${permitido ? `<td><button type="button" class="btn-editar btn-guardar-producto">Guardar</button></td>` : ''}
-              </tr>
-            `
-                )
-                .join('') ||
-              `<tr><td colspan="${permitido ? 7 : 6}" class="mensaje-vacio">Sin productos en el catálogo.</td></tr>`
-            }
-          </tbody>
-        </table>
-      </div>
-    </div>
   `;
 
-  if (permitido) {
-    elemento.querySelectorAll('.btn-guardar-producto').forEach((btn) => {
-      btn.addEventListener('click', async (e) => {
-        const fila = e.target.closest('tr');
-        const id = Number(fila.dataset.id);
-        const payload = {};
-        fila.querySelectorAll('.input-producto').forEach((input) => {
-          const campo = input.dataset.campo;
-          payload[campo] =
-            campo === 'precio' || campo === 'cantidad_estandar'
-              ? input.value
-                ? Number(input.value)
-                : null
-              : input.value.trim() || null;
-        });
-        const { error } = await supabase.from('minibar_productos').update(payload).eq('id', id);
-        if (error) {
-          mostrarToast(`Error: ${error.message}`, 'error');
-          return;
-        }
-        mostrarToast('Producto actualizado.', 'exito');
-      });
-    });
+  if (!permitido) return;
 
-    elemento.querySelector('#form-nuevo-producto').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const form = new FormData(e.target);
-      const { error } = await supabase.from('minibar_productos').insert({
-        categoria: form.get('categoria').trim(),
-        nombre: form.get('nombre').trim(),
-        precio: Number(form.get('precio')),
-        cantidad_estandar: form.get('cantidad_estandar') ? Number(form.get('cantidad_estandar')) : null,
-        ubicacion: form.get('ubicacion').trim() || null,
-      });
+  elemento.querySelectorAll('.btn-en-camino').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const { error } = await supabase.from('ordenes_compra').update({ estado: 'en_camino' }).eq('id', Number(btn.dataset.ordenId));
       if (error) {
-        mostrarToast(`Error creando producto: ${error.message}`, 'error');
+        mostrarToast(`Error: ${error.message}`, 'error');
         return;
       }
-      mostrarToast('Producto agregado.', 'exito');
-      await cargarCatalogo(elemento);
+      mostrarToast('Orden marcada como en camino.', 'exito');
+      await cargarListaOrdenes(elemento);
     });
-  }
-}
+  });
 
-registerModule({
-  id: 'minibar',
-  label: 'Minibar',
-  icono: '🥤',
-  roles: ['propietario', 'administrador', 'recepcionista', 'bodega'],
-  parentId: 'grupo-inventario',
-  render,
-});
+  elemento.querySelectorAll('.btn-cancelar-orden').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const ok = await mostrarConfirmacion({
+        titulo: 'Cancelar orden',
+        contenidoHTML: '¿Cancelar esta orden de compra? No se sumará nada a bodega.',
+        textoConfirmar: 'Cancelar orden',
+      });
+      if (!ok) return;
+      const { error } = await supabase.from('ordenes_compra').update({ estado: 'cancelado' }).eq('id', Number(btn.dataset.ordenId));
+      if (error) {
+        mostrarToast(`Error: ${error.message}`, 'error');
+        return;
+      }
+      mostrarToast('Orden cancelada.', 'exito');
+      await cargarListaOrdenes(elemento);
+    });
+  });
+
+  elemento.querySelectorAll('.btn-recibido').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      // (208 / auditoría H20) Protección de doble clic — mismo patrón
+      // que en caja.js/gastos.js (ver nota de cabecera de caja.js).
+      if (btn.disabled) return;
+      btn.disabled = true;
+
+      const ordenId = Number(btn.dataset.ordenId);
+      const ok = await mostrarConfirmacion({
+        titulo: 'Marcar como recibido',
+        contenidoHTML: 'Esto suma las cantidades de esta orden a las existencias de bodega y actualiza el precio de costo de cada producto. ¿Continuar?',
+        textoConfirmar: 'Sí, ya llegó',
+      });
+      if (!ok) {
+        btn.disabled = false;
+        return;
+      }
+
+      // (208 / auditoría H20) Revalidación de estado: antes se sumaba a
+      // bodega sin volver a comprobar el estado VIGENTE de la orden —
+      // si ya estaba 'recibido' (por un doble clic, u otra pestaña),
+      // esto volvía a sumar todo de nuevo, duplicando stock y costo.
+      const { data: ordenVigente, error: errVigente } = await supabase.from('ordenes_compra').select('estado').eq('id', ordenId).maybeSingle();
+      if (errVigente || !ordenVigente || ordenVigente.estado === 'recibido' || ordenVigente.estado === 'cancelado') {
+        mostrarToast('Esta orden ya no está pendiente de recibir — revisa la lista actualizada.', 'error');
+        btn.disabled = false;
+        await cargarListaOrdenes(elemento);
+        return;
+      }
+
+      const itemsOrden = itemsPorOrden.get(ordenId) || [];
+      const usuario = getUsuarioActual();
+
+      for (const it of itemsOrden) {
+        const { data: filaBodega } = await supabase
+          .from('inventario_bodega')
+          .select('id, cantidad_actual')
+          .eq('producto_id', it.producto_id)
+          .maybeSingle();
+
+        if (filaBodega) {
+          await supabase
+            .from('inventario_bodega')
+            .update({
+              cantidad_actual: filaBodega.cantidad_actual + it.cantidad,
+              precio_costo: it.precio_costo_unitario,
+              actualizado_en: new Date().toISOString(),
+            })
+            .eq('id', filaBodega.id);
+        } else {
+          await supabase.from('inventario_bodega').insert({
+            producto_id: it.producto_id,
+            cantidad_actual: it.cantidad,
+            cantidad_minima: 0,
+            precio_costo: it.precio_costo_unitario,
+          });
+        }
+
+        await supabase.from('inventario_movimientos').insert({
+          tipo: 'compra_bodega',
+          producto_id: it.producto_id,
+          cantidad: it.cantidad,
+          precio_costo: it.precio_costo_unitario,
+          notas: `Recibido de orden de compra #${ordenId}.`,
+          registrado_por: usuario?.id || null,
+        });
+      }
+
+      const { error: errOrden } = await supabase
+        .from('ordenes_compra')
+        .update({ estado: 'recibido', fecha_recibido: new Date().toISOString() })
+        .eq('id', ordenId);
+
+      if (errOrden) {
+        mostrarToast(`Bodega actualizada, pero no se pudo marcar la orden como recibida: ${errOrden.message}`, 'error');
+        btn.disabled = false;
+        return;
+      }
+
+      mostrarToast('Orden recibida. Bodega actualizada.', 'exito');
+      await cargarListaOrdenes(elemento);
+    });
+  });
+}
