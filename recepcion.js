@@ -287,10 +287,29 @@
 // recepcion_checkins, en reservas, y los estados físicos de ambas
 // habitaciones se actualizaban igual — podía terminar doble-reservando un
 // cuarto ya ocupado por otro huésped.
+//
+// Nota (213 / auditoría H28): la disponibilidad de habitación ahora
+// también está blindada a nivel de base de datos con un EXCLUDE
+// constraint ("reservas_no_cruce_habitacion", ver sql/212) — así se
+// cierra de raíz la condición de carrera que un simple SELECT-antes-de-
+// guardar no puede evitar del todo (dos guardados casi simultáneos). Si
+// ese constraint bloquea un guardado, Postgres devuelve el código
+// 23P01 — ver `mensajeErrorReserva` más abajo, que lo traduce a un aviso
+// legible en vez del mensaje técnico crudo.
+//
+// Nota (213 / auditoría H30): el check-out anticipado (el huésped sale
+// antes de la fecha de salida que tenía reservada) acorta fecha_checkout
+// pero antes NO tocaba el monto a cobrar ni lo avisaba en la
+// liquidación — se cobraba la estadía completa en silencio. Ahora, si la
+// liquidación detecta salida anticipada, muestra un aviso y sugiere un
+// monto de habitación prorrateado (noches realmente usadas × tarifa,
+// para tarifas por noche; el mismo monto original para tarifas "por
+// días", que son un total fijo) — pero el campo queda EDITABLE, porque
+// puede que se negocie otra cosa con el huésped en vez de prorratear.
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
-import { formatFechaHora, toISODate, addDays } from './dates.js';
+import { formatFechaHora, formatFechaCorta, toISODate, addDays, calcularEdad } from './dates.js';
 import { formatCOP, activarInputDinero, valorNumericoInput } from './currency.js';
 import { calcularHabitacionesEnUso } from './cuentas.js';
 import { getUsuarioActual } from './auth.js';
@@ -598,17 +617,29 @@ function abrirModalAgregarConsumoRapido(container, item) {
 async function abrirModalLiquidacion(container, item) {
   // --- Consumos de minibar de esta reserva, en detalle (no solo el total
   // que ya trae `item` desde cuentas.js) + catálogo de productos activos,
-  // para poder agregar un consumo de último momento sin salir de aquí. ---
-  const [{ data: consumosIniciales, error: errConsumos }, { data: productos, error: errProductos }] = await Promise.all([
-    item.reservaId
-      ? supabase
-          .from('minibar_consumos')
-          .select('*, minibar_productos(nombre)')
-          .eq('reserva_id', item.reservaId)
-          .order('creado_en', { ascending: false })
-      : Promise.resolve({ data: [], error: null }),
-    supabase.from('minibar_productos').select('*').eq('activo', true).order('categoria').order('nombre'),
-  ]);
+  // para poder agregar un consumo de último momento sin salir de aquí.
+  // (213 / auditoría H30) También se trae la reserva vinculada (fechas +
+  // tarifa) para poder detectar si esta salida es ANTES de la fecha de
+  // checkout que tenía reservada, y sugerir un monto de habitación
+  // ajustado — ver nota de cabecera. ---
+  const [{ data: consumosIniciales, error: errConsumos }, { data: productos, error: errProductos }, { data: reservaVinculadaLiquidacion }] =
+    await Promise.all([
+      item.reservaId
+        ? supabase
+            .from('minibar_consumos')
+            .select('*, minibar_productos(nombre)')
+            .eq('reserva_id', item.reservaId)
+            .order('creado_en', { ascending: false })
+        : Promise.resolve({ data: [], error: null }),
+      supabase.from('minibar_productos').select('*').eq('activo', true).order('categoria').order('nombre'),
+      item.reservaId
+        ? supabase
+            .from('reservas')
+            .select('fecha_checkin, fecha_checkout, tarifas(tipo, precio_temporada_baja, valor_convenido)')
+            .eq('id', item.reservaId)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
+    ]);
 
   if (errConsumos || errProductos) {
     mostrarToast(`Error cargando el detalle de minibar: ${(errConsumos || errProductos).message}`, 'error');
@@ -620,6 +651,27 @@ async function abrirModalLiquidacion(container, item) {
   let montoEditadoManualmente = false;
   let editandoConsumoId = null;
   let minibarConfirmado = false;
+
+  // (213 / H30) Salida anticipada: hoy es antes de la fecha de checkout
+  // que tenía reservada esta estadía. Tarifa por noche → se sugiere
+  // prorratear (noches realmente usadas × precio); tarifa "por días"
+  // (tipo 'por_dias') → el total es fijo por contrato, no depende de las
+  // noches, así que se sugiere el monto original. En ambos casos el
+  // campo queda editable más abajo.
+  const hoyISOLiquidacion = toISODate(new Date());
+  const tarifaLiquidacion = reservaVinculadaLiquidacion?.tarifas || null;
+  const esSalidaAnticipada = Boolean(
+    reservaVinculadaLiquidacion?.fecha_checkout && hoyISOLiquidacion < reservaVinculadaLiquidacion.fecha_checkout
+  );
+  let montoHabitacionSugerido = item.montoHabitacion;
+  if (esSalidaAnticipada && tarifaLiquidacion && tarifaLiquidacion.tipo !== 'por_dias' && reservaVinculadaLiquidacion.fecha_checkin) {
+    const nochesReales = Math.max(
+      1,
+      Math.round((new Date(`${hoyISOLiquidacion}T00:00:00`) - new Date(`${reservaVinculadaLiquidacion.fecha_checkin}T00:00:00`)) / 86400000)
+    );
+    montoHabitacionSugerido = nochesReales * Number(tarifaLiquidacion.precio_temporada_baja);
+  }
+  let montoHabitacionActual = montoHabitacionSugerido;
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -647,7 +699,9 @@ async function abrirModalLiquidacion(container, item) {
     return consumos.reduce((sum, c) => sum + Number(c.monto), 0);
   }
   function montoTotalActual() {
-    return item.montoHabitacion + montoMinibarActual();
+    // (213 / H30) montoHabitacionActual, no item.montoHabitacion — puede
+    // haberse ajustado por salida anticipada.
+    return montoHabitacionActual + montoMinibarActual();
   }
   function saldoActual() {
     return Math.max(0, montoTotalActual() - item.totalAbonado);
@@ -667,11 +721,35 @@ async function abrirModalLiquidacion(container, item) {
 
     cuerpo.innerHTML = `
       <div style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-top:0.5rem;">
-        ${cajonMonto(`Habitación (${item.cantidadNoches ?? '—'} noches)`, formatCOP(item.montoHabitacion), '#0b5fae', '#eaf3ff', '#8ec1f5')}
+        ${cajonMonto(`Habitación (${item.cantidadNoches ?? '—'} noches)`, formatCOP(montoHabitacionActual), '#0b5fae', '#eaf3ff', '#8ec1f5')}
         ${cajonMonto('Monto total', formatCOP(montoTotal), '#1a5276', '#eaf2f8', '#a9c8e0')}
         ${cajonMonto('Abonado hasta ahora', formatCOP(item.totalAbonado), 'var(--color-verde-oscuro, #1b7a3d)', '#eafbea', '#8fd3a4')}
         ${cajonMonto('Saldo pendiente', formatCOP(saldo), saldo > 0 ? 'var(--color-rojo-oscuro, #b3261e)' : 'var(--color-verde-oscuro, #1b7a3d)', saldo > 0 ? '#fdeceb' : '#eafbea', saldo > 0 ? '#f0a8a0' : '#8fd3a4')}
       </div>
+
+      ${
+        esSalidaAnticipada
+          ? `
+      <div class="tarjeta" style="margin-top:0.85rem; background:#fff8e1; border:1.5px solid #e8c547;">
+        <p style="margin:0 0 0.5rem; font-weight:600;">⚠️ Salida anticipada: la reserva estaba hasta ${formatFechaCorta(
+          reservaVinculadaLiquidacion.fecha_checkout
+        )}, hoy sale antes.</p>
+        <label>Monto de habitación a cobrar
+          <input type="text" id="input-monto-habitacion-liquidacion" placeholder="$0" />
+        </label>
+        <p class="mensaje-vacio" style="font-size:0.78rem; margin-top:0.3rem;">
+          ${
+            tarifaLiquidacion && tarifaLiquidacion.tipo === 'por_dias'
+              ? 'Esta tarifa es "por días" (monto fijo, no depende de las noches) — se sugiere el monto original, pero ajústalo si se negoció algo distinto con el huésped.'
+              : `Sugerido prorrateado por las noches realmente usadas: <strong>${formatCOP(
+                  montoHabitacionSugerido
+                )}</strong> — confírmalo o ajústalo a mano (por ejemplo si se negoció otra cosa) antes de continuar.`
+          }
+        </p>
+      </div>
+      `
+          : ''
+      }
 
       <div class="tarjeta" style="margin-top:1rem; background:var(--color-fondo-suave, #f8f9fb); border:1.5px solid #cfe0ee;">
         <div class="acciones-tarjeta" style="justify-content:space-between; margin-top:0; margin-bottom:0.5rem;">
@@ -784,6 +862,20 @@ async function abrirModalLiquidacion(container, item) {
     inputPago().addEventListener('input', () => {
       montoEditadoManualmente = true;
     });
+
+    // (213 / H30) Campo editable de monto de habitación, solo visible en
+    // salida anticipada. Se actualiza en 'change' (al salir del campo, no
+    // en cada tecla) y se repinta para que Monto total/Saldo pendiente y
+    // el pago sugerido reflejen el ajuste.
+    const inputMontoHab = cuerpo.querySelector('#input-monto-habitacion-liquidacion');
+    if (inputMontoHab) {
+      inputMontoHab.value = montoHabitacionActual || '';
+      activarInputDinero(inputMontoHab);
+      inputMontoHab.addEventListener('change', () => {
+        montoHabitacionActual = valorNumericoInput(inputMontoHab) || 0;
+        pintarLiquidacion();
+      });
+    }
 
     const checkConfirmo = cuerpo.querySelector('#check-confirmo-minibar');
     checkConfirmo.addEventListener('change', () => {
@@ -953,6 +1045,18 @@ async function abrirModalLiquidacion(container, item) {
     if (pagoFinal > 0 && !metodoPago) {
       mostrarToast('Elige a qué cuenta va este pago antes de confirmar el check-out.', 'error');
       return;
+    }
+
+    // (213 / auditoría H30) Si se ajustó el monto de habitación (salida
+    // anticipada), se persiste en reservas.monto_total — así Indicadores,
+    // el resumen de checkout y cualquier consulta futura ven el monto
+    // real que se cobró, no el original de la reserva.
+    if (item.reservaId && montoHabitacionActual !== item.montoHabitacion) {
+      const { error: errMontoHab } = await supabase.from('reservas').update({ monto_total: montoHabitacionActual }).eq('id', item.reservaId);
+      if (errMontoHab) {
+        mostrarToast(`No se pudo guardar el monto de habitación ajustado: ${errMontoHab.message}`, 'error');
+        return;
+      }
     }
 
     if (saldoRestante > 0) {
@@ -1431,7 +1535,10 @@ async function abrirModalEditarCheckin(container, item) {
 
       const { error: errReserva } = await supabase.from('reservas').update(payloadReservaSync).eq('id', checkin.reserva_id);
       if (errReserva) {
-        mostrarToast(`Check-in actualizado, pero no se pudo sincronizar la reserva vinculada: ${errReserva.message}`, 'error');
+        // (213 / H28) Si el error es 23P01, es el EXCLUDE constraint de
+        // la base de datos atrapando una carrera real — ver comentario
+        // de mensajeErrorReserva.
+        mostrarToast(`Check-in actualizado, pero no se pudo sincronizar la reserva vinculada: ${mensajeErrorReserva(errReserva)}`, 'error');
       }
     }
 
@@ -1475,17 +1582,23 @@ function escaparHTML(texto) {
   return div.innerHTML;
 }
 
-// Edad en años cumplidos a partir de una fecha 'YYYY-MM-DD'. Devuelve null
-// si no hay fecha (para no marcar como "menor" a alguien sin dato).
-function calcularEdad(fechaISO) {
-  if (!fechaISO) return null;
-  const hoy = new Date();
-  const nacimiento = new Date(fechaISO);
-  let edad = hoy.getFullYear() - nacimiento.getFullYear();
-  const mesDiff = hoy.getMonth() - nacimiento.getMonth();
-  if (mesDiff < 0 || (mesDiff === 0 && hoy.getDate() < nacimiento.getDate())) edad -= 1;
-  return edad;
+// (213 / auditoría H28) Desde que existe el EXCLUDE constraint
+// "reservas_no_cruce_habitacion" en la base de datos (ver sql/212), un
+// error de carrera real (dos guardados casi al mismo tiempo que
+// terminan cruzando fechas en la misma habitación) llega como código
+// Postgres 23P01 — con un mensaje técnico feo ("conflicting key value
+// violates exclusion constraint..."). Se traduce a un aviso legible;
+// cualquier otro código de error se muestra tal cual.
+function mensajeErrorReserva(error) {
+  if (error?.code === '23P01') {
+    return 'esa habitación ya tiene otra reserva que se cruza en esas fechas (lo detectó la base de datos justo al guardar — probablemente alguien más la ocupó en el mismo instante). Refresca y elige otra habitación o fecha.';
+  }
+  return error?.message || 'error desconocido';
 }
+
+// (213 / auditoría H29) calcularEdad se movió a dates.js — reintroducía
+// aquí el mismo bug de zona horaria que dates.js ya había corregido en
+// otras funciones. Ver el comentario junto a su definición allá.
 
 // Muestra/oculta la alerta de menor de edad de un bloque de acompañante
 // según su fecha de nacimiento, cada vez que esta cambia.
@@ -1867,7 +1980,8 @@ async function ejecutarRegistroCheckin(p) {
 
     const { error: errReservaUpd } = await supabase.from('reservas').update(payloadReservaVinculada).eq('id', reservaIdFinal);
     if (errReservaUpd) {
-      mostrarToast(`No se pudo actualizar la reserva vinculada: ${errReservaUpd.message}`, 'error');
+      // (213 / H28) Ver mensajeErrorReserva — 23P01 = EXCLUDE constraint.
+      mostrarToast(`No se pudo actualizar la reserva vinculada: ${mensajeErrorReserva(errReservaUpd)}`, 'error');
     }
   } else {
     const { data: nuevaReserva, error: errReservaNueva } = await supabase
@@ -1897,7 +2011,9 @@ async function ejecutarRegistroCheckin(p) {
       .single();
 
     if (errReservaNueva) {
-      mostrarToast(`Check-in continuará, pero no se pudo crear la reserva asociada: ${errReservaNueva.message}`, 'error');
+      // (213 / H28) Ver mensajeErrorReserva — 23P01 = EXCLUDE constraint
+      // (dos walk-in casi al mismo tiempo eligiendo la misma habitación).
+      mostrarToast(`Check-in continuará, pero no se pudo crear la reserva asociada: ${mensajeErrorReserva(errReservaNueva)}`, 'error');
     } else {
       reservaIdFinal = nuevaReserva.id;
     }
