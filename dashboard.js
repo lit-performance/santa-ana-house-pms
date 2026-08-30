@@ -6,6 +6,20 @@
 // Contabilidad en el CRM de Servicentro B&B. Cada vez que se construya un
 // módulo nuevo (Caja, Minibar...), este archivo se actualiza para
 // reemplazar los placeholders "—" por datos reales.
+//
+// ⚠️ Nota (215 / auditoría H41) — LEER ANTES DE REACTIVAR ESTE ARCHIVO:
+// confirmado que hoy NO se importa desde app.js (ver la nota de ese
+// archivo) — código muerto, no corre. Su cálculo de "Ocupadas/Libres"
+// (`cargarKpis`, más abajo) cuenta directo `habitaciones.estado`, una
+// lógica más simple que la que terminó viviendo en recepcion.js/
+// cuentas.js después de varias rondas de auditoría posteriores a que
+// este archivo se dejó de usar (el conteo de habitaciones en uso ahora
+// pasa por `calcularHabitacionesEnUso()`, que cruza reservas/check-ins
+// activos en vez de fiarse solo del campo de estado). Si algún día se
+// reactiva este archivo, hay que revisar y probablemente reescribir su
+// lógica de ocupación contra la versión actual de esos otros dos
+// archivos antes de confiar en sus números — no simplemente devolverle
+// el registro a app.js.
 
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
