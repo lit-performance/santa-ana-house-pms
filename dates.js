@@ -40,3 +40,25 @@ export function addDays(fecha, n) {
   d.setDate(d.getDate() + n);
   return d;
 }
+
+// (213 / auditoría H29) Edad en años cumplidos a partir de una fecha
+// 'YYYY-MM-DD'. Devuelve null si no hay fecha (para no marcar como
+// "menor" a alguien sin dato). Antes vivía duplicada dentro de
+// recepcion.js con `new Date(fechaISO)` directo sobre la fecha de
+// nacimiento — mismo bug de zona horaria que corrige `formatFechaCorta`
+// de arriba (ver nota 106): esa medianoche UTC cae en la tarde del día
+// ANTERIOR en hora de Colombia, así que el cumpleaños calculaba un día
+// antes de la fecha real — una ventana de 1 día donde un acompañante que
+// cumple 18 justo hoy podía calcular como si ya los tuviera, silenciando
+// la alerta legal de menor de edad. Se centraliza aquí, con el mismo
+// parche "T00:00:00" que ya usa `addDays`, para que no se vuelva a
+// reintroducir sola en otro archivo.
+export function calcularEdad(fechaISO) {
+  if (!fechaISO) return null;
+  const hoy = new Date();
+  const nacimiento = new Date(`${fechaISO}T00:00:00`);
+  let edad = hoy.getFullYear() - nacimiento.getFullYear();
+  const mesDiff = hoy.getMonth() - nacimiento.getMonth();
+  if (mesDiff < 0 || (mesDiff === 0 && hoy.getDate() < nacimiento.getDate())) edad -= 1;
+  return edad;
+}
