@@ -74,11 +74,13 @@
 // el check-in, queda guardado dentro del acompañante (verificado_menor)
 // como bitácora.
 //
-// Nota sobre métodos de pago: la lista completa vive en METODOS_PAGO —
-// Efectivo, Nequi, Daviplata, QR, Transferencia Bancaria, Datáfono,
-// Llave. Caja consolida cada uno como si fuera una cuenta aparte (ver
-// caja.js), así que agregar/quitar un método aquí también cambia lo que
-// se ve ahí.
+// Nota sobre métodos de pago: la lista completa vive en METODOS_PAGO.
+// Caja consolida cada uno como si fuera una cuenta aparte (ver caja.js),
+// así que agregar/quitar un método aquí también cambia lo que se ve ahí.
+// Desde el arranque oficial (216 / 1 de septiembre de 2026) solo quedan
+// habilitados Efectivo, Transferencia Bancaria y Llave — Nequi,
+// Daviplata, QR y Datáfono se retiraron del selector; los cobros
+// históricos con esos métodos siguen intactos.
 //
 // Nota sobre campos obligatorios en Estadía: habitación, tarifa, cantidad
 // de noches, método de pago y "¿El huésped paga la estadía ahora?" son
@@ -323,7 +325,7 @@ import { mostrarResumenCheckout } from './resumen-checkout.js';
 import { abrirModalRegistrarConsumo } from './consumo-minibar.js';
 
 const TIPOS_DOCUMENTO = ['Cédula de ciudadanía', 'Cédula de extranjería', 'Pasaporte', 'Tarjeta de identidad', 'PEP', 'Otro'];
-const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
+const METODOS_PAGO = ['Efectivo', 'Transferencia Bancaria', 'Llave'];
 
 // Estados de reserva que "ocupan" la habitación, usados para detectar
 // cruces de fechas al extender una estadía (mismo criterio que reservas.js).
