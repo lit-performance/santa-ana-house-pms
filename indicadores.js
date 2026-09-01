@@ -4,15 +4,19 @@
 //
 // Estructura de arriba hacia abajo:
 //   1. "🏆 Panel del propietario" — venta de hoy / esta semana / este mes /
-//      este trimestre / este semestre, en $, con números grandes.
-//   2. Gráfico de barras de ventas diarias del mes en curso + comparativo
-//      contra el mismo corte del mes anterior (mismos días transcurridos,
-//      para que la comparación sea justa).
+//      este trimestre / este semestre / huéspedes este mes, en números
+//      grandes, más una fila de "mejores y peores días" para que el
+//      propietario vea de un vistazo cómo va el negocio sin tener que
+//      configurar nada.
+//   2. Gráfica de línea de ventas diarias del mes en curso vs el mismo
+//      corte del mes anterior + comparativo en números grandes + anillo
+//      de ocupación del mes + ADR/RevPAR del mes.
 //   3. "💼 Saldos por cuenta" — el saldo acumulado histórico de cada medio
-//      de pago (Efectivo, Nequi, etc.), reutilizando calcularSaldosPorCuenta()
-//      de caja.js (no se duplica el cálculo — ver ARCHITECTURE.md).
+//      de pago (Efectivo, Transferencia Bancaria, Llave), reutilizando
+//      calcularSaldosPorCuenta() de caja.js (no se duplica el cálculo —
+//      ver ARCHITECTURE.md).
 //   4. El reporte por rango de fechas que ya existía (día/semana/mes), con
-//      la rotación de inventario de minibar al final.
+//      el Top 10 de productos vendidos (minibar + mostrador) al final.
 //   5. El listado de Checkouts que ya existía — cada fila tiene "Ver
 //      resumen" (abre la tarjeta completa) y "⬇ PDF" (descarga directa
 //      del PDF sin pasar por el modal, para volver a bajar un checkout ya
@@ -29,9 +33,21 @@
 // ni sea no-show y cuya fecha cubra ese día cuenta como una habitación
 // ocupada esa noche.
 //
-// Todas las gráficas de barras son CSS puro (mismo patrón que
-// estadisticas.js) — sin librerías externas, para no depender de internet
-// el día de la demo.
+// Nota (217 / fortalecimiento de Indicadores, a pedido de Elssy de cara a
+// la entrega final del producto): las gráficas de barras ya NO son CSS
+// puro — antes se evitaba a propósito cualquier librería externa "para
+// no depender de internet el día de la demo", pero para la entrega final
+// se prioriza una presentación más pulida (tooltips, curvas, anillos de
+// progreso). Ahora se usa Chart.js vía el módulo compartido `graficas.js`
+// (import ESM desde CDN, mismo patrón que supabase-js en usuarios.js).
+// Además de mejorar la presentación, se agregaron 5 indicadores nuevos
+// pedidos explícitamente: huéspedes del mes, Top 10 de productos
+// vendidos (antes solo top 8 y solo minibar — ahora también incluye
+// ventas de mostrador), mejor día de ocupación del mes, mejor/peor día
+// de ocupación de la semana en curso, y mejor día de venta del mes. Se
+// agregó también ADR y RevPAR del mes (métricas estándar de la industria
+// hotelera) como valor agregado — son casi gratis con los datos que ya
+// se traían.
 //
 // Nota (170): la tabla del "🗓️ Reporte por rango de fechas" tiene ahora
 // una columna final con botón "👁️ Ver" que abre la tarjeta emergente
@@ -62,41 +78,14 @@ import { calcularCheckoutsEnRango } from './cuentas.js';
 import { mostrarResumenCheckout, descargarResumenCheckoutPDF } from './resumen-checkout.js';
 import { calcularSaldosPorCuenta } from './caja.js';
 import { mostrarModalDetalleDia } from './detalle-dia.js';
+import { crearAnillo, crearLineaComparativa, crearBarrasHorizontales, leerColor } from './graficas.js';
 
 const ESTADOS_NO_OCUPAN = ['cancelada', 'no_show'];
-const ALTURA_MAX_BARRA_PX = 150;
 
 function escaparHTML(texto) {
   const div = document.createElement('div');
   div.textContent = texto || '';
   return div.innerHTML;
-}
-
-function graficaBarras({ titulo, items, formatoValor, colorBarra }) {
-  const maxValor = Math.max(1, ...items.map((i) => i.valor));
-  return `
-    <div class="tarjeta">
-      <h3>${titulo}</h3>
-      <div style="display:flex; align-items:flex-end; gap:0.6rem; height:${ALTURA_MAX_BARRA_PX + 40}px; padding-top:1rem; overflow-x:auto;">
-        ${
-          items.length === 0
-            ? '<p class="mensaje-vacio">Sin datos en este rango.</p>'
-            : items
-                .map((i) => {
-                  const alturaPx = Math.max(2, Math.round((i.valor / maxValor) * ALTURA_MAX_BARRA_PX));
-                  return `
-            <div style="display:flex; flex-direction:column; align-items:center; min-width:46px;">
-              <div style="font-size:0.68rem; margin-bottom:0.25rem; white-space:nowrap;">${formatoValor(i.valor)}</div>
-              <div style="width:28px; height:${alturaPx}px; background:${colorBarra || 'var(--color-azul)'}; border-radius:4px 4px 0 0;"></div>
-              <div style="font-size:0.68rem; margin-top:0.35rem; color:var(--color-texto-suave); text-align:center; max-width:60px; overflow:hidden; text-overflow:ellipsis;">${escaparHTML(i.etiqueta)}</div>
-            </div>
-          `;
-                })
-                .join('')
-        }
-      </div>
-    </div>
-  `;
 }
 
 function inicioSemana(fechaISO) {
@@ -123,6 +112,15 @@ function nombreMesCorto(mesIndex0) {
   return new Date(2000, mesIndex0, 1).toLocaleDateString('es-CO', { month: 'short' });
 }
 
+// (217) Suma cuántas personas trae un check-in: el huésped principal más
+// sus acompañantes (recepcion_checkins.acompanantes_detalle, jsonb). Se
+// usa tanto para "Huéspedes este mes" como para su comparativo del mes
+// anterior.
+function personasDelCheckin(checkin) {
+  const acompanantes = Array.isArray(checkin.acompanantes_detalle) ? checkin.acompanantes_detalle.length : 0;
+  return 1 + acompanantes;
+}
+
 async function render(container) {
   const hoyISO = toISODate(new Date());
   const inicioDefault = toISODate(addDays(hoyISO, -29));
@@ -135,6 +133,10 @@ async function render(container) {
     </div>
 
     <div class="grid-dos-columnas" id="panel-graficas-wrap" style="margin-bottom:1.25rem;">
+      <p class="mensaje-vacio">Cargando…</p>
+    </div>
+
+    <div id="panel-extra-wrap" style="margin-bottom:1.25rem;">
       <p class="mensaje-vacio">Cargando…</p>
     </div>
 
@@ -191,11 +193,13 @@ async function render(container) {
 }
 
 // =========================================================
-// 1) Panel del propietario: KPIs de venta por período + gráfica del mes
+// 1) Panel del propietario: KPIs de venta por período + huéspedes del
+//    mes + mejores/peores días + gráfica del mes + ocupación + ADR/RevPAR
 // =========================================================
 async function cargarPanelPropietario(container) {
   const wrapKpis = container.querySelector('#panel-kpis-wrap');
   const wrapGraficas = container.querySelector('#panel-graficas-wrap');
+  const wrapExtra = container.querySelector('#panel-extra-wrap');
 
   const ahora = new Date();
   const hoyISO = toISODate(ahora);
@@ -216,18 +220,48 @@ async function cargarPanelPropietario(container) {
   // el inicio del mes anterior si el semestre acaba de empezar) hasta hoy.
   const fetchDesdeISO = inicioMesAnteriorISO < inicioSemestreISO ? inicioMesAnteriorISO : inicioSemestreISO;
 
-  const [{ data: pagos, error: errPagos }, { data: ventas, error: errVentas }, { data: movimientos, error: errMov }] = await Promise.all([
+  // (217) La ocupación de este mes y de la semana en curso puede empezar
+  // antes que fetchDesdeISO (la semana puede arrancar en el mes anterior)
+  // o después (si el semestre acaba de empezar, fetchDesdeISO es más
+  // atrás de lo que hace falta para ocupación) — se calcula aparte para
+  // no forzar al resto del panel a traer más histórico del que necesita.
+  const inicioOcupacionISO = inicioSemanaISO < inicioMesISO ? inicioSemanaISO : inicioMesISO;
+
+  const [
+    { data: pagos, error: errPagos },
+    { data: ventas, error: errVentas },
+    { data: movimientos, error: errMov },
+    { data: habitacionesRows, error: errHab },
+    { data: reservas, error: errReservas },
+    { data: checkinsMes, error: errCheckinsMes },
+    { data: checkinsMesAnteriorCorte, error: errCheckinsMesAnt },
+  ] = await Promise.all([
     supabase.from('reservas_pagos').select('fecha, monto').gte('fecha', fetchDesdeISO).lt('fecha', mananaISO),
     supabase.from('ventas_mostrador').select('creado_en, monto').gte('creado_en', fetchDesdeISO).lt('creado_en', mananaISO),
     supabase.from('caja_movimientos').select('creado_en, tipo, monto').eq('tipo', 'ingreso').gte('creado_en', fetchDesdeISO).lt('creado_en', mananaISO),
+    supabase.from('habitaciones').select('id'),
+    supabase
+      .from('reservas')
+      .select('habitacion_id, fecha_checkin, fecha_checkout, estado')
+      .lt('fecha_checkin', mananaISO)
+      .gt('fecha_checkout', inicioOcupacionISO),
+    supabase.from('recepcion_checkins').select('hora_ingreso, acompanantes_detalle').gte('hora_ingreso', inicioMesISO).lt('hora_ingreso', mananaISO),
+    supabase
+      .from('recepcion_checkins')
+      .select('hora_ingreso, acompanantes_detalle')
+      .gte('hora_ingreso', inicioMesAnteriorISO)
+      .lt('hora_ingreso', finCorteMesAnteriorISO),
   ]);
 
-  const error = errPagos || errVentas || errMov;
+  const error = errPagos || errVentas || errMov || errHab || errReservas || errCheckinsMes || errCheckinsMesAnt;
   if (error) {
     wrapKpis.innerHTML = `<p class="mensaje-vacio">Error calculando el panel: ${error.message}</p>`;
     wrapGraficas.innerHTML = '';
+    wrapExtra.innerHTML = '';
     return;
   }
+
+  const totalHabitaciones = (habitacionesRows || []).length;
 
   const eventos = [
     ...(pagos || []).map((p) => ({ fecha: toISODate(new Date(p.fecha)), monto: Number(p.monto) })),
@@ -245,12 +279,30 @@ async function cargarPanelPropietario(container) {
   const ventaSemestre = sumaDesde(inicioSemestreISO, mananaISO);
   const ventaMesAnteriorCorte = sumaDesde(inicioMesAnteriorISO, finCorteMesAnteriorISO);
 
+  // --- Huéspedes del mes (217) ---
+  const personasMes = (checkinsMes || []).reduce((sum, c) => sum + personasDelCheckin(c), 0);
+  const personasMesAnteriorCorte = (checkinsMesAnteriorCorte || []).reduce((sum, c) => sum + personasDelCheckin(c), 0);
+  const deltaPersonasPct =
+    personasMesAnteriorCorte > 0
+      ? ((personasMes - personasMesAnteriorCorte) / personasMesAnteriorCorte) * 100
+      : personasMes > 0
+        ? 100
+        : 0;
+  const personasSubiendo = deltaPersonasPct >= 0;
+
   const kpis = [
-    { icono: '☀️', etiqueta: 'Venta de hoy', valor: ventaHoy, color: 'var(--color-azul)' },
-    { icono: '📅', etiqueta: 'Esta semana', valor: ventaSemana, color: 'var(--color-verde)' },
-    { icono: '🗓️', etiqueta: 'Este mes', valor: ventaMes, color: 'var(--color-pendiente)' },
-    { icono: '📈', etiqueta: 'Este trimestre', valor: ventaTrimestre, color: '#6a3fb5' },
-    { icono: '🏆', etiqueta: 'Este semestre', valor: ventaSemestre, color: 'var(--color-rojo)' },
+    { icono: '☀️', etiqueta: 'Venta de hoy', valor: formatCOP(ventaHoy), color: 'var(--color-azul)' },
+    { icono: '📅', etiqueta: 'Esta semana', valor: formatCOP(ventaSemana), color: 'var(--color-verde)' },
+    { icono: '🗓️', etiqueta: 'Este mes', valor: formatCOP(ventaMes), color: 'var(--color-pendiente)' },
+    { icono: '📈', etiqueta: 'Este trimestre', valor: formatCOP(ventaTrimestre), color: '#6a3fb5' },
+    { icono: '🏆', etiqueta: 'Este semestre', valor: formatCOP(ventaSemestre), color: 'var(--color-rojo)' },
+    {
+      icono: '👥',
+      etiqueta: 'Huéspedes este mes',
+      valor: `${personasMes}`,
+      color: 'var(--color-azul-oscuro)',
+      subtitulo: `${(checkinsMes || []).length} estadía(s) · ${personasSubiendo ? '▲' : '▼'} ${Math.abs(deltaPersonasPct).toFixed(0)}% vs mes anterior`,
+    },
   ];
 
   wrapKpis.innerHTML = `
@@ -262,7 +314,8 @@ async function cargarPanelPropietario(container) {
             (k) => `
           <div class="stat-card" style="border-top-color:${k.color};">
             <div class="stat-card-label">${k.icono} ${k.etiqueta}</div>
-            <div class="stat-card-valor" style="font-size:1.85rem; color:${k.color};">${formatCOP(k.valor)}</div>
+            <div class="stat-card-valor" style="font-size:1.85rem; color:${k.color};">${k.valor}</div>
+            ${k.subtitulo ? `<div class="stat-card-subtitulo">${k.subtitulo}</div>` : ''}
           </div>
         `
           )
@@ -271,16 +324,33 @@ async function cargarPanelPropietario(container) {
     </div>
   `;
 
-  // --- Gráfica de ventas diarias del mes en curso ---
+  // --- Ocupación por día (mes + semana en curso), a partir de la misma
+  // consulta de reservas — sin traer nada dos veces. ---
+  const reservasActivas = (reservas || []).filter((r) => !ESTADOS_NO_OCUPAN.includes(r.estado));
+  const ocupacionDia = (fechaISO) =>
+    totalHabitaciones > 0
+      ? (reservasActivas.filter((r) => fechaISO >= r.fecha_checkin && fechaISO < r.fecha_checkout).length / totalHabitaciones) * 100
+      : 0;
+  const ocupadasDia = (fechaISO) => reservasActivas.filter((r) => fechaISO >= r.fecha_checkin && fechaISO < r.fecha_checkout).length;
+
+  // --- Gráfica de ventas diarias del mes en curso (con ocupación) ---
   const itemsDiasMes = [];
+  let nochesOcupadasMes = 0;
   for (let d = 1; d <= diaActual; d++) {
     const fechaDiaISO = toISODate(new Date(ahora.getFullYear(), ahora.getMonth(), d));
     const valor = sumaDesde(fechaDiaISO, toISODate(addDays(new Date(fechaDiaISO + 'T00:00:00'), 1)));
-    itemsDiasMes.push({ etiqueta: String(d), valor });
+    itemsDiasMes.push({ etiqueta: String(d), fechaISO: fechaDiaISO, valor });
+    nochesOcupadasMes += ocupadasDia(fechaDiaISO);
   }
   const etiquetaMesActual = ahora.toLocaleDateString('es-CO', { month: 'long' });
 
   // --- Comparativo con el mes anterior (mismos días transcurridos) ---
+  const itemsDiasMesAnterior = [];
+  for (let d = 1; d <= corteMesAnterior; d++) {
+    const fechaDiaISO = toISODate(new Date(mesAnteriorRef.getFullYear(), mesAnteriorRef.getMonth(), d));
+    itemsDiasMesAnterior.push(sumaDesde(fechaDiaISO, toISODate(addDays(new Date(fechaDiaISO + 'T00:00:00'), 1))));
+  }
+
   const deltaPct =
     ventaMesAnteriorCorte > 0
       ? ((ventaMes - ventaMesAnteriorCorte) / ventaMesAnteriorCorte) * 100
@@ -292,12 +362,12 @@ async function cargarPanelPropietario(container) {
   const flecha = subiendo ? '▲' : '▼';
 
   wrapGraficas.innerHTML = `
-    ${graficaBarras({
-      titulo: `📊 Ventas diarias de ${etiquetaMesActual.charAt(0).toUpperCase() + etiquetaMesActual.slice(1)} (acumulado: ${formatCOP(ventaMes)})`,
-      items: itemsDiasMes,
-      formatoValor: (v) => (v > 0 ? formatCOP(v).replace('$', '').trim() : ''),
-      colorBarra: 'var(--color-verde)',
-    })}
+    <div class="tarjeta">
+      <h3>📊 Ventas diarias de ${etiquetaMesActual.charAt(0).toUpperCase() + etiquetaMesActual.slice(1)} (acumulado: ${formatCOP(ventaMes)})</h3>
+      <div style="height:260px;">
+        <canvas id="chart-ventas-comparativo"></canvas>
+      </div>
+    </div>
     <div class="tarjeta">
       <h3>🆚 Comparativo con el mes anterior</h3>
       <p class="mensaje-vacio" style="margin-top:-0.4rem;">Mismos ${corteMesAnterior} día(s) transcurridos en ambos meses, para que la comparación sea justa.</p>
@@ -317,6 +387,123 @@ async function cargarPanelPropietario(container) {
       </div>
     </div>
   `;
+
+  crearLineaComparativa(container.querySelector('#chart-ventas-comparativo'), {
+    labels: itemsDiasMes.map((i) => i.etiqueta),
+    series: [
+      {
+        label: etiquetaMesActual.charAt(0).toUpperCase() + etiquetaMesActual.slice(1),
+        data: itemsDiasMes.map((i) => i.valor),
+        color: leerColor('--color-verde', '#1e8e5a'),
+      },
+      { label: 'Mes anterior', data: itemsDiasMesAnterior, color: leerColor('--color-texto-suave', '#6b6b6b') },
+    ],
+    formatoValor: (v) => formatCOP(v),
+  });
+
+  // --- Mejor día de ocupación del mes / mejor y peor día de la semana /
+  // mejor día de venta del mes / ADR / RevPAR (todo 217) ---
+  const mejorDiaOcupacionMes = itemsDiasMes.reduce(
+    (mejor, i) => (!mejor || ocupadasDia(i.fechaISO) > mejor.ocupadas ? { fechaISO: i.fechaISO, ocupadas: ocupadasDia(i.fechaISO) } : mejor),
+    null
+  );
+  const mejorDiaVentaMes = itemsDiasMes.reduce((mejor, i) => (!mejor || i.valor > mejor.valor ? i : mejor), null);
+
+  const diasSemanaActual = [];
+  for (let f = inicioSemanaISO; f <= hoyISO; f = toISODate(addDays(f, 1))) diasSemanaActual.push(f);
+  const ocupacionSemana = diasSemanaActual.map((f) => ({ fechaISO: f, ocupadas: ocupadasDia(f), pct: ocupacionDia(f) }));
+  const mejorDiaSemana = ocupacionSemana.reduce((mejor, d) => (!mejor || d.ocupadas > mejor.ocupadas ? d : mejor), null);
+  const peorDiaSemana = ocupacionSemana.reduce((peor, d) => (!peor || d.ocupadas < peor.ocupadas ? d : peor), null);
+
+  const ingresosHabitacionMes = (pagos || [])
+    .filter((p) => toISODate(new Date(p.fecha)) >= inicioMesISO)
+    .reduce((sum, p) => sum + Number(p.monto), 0);
+  const adrMes = nochesOcupadasMes > 0 ? ingresosHabitacionMes / nochesOcupadasMes : null;
+  const revparMes = totalHabitaciones > 0 ? ingresosHabitacionMes / (totalHabitaciones * diaActual) : 0;
+  const ocupacionPromedioMes = totalHabitaciones > 0 ? (nochesOcupadasMes / (totalHabitaciones * diaActual)) * 100 : 0;
+
+  const tarjetaDestacada = (icono, etiqueta, valorPrincipal, subtitulo, color) => `
+    <div class="stat-card" style="border-top-color:${color};">
+      <div class="stat-card-label">${icono} ${etiqueta}</div>
+      <div class="stat-card-valor" style="color:${color};">${valorPrincipal}</div>
+      ${subtitulo ? `<div class="stat-card-subtitulo">${subtitulo}</div>` : ''}
+    </div>
+  `;
+
+  wrapExtra.innerHTML = `
+    <div class="grid-dos-columnas">
+      <div class="tarjeta">
+        <h3 style="margin-top:0;">🎯 Ocupación de ${etiquetaMesActual}</h3>
+        <div style="display:flex; align-items:center; gap:1.5rem; flex-wrap:wrap;">
+          <div style="width:140px; height:140px;">
+            <canvas id="chart-anillo-ocupacion-mes"></canvas>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(110px, 1fr)); gap:0.75rem; flex:1; min-width:220px;">
+            <div class="stat-card">
+              <div class="stat-card-label">ADR (tarifa promedio)</div>
+              <div class="stat-card-valor" style="font-size:1.3rem;">${adrMes !== null ? formatCOP(adrMes) : '—'}</div>
+              <div class="stat-card-subtitulo">Por noche vendida</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-card-label">RevPAR</div>
+              <div class="stat-card-valor" style="font-size:1.3rem;">${formatCOP(revparMes)}</div>
+              <div class="stat-card-subtitulo">Por habitación disponible</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="tarjeta">
+        <h3 style="margin-top:0;">🏅 Mejores y peores días</h3>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:0.75rem;">
+          ${
+            mejorDiaOcupacionMes
+              ? tarjetaDestacada(
+                  '🏅',
+                  'Mejor ocupación (mes)',
+                  `${formatFechaCorta(mejorDiaOcupacionMes.fechaISO)}`,
+                  `${mejorDiaOcupacionMes.ocupadas}/${totalHabitaciones} habitación(es)`,
+                  'var(--color-azul)'
+                )
+              : ''
+          }
+          ${
+            mejorDiaVentaMes && mejorDiaVentaMes.valor > 0
+              ? tarjetaDestacada('💰', 'Mejor día en ventas (mes)', formatFechaCorta(mejorDiaVentaMes.fechaISO), formatCOP(mejorDiaVentaMes.valor), 'var(--color-verde-oscuro)')
+              : ''
+          }
+          ${
+            mejorDiaSemana
+              ? tarjetaDestacada(
+                  '📈',
+                  'Mejor día (esta semana)',
+                  formatFechaCorta(mejorDiaSemana.fechaISO),
+                  `${mejorDiaSemana.ocupadas}/${totalHabitaciones} · ${mejorDiaSemana.pct.toFixed(0)}%`,
+                  'var(--color-verde-oscuro)'
+                )
+              : ''
+          }
+          ${
+            peorDiaSemana
+              ? tarjetaDestacada(
+                  '📉',
+                  'Día más flojo (esta semana)',
+                  formatFechaCorta(peorDiaSemana.fechaISO),
+                  `${peorDiaSemana.ocupadas}/${totalHabitaciones} · ${peorDiaSemana.pct.toFixed(0)}%`,
+                  'var(--color-rojo-oscuro)'
+                )
+              : ''
+          }
+        </div>
+        ${diasSemanaActual.length === 1 ? '<p class="mensaje-vacio" style="margin-top:0.6rem; font-size:0.75rem;">Apenas empieza la semana — mejor y peor día todavía son el mismo.</p>' : ''}
+      </div>
+    </div>
+  `;
+
+  crearAnillo(container.querySelector('#chart-anillo-ocupacion-mes'), {
+    porcentaje: ocupacionPromedioMes,
+    colorPrincipal: leerColor('--color-azul', '#1e4e8c'),
+    etiqueta: 'Ocupación',
+  });
 }
 
 // =========================================================
@@ -487,7 +674,7 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
       .lt('creado_en', finExclusivoISO),
     supabase
       .from('ventas_mostrador')
-      .select('creado_en, monto, metodo_pago')
+      .select('creado_en, monto, metodo_pago, cantidad, producto_id, minibar_productos(nombre)')
       .gte('creado_en', fechaInicioISO)
       .lt('creado_en', finExclusivoISO),
     supabase
@@ -497,7 +684,7 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
       .gt('fecha_checkout', fechaInicioISO),
     supabase
       .from('minibar_consumos')
-      .select('cantidad, monto, creado_en, minibar_productos(nombre)')
+      .select('cantidad, monto, creado_en, producto_id, minibar_productos(nombre)')
       .gte('creado_en', fechaInicioISO)
       .lt('creado_en', finExclusivoISO),
   ]);
@@ -606,23 +793,28 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
   const capacidadTotalRango = totalHabitaciones * dias.length;
   const ocupacionPromedioRango = capacidadTotalRango > 0 ? (totalNochesOcupadasRango / capacidadTotalRango) * 100 : 0;
 
-  // --- Rotación de inventario de minibar (top 8 por unidades consumidas) ---
-  const porProductoMinibar = new Map();
+  // --- Top 10 de productos vendidos (217): antes solo minibar y top 8 —
+  // ahora combina consumo de minibar (huéspedes hospedados) + ventas de
+  // mostrador (clientes que no se hospedan), mismo catálogo de productos
+  // (minibar_productos), ranking por $ generado con las unidades como
+  // dato secundario en el tooltip. ---
+  const porProducto = new Map();
+  const acumularProducto = (nombre, unidades, monto) => {
+    if (!porProducto.has(nombre)) porProducto.set(nombre, { unidades: 0, monto: 0 });
+    const entrada = porProducto.get(nombre);
+    entrada.unidades += unidades;
+    entrada.monto += monto;
+  };
   (consumosMinibar || []).forEach((c) => {
-    const nombre = c.minibar_productos?.nombre || 'Producto';
-    porProductoMinibar.set(nombre, (porProductoMinibar.get(nombre) || 0) + Number(c.cantidad));
+    acumularProducto(c.minibar_productos?.nombre || 'Producto eliminado', Number(c.cantidad), Number(c.monto));
   });
-  const topMinibar = Array.from(porProductoMinibar.entries())
-    .map(([etiqueta, valor]) => ({ etiqueta, valor }))
-    .sort((a, b) => b.valor - a.valor)
-    .slice(0, 8);
-
-  const bloqueMinibar = graficaBarras({
-    titulo: '🥤 Rotación de inventario de minibar (unidades consumidas)',
-    items: topMinibar,
-    formatoValor: (v) => `${v}`,
-    colorBarra: 'var(--color-pendiente)',
+  (ventasMostrador || []).forEach((v) => {
+    acumularProducto(v.minibar_productos?.nombre || 'Producto eliminado', Number(v.cantidad || 1), Number(v.monto));
   });
+  const top10Productos = Array.from(porProducto.entries())
+    .map(([nombre, datos]) => ({ nombre, unidades: datos.unidades, monto: datos.monto }))
+    .sort((a, b) => b.monto - a.monto)
+    .slice(0, 10);
 
   wrap.innerHTML = `
     <div class="grid-tres-columnas">
@@ -682,12 +874,33 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
     </div>
 
     <div style="height:1rem;"></div>
-    ${bloqueMinibar}
+    <div class="tarjeta">
+      <h3>🏆 Top 10 productos vendidos (minibar + mostrador)</h3>
+      ${
+        top10Productos.length === 0
+          ? '<p class="mensaje-vacio">Sin ventas de productos en este rango.</p>'
+          : `<div style="height:${Math.max(220, top10Productos.length * 34)}px;"><canvas id="chart-top10-productos"></canvas></div>`
+      }
+    </div>
   `;
 
   wrap.querySelectorAll('.btn-ver-detalle-periodo').forEach((btn) => {
     btn.addEventListener('click', () => mostrarModalDetalleDia(btn.dataset.fecha));
   });
+
+  if (top10Productos.length > 0) {
+    // Chart.js con indexAxis:'y' dibuja de abajo hacia arriba — se invierte
+    // el arreglo para que el #1 quede arriba, como se lee un ranking.
+    const productosParaGrafica = [...top10Productos].reverse();
+    crearBarrasHorizontales(wrap.querySelector('#chart-top10-productos'), {
+      labels: productosParaGrafica.map((p) => p.nombre),
+      datos: productosParaGrafica.map((p) => p.monto),
+      datosSecundarios: productosParaGrafica.map((p) => p.unidades),
+      etiquetaSecundaria: 'unidades',
+      color: leerColor('--color-pendiente', '#c77c11'),
+      formatoValor: (v) => formatCOP(v),
+    });
+  }
 }
 
 registerModule({
