@@ -81,10 +81,12 @@
 // ciertos casos, no validaba las fechas reales contra otras reservas.
 //
 // Nota sobre métodos de pago (abonos): la lista completa vive en
-// METODOS_PAGO — Efectivo, Nequi, Daviplata, QR, Transferencia Bancaria,
-// Datáfono, Llave. Caja consolida cada uno como si fuera una cuenta
-// aparte (ver caja.js), así que agregar/quitar un método aquí también
-// cambia lo que se ve ahí.
+// METODOS_PAGO. Caja consolida cada uno como si fuera una cuenta aparte
+// (ver caja.js), así que agregar/quitar un método aquí también cambia lo
+// que se ve ahí. Desde el arranque oficial (216 / 1 de septiembre de
+// 2026) solo quedan habilitados Efectivo, Transferencia Bancaria y
+// Llave — Nequi, Daviplata, QR y Datáfono se retiraron del selector; los
+// abonos históricos con esos métodos siguen intactos.
 //
 // Nota sobre "¿Hubo abono al crear la reserva?": además del monto, ahora
 // se elige el TIPO de pago inicial — "Abono parcial" (se cobra lo que se
@@ -114,7 +116,7 @@ const DIAS_VISIBLES = 14;
 let rangoInicio = new Date();
 rangoInicio.setHours(0, 0, 0, 0);
 
-const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
+const METODOS_PAGO = ['Efectivo', 'Transferencia Bancaria', 'Llave'];
 
 // Estados de reserva que "ocupan" la habitación para efectos de detectar
 // cruces de fechas. 'cancelada' y 'no_show' se excluyen a propósito: una
