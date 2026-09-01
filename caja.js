@@ -37,9 +37,13 @@
 // muestra como "ingresos automáticos". caja_movimientos solo guarda lo que
 // no nace de una reserva (gastos operativos, propinas, ingresos varios).
 //
-// Medios de pago: cada método (Efectivo, Nequi, Daviplata, QR,
-// Transferencia Bancaria, Datáfono, Llave — ver METODOS_PAGO) se consolida
-// como si fuera una cuenta aparte.
+// Medios de pago: cada método (ver METODOS_PAGO) se consolida como si
+// fuera una cuenta aparte. Desde el arranque oficial (216 / 1 de
+// septiembre de 2026) solo quedan habilitados Efectivo, Transferencia
+// Bancaria y Llave — Nequi, Daviplata, QR y Datáfono se retiraron del
+// selector por decisión operativa de la propietaria. Los pagos
+// históricos con esos métodos siguen intactos y se siguen sumando igual
+// en "Saldos por cuenta".
 //
 //   - "Desglose por medio de pago — hoy" es del día calendario de hoy.
 //   - "Saldos por cuenta" (siempre visible) es de TODO el tiempo: el saldo
@@ -137,7 +141,7 @@ import { getUsuarioActual } from './auth.js';
 import { calcularHabitacionesEnUso } from './cuentas.js';
 
 const ROLES_OPERAN_CAJA = ['propietario', 'administrador', 'recepcionista'];
-const METODOS_PAGO = ['Efectivo', 'Nequi', 'Daviplata', 'QR', 'Transferencia Bancaria', 'Datáfono', 'Llave'];
+const METODOS_PAGO = ['Efectivo', 'Transferencia Bancaria', 'Llave'];
 
 // Categorías que vienen de Gastos (gastos.js) y de Compras recibidas
 // (compras.js) — se usan para separar esos egresos "reales" del día de la
