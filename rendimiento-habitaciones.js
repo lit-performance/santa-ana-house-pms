@@ -137,6 +137,16 @@ function esFinDeSemana(fechaISO) {
   return dow === 0 || dow === 6;
 }
 
+// (221) Inicial del día de la semana (L M M J V S D) para identificar de
+// un vistazo, sin tener que calcular fechas, qué columnas del calendario
+// son los días de mayor ocupación esperada. Índice = Date.getDay() (0 =
+// domingo), por eso el arreglo empieza en 'D'.
+const LETRAS_DIA_SEMANA = ['D', 'L', 'M', 'M', 'J', 'V', 'S'];
+function letraDiaSemana(fechaISO) {
+  const dow = new Date(`${fechaISO}T12:00:00`).getDay();
+  return LETRAS_DIA_SEMANA[dow];
+}
+
 // (220) Calendario de ocupación: tabla HTML (no gráfica de Chart.js — es
 // una grilla de estado/categoría por celda, no una magnitud a comparar,
 // así que una tabla coloreada comunica mejor que un chart). Habitaciones
@@ -169,8 +179,12 @@ function construirCalendarioOcupacion({ habitaciones, dias, reservaActivaPorDiaY
   const encabezadoDias = dias
     .map((d) => {
       const numeroDia = d.slice(8, 10);
+      const letra = letraDiaSemana(d);
       const fondo = esFinDeSemana(d) ? 'background:var(--color-fondo);' : '';
-      return `<th style="font-weight:400; font-size:0.66rem; padding:2px 3px; ${fondo}" title="${escaparAtributo(formatFechaCorta(d))}">${numeroDia}</th>`;
+      return `<th style="font-weight:400; font-size:0.66rem; padding:2px 3px; ${fondo}" title="${escaparAtributo(formatFechaCorta(d))}">
+        <div style="font-weight:700; font-size:0.62rem; color:var(--color-texto-suave); line-height:1.2;">${letra}</div>
+        <div style="line-height:1.2;">${numeroDia}</div>
+      </th>`;
     })
     .join('');
 
