@@ -282,9 +282,15 @@ function filasCSV(datos) {
   ];
 }
 
+// (220) Delimitador ";" en vez de ",": Excel en configuración regional
+// Colombia/Latinoamérica usa la coma como separador DECIMAL, así que
+// espera ";" como separador de columnas en un CSV — con "," todo el
+// contenido de cada fila caía en una sola celda al abrir con doble clic.
+// Cada campo va entre comillas igual que antes, así que ";" o "," dentro
+// de un campo no rompen nada.
 function descargarDetalleDiaCSV(datos) {
   const filas = filasCSV(datos);
-  const csv = filas.map((fila) => fila.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  const csv = filas.map((fila) => fila.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
   const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const enlace = document.createElement('a');
