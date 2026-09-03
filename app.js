@@ -32,6 +32,13 @@
 // 'indicadores.js' sigue siendo el primer módulo de Análisis importado,
 // Análisis se sigue abriendo por defecto en Indicadores.
 //
+// Nota (218): 'rendimiento-habitaciones.js' se importa justo después de
+// 'indicadores.js' — es su subpestaña hermana más cercana (mismo grupo,
+// mismo tipo de dato: dinero por período), así que queda como la segunda
+// subpestaña de Análisis, antes que Contabilidad/Auditoría/Reportes/
+// Estadísticas/Huéspedes. Indicadores sigue siendo el primer módulo de
+// Análisis importado, así que Análisis se sigue abriendo por defecto ahí.
+//
 // Nota: 'usuarios.js' se movió de la antigua "Administración" a
 // subpestaña de Configuración (ver usuarios.js) — por eso ahora se
 // importa junto al bloque de Configuración, no junto a Inventario.
@@ -77,6 +84,7 @@ import './gastos.js';
 import './reservas.js';
 import './housekeeping.js';
 import './indicadores.js';
+import './rendimiento-habitaciones.js';
 import './inventario.js';
 import './minibar.js';
 import './proveedores.js';
