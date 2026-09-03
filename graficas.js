@@ -147,6 +147,56 @@ export function crearLineaComparativa(canvas, { labels, series, formatoValor }) 
 }
 
 /**
+ * Barras horizontales apiladas — varias series por categoría, cada una
+ * con su color, sumadas en una sola barra por fila (ej.: $ habitación +
+ * $ minibar, por cada habitación). Siempre lleva leyenda (>= 2 series):
+ * la identidad de cada serie nunca depende solo del color, ver
+ * `references/color-formula.md` de la guía de gráficas.
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @param {{ labels: string[], series: {label: string, data: number[], color: string}[], formatoValor?: (v:number)=>string }} opciones
+ */
+export function crearBarrasHorizontalesApiladas(canvas, { labels, series, formatoValor }) {
+  destruirSiExiste(canvas);
+  const chart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: series.map((s) => ({
+        label: s.label,
+        data: s.data,
+        backgroundColor: s.color,
+        borderRadius: 4,
+        maxBarThickness: 24,
+      })),
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: true, position: 'bottom' },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: ${formatoValor ? formatoValor(ctx.parsed.x) : ctx.parsed.x}`,
+            footer: (items) => {
+              const total = items.reduce((sum, it) => sum + it.parsed.x, 0);
+              return `Total: ${formatoValor ? formatoValor(total) : total}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: { stacked: true, beginAtZero: true, ticks: { callback: (v) => (formatoValor ? formatoValor(v) : v) } },
+        y: { stacked: true },
+      },
+    },
+  });
+  canvas._chartInstance = chart;
+  return chart;
+}
+
+/**
  * Barras horizontales — para rankings con nombres largos (Top 10
  * productos, habitaciones más rentables). Una sola serie; si se pasa
  * `datosSecundarios`, se agrega como línea extra en el tooltip (por
