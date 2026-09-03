@@ -81,6 +81,16 @@ function escaparHTML(texto) {
   return div.innerHTML;
 }
 
+// (220) Para interpolar texto dentro de un atributo HTML entre comillas
+// dobles (title="...") no basta con escaparHTML: esa función escapa & < >
+// (porque así serializa innerHTML un nodo de texto), pero NO escapa la
+// comilla doble literal ("), que sí puede cortar el atributo antes de
+// tiempo si, por ejemplo, el nombre de un huésped trae comillas. Se usa
+// esta variante en cualquier título/tooltip del calendario de ocupación.
+function escaparAtributo(texto) {
+  return escaparHTML(texto).replace(/"/g, '&quot;');
+}
+
 // Orden natural por número de habitación aunque venga como texto ("101",
 // "102B", etc.) — primero por la parte numérica, luego alfabético como
 // desempate.
@@ -93,8 +103,14 @@ function compararNumeroHabitacion(a, b) {
 
 // Exportables genéricos (Excel/PDF): CSV con BOM (Excel lo abre con
 // doble clic) — mismo patrón que ya usa caja.js/detalle-dia.js.
+// (220) Delimitador ";" en vez de ",": Excel en configuración regional
+// Colombia/Latinoamérica usa la coma como separador DECIMAL, así que
+// espera ";" como separador de columnas en un CSV — con "," todo el
+// contenido de cada fila caía en una sola celda al abrir con doble clic.
+// Cada campo va entre comillas igual que antes, así que ";" o "," dentro
+// de un campo no rompen nada.
 function descargarCSV(nombreArchivo, filas) {
-  const csv = filas.map((fila) => fila.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  const csv = filas.map((fila) => fila.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
   const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const enlace = document.createElement('a');
@@ -104,6 +120,103 @@ function descargarCSV(nombreArchivo, filas) {
   enlace.click();
   enlace.remove();
   URL.revokeObjectURL(url);
+}
+
+const NOMBRES_MES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+function etiquetaMes(mesISO) {
+  const [anio, m] = mesISO.split('-');
+  return `${NOMBRES_MES[Number(m) - 1]} ${anio}`;
+}
+
+// Mediodía fijo para evitar que el huso horario local mueva el día de la
+// semana calculado (con solo "YYYY-MM-DD" el navegador puede interpretar
+// medianoche UTC, que en América cae en el día anterior).
+function esFinDeSemana(fechaISO) {
+  const dow = new Date(`${fechaISO}T12:00:00`).getDay();
+  return dow === 0 || dow === 6;
+}
+
+// (220) Calendario de ocupación: tabla HTML (no gráfica de Chart.js — es
+// una grilla de estado/categoría por celda, no una magnitud a comparar,
+// así que una tabla coloreada comunica mejor que un chart). Habitaciones
+// en filas (primera columna fija con position:sticky para no perderla al
+// hacer scroll horizontal en rangos largos — se usa border-collapse:
+// separate porque sticky no funciona de forma confiable con collapse),
+// días en columnas agrupadas por mes. Fin de semana con fondo suave para
+// ubicarse rápido. Cada celda lleva un title="" nativo (fecha + huésped +
+// minibar del día) — sin librería de tooltips, para mantenerlo simple.
+function construirCalendarioOcupacion({ habitaciones, dias, reservaActivaPorDiaYHabitacion, minibarPorDiaYHabitacion, colorOcupada, colorDesocupada }) {
+  if (habitaciones.length === 0 || dias.length === 0) return '';
+
+  const avisoRango =
+    dias.length > 92
+      ? `<p class="mensaje-vacio" style="margin:0 0 0.6rem; font-size:0.78rem;">⚠️ El rango elegido tiene ${dias.length} días — para leerlo más cómodo, considera elegir un rango más corto (por ejemplo, un mes).</p>`
+      : '';
+
+  const gruposMes = [];
+  dias.forEach((d) => {
+    const mes = d.slice(0, 7);
+    const ultimo = gruposMes[gruposMes.length - 1];
+    if (ultimo && ultimo.mes === mes) ultimo.dias.push(d);
+    else gruposMes.push({ mes, dias: [d] });
+  });
+
+  const encabezadoMeses = gruposMes
+    .map((g) => `<th colspan="${g.dias.length}" style="text-align:center; font-weight:600; font-size:0.72rem; border-bottom:1px solid var(--color-borde); padding-bottom:2px;">${etiquetaMes(g.mes)}</th>`)
+    .join('');
+
+  const encabezadoDias = dias
+    .map((d) => {
+      const numeroDia = d.slice(8, 10);
+      const fondo = esFinDeSemana(d) ? 'background:var(--color-fondo);' : '';
+      return `<th style="font-weight:400; font-size:0.66rem; padding:2px 3px; ${fondo}" title="${escaparAtributo(formatFechaCorta(d))}">${numeroDia}</th>`;
+    })
+    .join('');
+
+  const filasHabitaciones = habitaciones
+    .map((h) => {
+      const celdas = dias
+        .map((d) => {
+          const reserva = reservaActivaPorDiaYHabitacion.get(`${h.id}_${d}`);
+          const minibarDia = minibarPorDiaYHabitacion.get(`${h.id}_${d}`) || 0;
+          const ocupada = !!reserva;
+          const partesTitulo = [formatFechaCorta(d), ocupada ? `Ocupada — ${reserva.huesped_nombre || 'huésped sin nombre'}` : 'Desocupada'];
+          if (minibarDia > 0) partesTitulo.push(`Minibar: ${formatCOP(minibarDia)}`);
+          const titulo = escaparAtributo(partesTitulo.join(' · '));
+          let fondoCelda = ocupada ? colorOcupada : colorDesocupada;
+          if (!ocupada && esFinDeSemana(d)) fondoCelda = 'var(--color-fondo)';
+          return `<td title="${titulo}" style="background:${fondoCelda}; width:16px; height:16px; padding:0; border:1px solid var(--color-tarjeta, #fff);"></td>`;
+        })
+        .join('');
+      return `<tr>
+        <td style="position:sticky; left:0; background:var(--color-tarjeta, #fff); font-weight:600; white-space:nowrap; padding:2px 8px; border-right:1px solid var(--color-borde);">${escaparHTML(h.numero)}</td>
+        ${celdas}
+      </tr>`;
+    })
+    .join('');
+
+  return `
+    <div class="tarjeta" style="margin-bottom:1.25rem;">
+      <h3 style="margin-top:0;">🗓️ Calendario de ocupación (días × habitaciones)</h3>
+      ${avisoRango}
+      <div style="display:flex; align-items:center; gap:1.25rem; margin-bottom:0.75rem; font-size:0.78rem; color:var(--color-texto-suave);">
+        <div style="display:flex; align-items:center; gap:0.4rem;"><span style="width:12px; height:12px; background:${colorOcupada}; display:inline-block; border-radius:2px;"></span> Ocupada</div>
+        <div style="display:flex; align-items:center; gap:0.4rem;"><span style="width:12px; height:12px; background:${colorDesocupada}; display:inline-block; border-radius:2px; border:1px solid var(--color-borde);"></span> Desocupada</div>
+      </div>
+      <div class="tabla-scroll" style="overflow-x:auto;">
+        <table style="border-collapse:separate; border-spacing:0; font-size:0.7rem;">
+          <thead>
+            <tr><th style="position:sticky; left:0; background:var(--color-tarjeta, #fff); z-index:1;"></th>${encabezadoMeses}</tr>
+            <tr><th style="position:sticky; left:0; background:var(--color-tarjeta, #fff); z-index:1; border-right:1px solid var(--color-borde);">Hab.</th>${encabezadoDias}</tr>
+          </thead>
+          <tbody>
+            ${filasHabitaciones}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 async function render(container) {
@@ -251,6 +364,17 @@ async function generarRendimiento(container, fechaInicioISO, fechaFinISO) {
 
   const colorHabitacion = leerColor('--color-azul', '#1e4e8c');
   const colorMinibar = leerColor('--color-pendiente', '#c77c11');
+  const colorOcupada = leerColor('--color-azul', '#1e4e8c');
+  const colorDesocupada = leerColor('--color-borde', '#e0e0e0');
+
+  const calendarioHTML = construirCalendarioOcupacion({
+    habitaciones,
+    dias,
+    reservaActivaPorDiaYHabitacion,
+    minibarPorDiaYHabitacion,
+    colorOcupada,
+    colorDesocupada,
+  });
 
   wrap.innerHTML = `
     <div class="grid-tres-columnas" style="margin-bottom:1.25rem;">
@@ -293,6 +417,8 @@ async function generarRendimiento(container, fechaInicioISO, fechaFinISO) {
         </div>
       </div>
     </div>
+
+    ${calendarioHTML}
 
     <div class="tarjeta">
       <h3 style="margin-top:0;">🛏️ Detalle por habitación</h3>
