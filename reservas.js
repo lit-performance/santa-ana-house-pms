@@ -50,6 +50,17 @@
 // ventas_mostrador, que sí lo hacen), dejando un punto ciego total en
 // auditoria.js.
 //
+// Nota (222 / reporte Elssy): al editar una reserva existente y cambiar
+// las fechas, el modal exigía llenar "Monto" y "Método de pago" del
+// mini-formulario de "Agregar abono" (debajo, en Abonos/Pagos) antes de
+// dejar guardar los cambios de la reserva — aunque no se quisiera
+// registrar ningún abono nuevo. Causa: ese mini-formulario era un <form>
+// metido DENTRO del <form> principal de la reserva (HTML inválido —
+// un <form> no puede ir dentro de otro), y sus campos "required" bloqueaban
+// el guardado del formulario de afuera. Se cambió ese mini-formulario a un
+// <div> con botón normal y validación manual (ver cargarPagos) — ahora
+// "Guardar cambios" de la reserva funciona sin tocar esos dos campos.
+//
 // Nota importante sobre el estado de la habitación (Housekeeping /
 // Configuración) frente al calendario:
 // - 'mantenimiento', 'bloqueada', 'fuera_servicio' son estados indefinidos
@@ -860,29 +871,47 @@ async function cargarPagos(overlay, reservaId) {
           .join('') || '<tr><td colspan="4" class="mensaje-vacio">Sin abonos registrados.</td></tr>'}
       </tbody>
     </table>
-    <form id="form-nuevo-pago" class="form-grid" style="margin-top:0.75rem;">
+    <div id="form-nuevo-pago" class="form-grid" style="margin-top:0.75rem;">
       <label>Monto
-        <input type="text" name="monto" id="input-monto-nuevo-pago" placeholder="$0" required />
+        <input type="text" id="input-monto-nuevo-pago" placeholder="$0" />
       </label>
       <label>Método de pago
-        <select name="metodo_pago" required>
+        <select id="select-metodo-nuevo-pago">
           <option value="">— Elige a qué cuenta va —</option>
           ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
         </select>
       </label>
       <label>Comentario
-        <input type="text" name="comentarios" placeholder="Opcional" />
+        <input type="text" id="input-comentario-nuevo-pago" placeholder="Opcional" />
       </label>
-      <button type="submit" class="btn btn-secundario btn-chico">+ Agregar abono</button>
-    </form>
+      <button type="button" id="btn-agregar-pago" class="btn btn-secundario btn-chico">+ Agregar abono</button>
+    </div>
   `;
 
   activarInputDinero(wrap.querySelector('#input-monto-nuevo-pago'));
 
-  wrap.querySelector('#form-nuevo-pago').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const form = new FormData(e.target);
+  // (222 / reporte Elssy) Este bloque de "Agregar abono" era un <form>
+  // anidado DENTRO del <form id="form-reserva"> de todo el modal — un
+  // <form> dentro de otro <form> es HTML inválido, y aquí causaba que sus
+  // campos "required" (Monto, Método de pago) bloquearan el guardado del
+  // formulario PRINCIPAL de la reserva (el botón "Guardar cambios"),
+  // exigiendo llenarlos aunque no se estuviera agregando ningún abono
+  // nuevo. Ahora es un <div> simple con un botón normal (no submit) y la
+  // validación se hace a mano abajo — deja de interferir con "Guardar
+  // cambios" de la reserva.
+  wrap.querySelector('#btn-agregar-pago').addEventListener('click', async () => {
     const montoNuevoPago = valorNumericoInput(wrap.querySelector('#input-monto-nuevo-pago'));
+    const metodoPago = wrap.querySelector('#select-metodo-nuevo-pago').value;
+    const comentarios = wrap.querySelector('#input-comentario-nuevo-pago').value.trim() || null;
+
+    if (!montoNuevoPago || montoNuevoPago <= 0) {
+      mostrarToast('Ingresa un monto válido para el abono.', 'error');
+      return;
+    }
+    if (!metodoPago) {
+      mostrarToast('Elige a qué cuenta va este abono.', 'error');
+      return;
+    }
 
     // (Nota 186) Mismo candado que en el check-in de Recepción — caso
     // real: Alexa Rojas, 405, pagó completo al reservar y el mismo pago
@@ -902,8 +931,8 @@ async function cargarPagos(overlay, reservaId) {
     const { error: errInsert } = await supabase.from('reservas_pagos').insert({
       reserva_id: reservaId,
       monto: montoNuevoPago,
-      metodo_pago: form.get('metodo_pago'),
-      comentarios: form.get('comentarios').trim() || null,
+      metodo_pago: metodoPago,
+      comentarios,
       // (214 / auditoría H35) Ver nota arriba en el abono inicial.
       registrado_por: getUsuarioActual()?.id || null,
     });
