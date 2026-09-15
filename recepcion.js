@@ -18,6 +18,15 @@
 // pago al check-in (que alimenta Caja automático), firma digital (canvas)
 // y consentimiento Habeas Data.
 //
+// Nota (225 / reporte Elssy): la tabla de habitaciones en uso tiene un
+// botón "💰 Pago" por fila — registra un abono contra esa habitación SIN
+// pasar por el check-out (ver `abrirModalRegistrarPago`). Caso real que
+// lo motivó: huéspedes de mensualidad/estadía larga a quienes se les va
+// cargando consumo de minibar y lo van pagando por partes, sin que eso
+// implique que se están yendo — antes la única forma de registrar ese
+// pago a mitad de estadía era yendo hasta Reservas → Abonos/Pagos, nada
+// intuitivo desde la pantalla donde el equipo trabaja el día a día.
+//
 // Nota IMPORTANTE sobre "¿El huésped paga la estadía ahora?" (antes era un
 // simple desplegable, y no quedaba claro si se estaba cobrando o no): ahora
 // son tres tarjetas grandes y explícitas — Pendiente / Abono parcial / Pago
@@ -564,6 +573,7 @@ async function cargarVistaHoy(container) {
             <td style="white-space:nowrap;">
               <button type="button" class="btn-editar btn-editar-checkin" data-checkin-id="${i.checkinId}">✏️ Editar</button>
               <button type="button" class="btn-editar btn-agregar-consumo" data-checkin-id="${i.checkinId}">➕ Consumo</button>
+              <button type="button" class="btn-editar btn-registrar-pago" data-checkin-id="${i.checkinId}">💰 Pago</button>
               <button type="button" class="btn-editar btn-checkout" data-checkin-id="${i.checkinId}">Check-out</button>
             </td>
           </tr>
@@ -594,6 +604,13 @@ async function cargarVistaHoy(container) {
       if (item) abrirModalAgregarConsumoRapido(container, item);
     });
   });
+
+  wrapCheckins.querySelectorAll('.btn-registrar-pago').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const item = itemsOrdenados.find((i) => i.checkinId === Number(btn.dataset.checkinId));
+      if (item) abrirModalRegistrarPago(container, item);
+    });
+  });
 }
 
 // --- "➕ Consumo": agregar un consumo de mostrador a una habitación
@@ -618,6 +635,133 @@ function abrirModalAgregarConsumoRapido(container, item) {
       mostrarToast(`Consumo agregado a ${item.habitacionLabel}.`, 'exito');
       await vistaLista(container);
     },
+  });
+}
+
+// --- "💰 Pago" (225 / reporte Elssy): registrar un abono contra una
+// habitación en uso SIN pasar por el check-out — caso real: huéspedes de
+// mensualidad/estadía larga que van pagando su consumo de minibar (u
+// otro abono) por partes, sin que eso implique que se están yendo. Usa
+// la misma tabla reservas_pagos que ya alimenta el saldo pendiente (ver
+// cuentas.js) — no existe un "concepto" separado para minibar vs.
+// habitación, el pago simplemente reduce el saldo pendiente combinado,
+// igual que cualquier abono ya existente (el de la reserva, el del
+// check-in, o el de la liquidación del check-out). Antes de esto, la
+// única forma de registrar un pago a mitad de estadía era yendo hasta el
+// módulo de Reservas y abriendo ahí la sección de Abonos/Pagos — nada
+// intuitivo desde la pantalla de Recepción donde el equipo trabaja el
+// día a día.
+function abrirModalRegistrarPago(container, item) {
+  if (!item.reservaId) {
+    mostrarToast('Este check-in no tiene una reserva vinculada; no se puede registrar un pago desde aquí.', 'error');
+    return;
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-caja">
+      <h3>💰 Registrar pago — ${escaparHTML(item.habitacionLabel)}</h3>
+      <p class="mensaje-vacio" style="margin-top:-0.5rem;">${escaparHTML(item.huespedNombre)} — no hace falta hacer check-out para registrar este pago.</p>
+      <div class="modal-contenido">
+        ${cajonMonto('Monto total (habitación + minibar)', formatCOP(item.montoTotal), '#1a5276', '#eaf2f8', '#a9c8e0')}
+        ${cajonMonto('Abonado hasta ahora', formatCOP(item.totalAbonado), 'var(--color-verde-oscuro, #1b7a3d)', '#eafbea', '#8fd3a4')}
+        ${cajonMonto(
+          'Saldo pendiente actual',
+          formatCOP(item.saldoPendiente),
+          item.saldoPendiente > 0 ? 'var(--color-rojo-oscuro, #b3261e)' : 'var(--color-verde-oscuro, #1b7a3d)',
+          item.saldoPendiente > 0 ? '#fdeceb' : '#eafbea',
+          item.saldoPendiente > 0 ? '#f0a8a0' : '#8fd3a4'
+        )}
+        ${
+          item.montoMinibar > 0
+            ? `<p class="mensaje-vacio" style="font-size:0.78rem;">🥤 De ese saldo, ${formatCOP(item.montoMinibar)} corresponden a consumo de minibar acumulado.</p>`
+            : ''
+        }
+
+        <div class="form-grid" style="margin-top:1rem;">
+          <label>Monto que recibes
+            <input type="text" id="input-monto-pago-rapido" placeholder="$0" />
+          </label>
+          <label>Método de pago
+            <select id="select-metodo-pago-rapido">
+              <option value="">— Elige a qué cuenta va —</option>
+              ${METODOS_PAGO.map((m) => `<option value="${m}">${m}</option>`).join('')}
+            </select>
+          </label>
+          <label>Comentario
+            <input type="text" id="input-comentario-pago-rapido" placeholder="Ej: abono de minibar" />
+          </label>
+        </div>
+      </div>
+      <div class="modal-acciones" style="margin-top:1.25rem;">
+        <button type="button" class="btn btn-secundario" id="btn-cancelar-pago-rapido">Cancelar</button>
+        <button type="button" class="btn btn-primario" id="btn-guardar-pago-rapido">Registrar pago</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const inputMonto = overlay.querySelector('#input-monto-pago-rapido');
+  activarInputDinero(inputMonto);
+  // Precargado con el saldo pendiente actual, igual que en la
+  // liquidación del check-out — pero queda editable por si el huésped
+  // solo abona una parte.
+  if (item.saldoPendiente > 0) {
+    inputMonto.value = item.saldoPendiente;
+    activarInputDinero(inputMonto);
+  }
+
+  overlay.querySelector('#btn-cancelar-pago-rapido').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  overlay.querySelector('#btn-guardar-pago-rapido').addEventListener('click', async () => {
+    const monto = valorNumericoInput(inputMonto);
+    const metodoPago = overlay.querySelector('#select-metodo-pago-rapido').value;
+    const comentarios = overlay.querySelector('#input-comentario-pago-rapido').value.trim() || null;
+
+    if (!monto || monto <= 0) {
+      mostrarToast('Ingresa un monto válido.', 'error');
+      return;
+    }
+    if (!metodoPago) {
+      mostrarToast('Elige a qué cuenta va este pago.', 'error');
+      return;
+    }
+
+    // Mismo candado que ya existe en Reservas y en la liquidación del
+    // check-out: si ya aparece pagado por completo y de todas formas se
+    // va a registrar más, se exige confirmar explícitamente que es plata
+    // nueva y no un pago que ya se había registrado antes.
+    if (item.montoTotal > 0 && item.totalAbonado >= item.montoTotal) {
+      const confirmarPagoAdicional = await mostrarConfirmacion({
+        titulo: '¿Seguro que es un pago nuevo?',
+        contenidoHTML: `Esta habitación ya aparece pagada por completo (<strong>${formatCOP(
+          item.totalAbonado
+        )}</strong> abonados, para un total de <strong>${formatCOP(item.montoTotal)}</strong>). Vas a registrar <strong>${formatCOP(
+          monto
+        )}</strong> más.<br><br>Confirma que SÍ es plata nueva — y no un pago que ya se había registrado antes.`,
+        textoConfirmar: 'Sí, es un pago nuevo, continuar',
+      });
+      if (!confirmarPagoAdicional) return;
+    }
+
+    const { error } = await supabase.from('reservas_pagos').insert({
+      reserva_id: item.reservaId,
+      monto,
+      metodo_pago: metodoPago,
+      comentarios,
+      registrado_por: getUsuarioActual()?.id || null,
+    });
+    if (error) {
+      mostrarToast(`Error registrando el pago: ${error.message}`, 'error');
+      return;
+    }
+    mostrarToast('Pago registrado.', 'exito');
+    overlay.remove();
+    await vistaLista(container);
   });
 }
 
