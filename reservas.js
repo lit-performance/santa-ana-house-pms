@@ -61,6 +61,13 @@
 // <div> con botón normal y validación manual (ver cargarPagos) — ahora
 // "Guardar cambios" de la reserva funciona sin tocar esos dos campos.
 //
+// Nota (223 / reporte Elssy): el aviso que bloquea el guardado cuando
+// cambian las noches de una reserva y el monto total sigue igual (ver
+// nota 182 más abajo, en el submit) ahora explica el paso exacto para
+// destrabarlo — antes solo decía "confirma el monto" sin decir cómo,
+// lo que en un caso real (reserva de 3 a 1 noche, mismo monto correcto
+// de antes) se sintió como que el formulario simplemente "no guardaba".
+//
 // Nota importante sobre el estado de la habitación (Housekeeping /
 // Configuración) frente al calendario:
 // - 'mantenimiento', 'bloqueada', 'fuera_servicio' son estados indefinidos
@@ -669,7 +676,19 @@ async function abrirModalReserva(container, reserva, prellenado) {
       const nochesAhora = calcularNoches(payload.fecha_checkin, payload.fecha_checkout);
       const montoOriginal = Number(reserva.monto_total) || null;
       if (nochesAhora !== nochesOriginalesReserva && !montoEditadoManualmente && payload.monto_total === montoOriginal) {
-        mostrarToast('Cambiaron las noches de la reserva — confirma o ajusta el monto total antes de guardar (no se recalcula solo, por si hay descuento).', 'error');
+        // (223 / reporte Elssy) Caso real: al acortar una reserva de 3 a 1
+        // noche, el monto correcto coincidía EXACTAMENTE con el que ya
+        // estaba guardado ($120.000) — este candado lo interpretaba como
+        // "nadie lo confirmó todavía" y bloqueaba el guardado sin decir
+        // cómo destrabarlo, dando la impresión de que "no guarda". El
+        // mensaje ahora explica el paso exacto para ese caso (tocar el
+        // campo Monto total y volver a escribir el mismo valor).
+        mostrarToast(
+          `Cambiaron las noches de la reserva — el monto total no se recalcula solo. Si el valor correcto es el mismo que ya está (${formatCOP(
+            montoOriginal
+          )}), haz clic en el campo "Monto total", bórralo y vuelve a escribirlo (aunque sea el mismo número) para confirmarlo antes de guardar.`,
+          'error'
+        );
         return;
       }
     }
