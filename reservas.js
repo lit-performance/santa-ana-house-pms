@@ -61,12 +61,15 @@
 // <div> con botón normal y validación manual (ver cargarPagos) — ahora
 // "Guardar cambios" de la reserva funciona sin tocar esos dos campos.
 //
-// Nota (223 / reporte Elssy): el aviso que bloquea el guardado cuando
-// cambian las noches de una reserva y el monto total sigue igual (ver
-// nota 182 más abajo, en el submit) ahora explica el paso exacto para
-// destrabarlo — antes solo decía "confirma el monto" sin decir cómo,
-// lo que en un caso real (reserva de 3 a 1 noche, mismo monto correcto
-// de antes) se sintió como que el formulario simplemente "no guardaba".
+// Nota (224 / reporte Elssy): el candado que exige confirmar el monto
+// total cuando cambian las noches de una reserva (Nota 182, en el
+// submit) ya NO se basa en detectar si el campo "fue tocado" — ese
+// diseño (223) exigía borrar el campo y volver a escribir el mismo
+// número para el caso, nada raro, en que el monto correcto coincide con
+// el que ya estaba (una falla de usabilidad real, no intuitiva para
+// alguien nuevo en el sistema). Ahora se pregunta directo con un cuadro
+// de confirmación mostrando el monto tal como está en el campo — un
+// clic basta, sea que cambió o siga igual.
 //
 // Nota importante sobre el estado de la habitación (Housekeeping /
 // Configuración) frente al calendario:
@@ -665,31 +668,32 @@ async function abrirModalReserva(container, reserva, prellenado) {
       return;
     }
 
-    // (Nota 182) Si se editó una reserva y las noches quedaron distintas a
-    // las que ya tenía, pero el monto total sigue exactamente igual al que
-    // ya estaba guardado, lo más probable es que nadie lo haya confirmado
-    // todavía (ver aviso morado junto al campo) — se bloquea para que no se
-    // quede por fuera y sin sumar en Caja, Análisis/Indicadores, etc. Si de
-    // verdad el monto no cambia (p. ej. tarifa plana), basta con tocar el
-    // campo y volver a poner el mismo valor.
+    // (224 / reporte Elssy) Si cambian las noches de una reserva ya
+    // guardada, el monto total NO se recalcula solo (puede haber un
+    // descuento manual de por medio) — hay que confirmar cuál es el monto
+    // correcto antes de guardar. Antes (Nota 182 / 223) esto se detectaba
+    // comparando si el campo "se había tocado" y si el valor quedaba
+    // igual al original — un diseño que exigía un gesto nada intuitivo
+    // (borrar el campo y volver a escribir el mismo número) para el caso,
+    // nada raro, en que el monto correcto coincide con el que ya estaba.
+    // Ahora en vez de adivinar la intención por si el campo fue tocado,
+    // se pregunta directo con un cuadro de confirmación mostrando el
+    // monto tal como está en el campo en ese momento — un clic basta,
+    // sea que el monto cambió o siga igual.
     if (editando && nochesOriginalesReserva != null) {
       const nochesAhora = calcularNoches(payload.fecha_checkin, payload.fecha_checkout);
-      const montoOriginal = Number(reserva.monto_total) || null;
-      if (nochesAhora !== nochesOriginalesReserva && !montoEditadoManualmente && payload.monto_total === montoOriginal) {
-        // (223 / reporte Elssy) Caso real: al acortar una reserva de 3 a 1
-        // noche, el monto correcto coincidía EXACTAMENTE con el que ya
-        // estaba guardado ($120.000) — este candado lo interpretaba como
-        // "nadie lo confirmó todavía" y bloqueaba el guardado sin decir
-        // cómo destrabarlo, dando la impresión de que "no guarda". El
-        // mensaje ahora explica el paso exacto para ese caso (tocar el
-        // campo Monto total y volver a escribir el mismo valor).
-        mostrarToast(
-          `Cambiaron las noches de la reserva — el monto total no se recalcula solo. Si el valor correcto es el mismo que ya está (${formatCOP(
-            montoOriginal
-          )}), haz clic en el campo "Monto total", bórralo y vuelve a escribirlo (aunque sea el mismo número) para confirmarlo antes de guardar.`,
-          'error'
-        );
-        return;
+      if (nochesAhora !== nochesOriginalesReserva) {
+        const confirmarMontoTrasCambioFechas = await mostrarConfirmacion({
+          titulo: 'Confirma el monto total',
+          contenidoHTML: `Las noches de esta reserva cambiaron (antes ${nochesOriginalesReserva}, ahora ${nochesAhora}) — el monto total no se recalcula solo, por si hay un descuento de por medio.<br><br>¿El monto total correcto es <strong>${formatCOP(
+            payload.monto_total
+          )}</strong>?`,
+          textoConfirmar: `Sí, ${formatCOP(payload.monto_total)} es correcto`,
+        });
+        if (!confirmarMontoTrasCambioFechas) {
+          mostrarToast('Ajusta el campo "Monto total" al valor correcto y guarda de nuevo.', 'error');
+          return;
+        }
       }
     }
 
