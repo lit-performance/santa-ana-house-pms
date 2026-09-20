@@ -18,6 +18,17 @@
 // — es un desglose para lectura, no dos fuentes que se suman aparte, así
 // que no hay riesgo de duplicar el total.
 //
+// (226) EXCEPCIÓN: los "ajustes de saldo por cuenta" (categoria='Ajuste
+// de saldo', ver el checkbox correspondiente en el formulario de
+// Movimiento manual en caja.js) se registran como tipo='egreso' para que
+// SÍ resten del saldo por cuenta (calcularSaldosPorCuenta, en caja.js),
+// pero no son un gasto operativo real — son correcciones para que el
+// saldo calculado cuadre con el efectivo/transferencia/llave real. Se
+// excluyen del total de "Egresos" (para que sea comparable contra el
+// registro de gastos reales del contador/administradora) y se muestran
+// aparte, en su propia línea, para dejar trazado cuánto se ajustó en el
+// rango sin que se pierda de vista.
+//
 // El rango de fechas se lee directo de las tablas fuente (no de
 // caja_turnos) para no perder dinero que entró con la caja cerrada, mismo
 // criterio que ya usa indicadores.js.
@@ -41,6 +52,11 @@ import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { formatCOP } from './currency.js';
 import { toISODate } from './dates.js';
+
+// (226) Debe coincidir exactamente con CATEGORIA_AJUSTE_SALDO en caja.js
+// — no hay un módulo de constantes compartidas, así que si cambia allá
+// hay que cambiarla aquí también.
+const CATEGORIA_AJUSTE_SALDO = 'Ajuste de saldo';
 
 function primerDiaDelMes() {
   const hoy = new Date();
@@ -107,10 +123,14 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
   const ingresosCaja = (movimientos || []).filter((m) => m.tipo === 'ingreso').reduce((acc, m) => acc + Number(m.monto), 0);
   const egresos = (movimientos || []).filter((m) => m.tipo === 'egreso');
   const egresosCompras = egresos.filter((m) => m.categoria === 'Compras').reduce((acc, m) => acc + Number(m.monto), 0);
-  const egresosOtros = egresos.filter((m) => m.categoria !== 'Compras').reduce((acc, m) => acc + Number(m.monto), 0);
+  const ajustesSaldo = egresos.filter((m) => m.categoria === CATEGORIA_AJUSTE_SALDO).reduce((acc, m) => acc + Number(m.monto), 0);
+  const egresosOtros = egresos
+    .filter((m) => m.categoria !== 'Compras' && m.categoria !== CATEGORIA_AJUSTE_SALDO)
+    .reduce((acc, m) => acc + Number(m.monto), 0);
   const totalFacturado = (facturas || []).reduce((acc, f) => acc + Number(f.total), 0);
 
   const ingresosTotales = ingresosPagos + ingresosMostrador + ingresosCaja;
+  // (226) ajustesSaldo queda fuera a propósito — ver nota de cabecera.
   const egresosTotales = egresosOtros + egresosCompras;
   const neto = ingresosTotales - egresosTotales;
 
@@ -151,6 +171,11 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
           </tbody>
         </table>
       </div>
+      ${
+        ajustesSaldo > 0
+          ? `<p class="mensaje-vacio" style="margin-top:0.75rem;">➕ Además, en este rango se registraron <strong>${formatCOP(ajustesSaldo)}</strong> en ajustes de saldo por cuenta (correcciones de caja, no gasto real) — no están incluidos en "Total egresos" ni en "Neto" de arriba.</p>`
+          : ''
+      }
       <div class="acciones-tarjeta" style="justify-content:flex-start; margin-top:1rem;">
         <button type="button" id="btn-exportar-csv" class="btn btn-secundario btn-chico">Descargar CSV</button>
       </div>
@@ -170,6 +195,7 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
       ['Total egresos', egresosTotales],
       ['Neto', neto],
       ['Total facturado', totalFacturado],
+      ['Ajustes de saldo por cuenta (no incluido arriba)', ajustesSaldo],
     ];
     const csv = filas.map((fila) => fila.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8;' });
