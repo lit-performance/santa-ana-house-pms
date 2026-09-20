@@ -150,6 +150,20 @@ const METODOS_PAGO = ['Efectivo', 'Transferencia Bancaria', 'Llave'];
 const CATEGORIAS_GASTOS = ['Agua', 'Luz', 'Gas', 'Internet', 'Aseo', 'Mantenimiento', 'Insumos', 'Nómina', 'Otro'];
 const CATEGORIA_COMPRAS = 'Compras';
 
+// (226) Categoría reservada para "ajustes de saldo por cuenta" — se usa
+// cuando hay que corregir el saldo que calcula `calcularSaldosPorCuenta`
+// para que cuadre con el efectivo/transferencia/llave real (ej. cargar el
+// saldo real de una cuenta en un momento dado, o corregir un descuadre
+// detectado). NO es un ingreso ni un egreso operativo real. Antes esto se
+// escribía como texto libre en "Categoría" y salía distinto cada vez
+// ("Ajuste", "Ajuste de caja", vacío...), y como Contabilidad sumaba TODO
+// tipo='egreso' sin distinguirlos, esos ajustes se contaban como gasto
+// real e inflaban el "Total egresos" que se cruza contra el Excel de
+// gastos de la administradora. Con el checkbox "Es un ajuste de saldo"
+// del formulario de Movimiento manual, este tipo de movimiento siempre
+// queda con este mismo nombre exacto — ver el filtro en contabilidad.js.
+const CATEGORIA_AJUSTE_SALDO = 'Ajuste de saldo';
+
 function puedeOperar() {
   const usuario = getUsuarioActual();
   return Boolean(usuario) && ROLES_OPERAN_CAJA.includes(usuario.rol);
@@ -1266,8 +1280,12 @@ async function abrirModalMovimiento(container, elementoSeccion) {
               <option value="egreso">Egreso</option>
             </select>
           </label>
+          <label style="display:flex; align-items:flex-start; gap:0.5rem; grid-column:1/-1; font-weight:600;">
+            <input type="checkbox" name="es_ajuste_saldo" id="check-ajuste-saldo" style="margin-top:0.2rem;" />
+            <span>Es un ajuste para cuadrar el saldo de la cuenta (no es un gasto ni un ingreso real — ej. corregir el saldo real de una cuenta o un descuadre de caja)</span>
+          </label>
           <label>Categoría
-            <input type="text" name="categoria" placeholder="Ej: Propina, Ajuste de caja, Descuadre" />
+            <input type="text" name="categoria" id="input-categoria-movimiento" placeholder="Ej: Propina, Descuadre" />
           </label>
           <p class="mensaje-vacio" style="grid-column:1/-1; margin:-0.5rem 0 0; font-size:0.72rem;">Evita usar aquí nombres de categorías de Gastos (Agua, Luz, Gas…) o "Compras" — esos se registran desde esos módulos para que aparezcan en su propia tarjeta.</p>
           <label>Monto
@@ -1300,6 +1318,16 @@ async function abrirModalMovimiento(container, elementoSeccion) {
   const inputMontoMovimiento = overlay.querySelector('#input-monto-movimiento');
   activarInputDinero(inputMontoMovimiento);
 
+  // (226) Si marcan "Es un ajuste de saldo", el campo Categoría libre no
+  // aplica — se va a guardar siempre con CATEGORIA_AJUSTE_SALDO (ver
+  // handler de submit) — se deshabilita y limpia para que no confunda.
+  const checkAjusteSaldo = overlay.querySelector('#check-ajuste-saldo');
+  const inputCategoriaMovimiento = overlay.querySelector('#input-categoria-movimiento');
+  checkAjusteSaldo.addEventListener('change', () => {
+    inputCategoriaMovimiento.disabled = checkAjusteSaldo.checked;
+    if (checkAjusteSaldo.checked) inputCategoriaMovimiento.value = '';
+  });
+
   overlay.querySelector('#btn-cancelar-movimiento').addEventListener('click', () => overlay.remove());
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) overlay.remove();
@@ -1330,6 +1358,7 @@ async function abrirModalMovimiento(container, elementoSeccion) {
     const form = new FormData(e.target);
     const usuario = getUsuarioActual();
     const fechaManual = form.get('fecha_manual');
+    const esAjusteSaldo = form.get('es_ajuste_saldo') === 'on';
     const categoriaIngresada = form.get('categoria').trim();
     // (200 / auditoría H6) Antes era texto libre sin ningún control — si
     // por accidente coincidía con una categoría real de Gastos (Agua,
@@ -1338,15 +1367,18 @@ async function abrirModalMovimiento(container, elementoSeccion) {
     // categoría), como si fuera un gasto o una compra real. Se bloquea
     // esa coincidencia (sin importar mayúsculas/espacios) antes de
     // guardar, con un mensaje que dice por dónde registrarlo en su lugar.
+    // (226) Ese control no aplica cuando es un ajuste de saldo, porque en
+    // ese caso el texto libre se ignora — se guarda siempre con la
+    // categoría fija CATEGORIA_AJUSTE_SALDO.
     const categoriasReservadas = [...CATEGORIAS_GASTOS, CATEGORIA_COMPRAS];
-    if (categoriaIngresada && categoriasReservadas.some((c) => c.toLowerCase() === categoriaIngresada.toLowerCase())) {
+    if (!esAjusteSaldo && categoriaIngresada && categoriasReservadas.some((c) => c.toLowerCase() === categoriaIngresada.toLowerCase())) {
       mostrarToast(`"${categoriaIngresada}" es una categoría reservada para Gastos/Compras — regístralo desde ese módulo, no aquí como movimiento manual.`, 'error');
       return;
     }
     const payload = {
       turno_id: turno.id,
       tipo: form.get('tipo'),
-      categoria: categoriaIngresada || null,
+      categoria: esAjusteSaldo ? CATEGORIA_AJUSTE_SALDO : categoriaIngresada || null,
       monto: montoValor,
       metodo_pago: form.get('metodo_pago'),
       descripcion: form.get('descripcion').trim() || null,
