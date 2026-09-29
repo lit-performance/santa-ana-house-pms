@@ -235,6 +235,7 @@ async function cargarPanelPropietario(container) {
     { data: reservas, error: errReservas },
     { data: checkinsMes, error: errCheckinsMes },
     { data: checkinsMesAnteriorCorte, error: errCheckinsMesAnt },
+    { data: pasadiasMesRows, error: errPasadiasMes },
   ] = await Promise.all([
     supabase.from('reservas_pagos').select('fecha, monto').gte('fecha', fetchDesdeISO).lt('fecha', mananaISO),
     supabase.from('ventas_mostrador').select('creado_en, monto').gte('creado_en', fetchDesdeISO).lt('creado_en', mananaISO),
@@ -251,9 +252,15 @@ async function cargarPanelPropietario(container) {
       .select('hora_ingreso, acompanantes_detalle')
       .gte('hora_ingreso', inicioMesAnteriorISO)
       .lt('hora_ingreso', finCorteMesAnteriorISO),
+    // (228 / pasadía) Conteo aparte para el mes en curso — una pasadía
+    // (fecha_checkin = fecha_checkout) es invisible para el cálculo de
+    // ocupación/ADR de más abajo a propósito (no bloquea una noche), así
+    // que sin este conteo separado no quedaría ningún rastro suyo en este
+    // panel.
+    supabase.from('reservas').select('id').eq('es_pasadia', true).gte('fecha_checkin', inicioMesISO).lt('fecha_checkin', mananaISO),
   ]);
 
-  const error = errPagos || errVentas || errMov || errHab || errReservas || errCheckinsMes || errCheckinsMesAnt;
+  const error = errPagos || errVentas || errMov || errHab || errReservas || errCheckinsMes || errCheckinsMesAnt || errPasadiasMes;
   if (error) {
     wrapKpis.innerHTML = `<p class="mensaje-vacio">Error calculando el panel: ${error.message}</p>`;
     wrapGraficas.innerHTML = '';
@@ -289,6 +296,7 @@ async function cargarPanelPropietario(container) {
         ? 100
         : 0;
   const personasSubiendo = deltaPersonasPct >= 0;
+  const pasadiasMes = (pasadiasMesRows || []).length;
 
   const kpis = [
     { icono: '☀️', etiqueta: 'Venta de hoy', valor: formatCOP(ventaHoy), color: 'var(--color-azul)' },
@@ -302,6 +310,16 @@ async function cargarPanelPropietario(container) {
       valor: `${personasMes}`,
       color: 'var(--color-azul-oscuro)',
       subtitulo: `${(checkinsMes || []).length} estadía(s) · ${personasSubiendo ? '▲' : '▼'} ${Math.abs(deltaPersonasPct).toFixed(0)}% vs mes anterior`,
+    },
+    {
+      icono: '🕐',
+      etiqueta: 'Pasadías este mes',
+      valor: `${pasadiasMes}`,
+      color: '#0b8793',
+      // (228 / pasadía) Aparte del resto de KPIs a propósito: una pasadía
+      // no cuenta como "noche ocupada" ni entra en la ocupación/ADR de
+      // abajo, así que sin esta tarjeta no quedaría visible en ningún lado.
+      subtitulo: 'No cuentan como noche ocupada ni afectan ocupación/ADR',
     },
   ];
 
@@ -597,7 +615,7 @@ async function cargarCheckouts(container, fechaInicioISO, fechaFinISO) {
               <td>${formatFechaHora(c.checkOutEn)}</td>
               <td>${c.huespedNombre}</td>
               <td>${c.habitacionLabel}</td>
-              <td>${c.cantidadNoches ?? '—'}</td>
+              <td>${c.esPasadia ? '🕐 Pasadía' : c.cantidadNoches ?? '—'}</td>
               <td class="monto">${formatCOP(c.montoTotal)}</td>
               <td class="monto">${formatCOP(c.totalAbonado)}</td>
               <td class="monto" style="color:${c.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">
