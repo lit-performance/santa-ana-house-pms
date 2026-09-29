@@ -211,17 +211,30 @@ async function cargarCalendario(container) {
   const rangoFinISO = toISODate(addDays(rangoInicio, DIAS_VISIBLES));
   const rangoInicioISO = toISODate(rangoInicio);
 
-  const [{ data: habitaciones, error: errHab }, { data: reservas, error: errRes }] = await Promise.all([
+  const [{ data: habitaciones, error: errHab }, { data: reservas, error: errRes }, { data: reservasPasadia, error: errPasadia }] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre, estado').order('numero'),
     supabase
       .from('reservas')
       .select('*')
       .lte('fecha_checkin', rangoFinISO)
       .gt('fecha_checkout', rangoInicioISO),
+    // (228 / pasadía) Consulta aparte: una pasadía tiene fecha_checkin =
+    // fecha_checkout (rango vacío), así que NUNCA calza con el filtro
+    // ".gt('fecha_checkout', rangoInicioISO)" de arriba, hecho para rangos
+    // de verdad. Sin esta consulta separada, las pasadías quedarían
+    // invisibles en este calendario (no es un error de cálculo, es que la
+    // pregunta "¿qué día ocupa este rango?" no aplica a un rango vacío —
+    // se responde aparte, buscando directo por fecha_checkin).
+    supabase
+      .from('reservas')
+      .select('*')
+      .eq('es_pasadia', true)
+      .gte('fecha_checkin', rangoInicioISO)
+      .lt('fecha_checkin', rangoFinISO),
   ]);
 
-  if (errHab || errRes) {
-    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando calendario: ${(errHab || errRes).message}</p>`;
+  if (errHab || errRes || errPasadia) {
+    wrap.innerHTML = `<p class="mensaje-vacio">Error cargando calendario: ${(errHab || errRes || errPasadia).message}</p>`;
     return;
   }
 
@@ -245,6 +258,19 @@ async function cargarCalendario(container) {
           const reserva = (reservas || []).find(
             (r) => r.habitacion_id === h.id && iso >= r.fecha_checkin && iso < r.fecha_checkout
           );
+          const pasadiaDelDia = (reservasPasadia || []).find((r) => r.habitacion_id === h.id && iso === r.fecha_checkin);
+          if (reserva && pasadiaDelDia) {
+            // (228) Caso raro pero válido: pasadía de día + huésped normal
+            // esa misma noche en la misma habitación. Se muestra la
+            // reserva nocturna como principal (abre al hacer clic) con un
+            // ícono aparte que avisa que también hubo una pasadía ese día.
+            const clase = CLASE_CELDA[reserva.estado] || '';
+            return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-reserva-ocupada ${clase}" data-reserva-id="${reserva.id}">${escaparHTML(reserva.huesped_nombre)} <span title="También hubo una pasadía este día: ${escaparHTML(pasadiaDelDia.huesped_nombre)}">🕐</span></div></td>`;
+          }
+          if (pasadiaDelDia) {
+            const clase = CLASE_CELDA[pasadiaDelDia.estado] || '';
+            return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-reserva-ocupada ${clase}" data-reserva-id="${pasadiaDelDia.id}" title="Pasadía">🕐 ${escaparHTML(pasadiaDelDia.huesped_nombre)}</div></td>`;
+          }
           if (reserva) {
             const clase = CLASE_CELDA[reserva.estado] || '';
             return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-reserva-ocupada ${clase}" data-reserva-id="${reserva.id}">${escaparHTML(reserva.huesped_nombre)}</div></td>`;
@@ -409,8 +435,13 @@ async function abrirModalReserva(container, reserva, prellenado) {
             <input type="date" name="fecha_checkin" required value="${checkinDefault}" />
           </label>
           <label>Check-out
-            <input type="date" name="fecha_checkout" required value="${checkoutDefault}" />
+            <input type="date" name="fecha_checkout" id="input-checkout-reserva" required value="${checkoutDefault}" />
           </label>
+          <label style="display:flex; align-items:flex-start; gap:0.5rem; grid-column:1/-1; font-weight:600;">
+            <input type="checkbox" id="check-pasadia-reserva" ${editando && reserva.es_pasadia ? 'checked' : ''} style="margin-top:0.2rem;" />
+            <span>🕐 Es pasadía (entra y sale el mismo día, no pasa la noche)</span>
+          </label>
+          <p class="mensaje-vacio" style="grid-column:1/-1; margin:-0.5rem 0 0; font-size:0.72rem;">La habitación queda libre para hospedar a otro huésped esa misma noche — el check-out se fija automáticamente igual al check-in.</p>
           <label>Estado
             <select name="estado">
               ${opcionesEstadoReserva()
@@ -492,9 +523,29 @@ async function abrirModalReserva(container, reserva, prellenado) {
   const hintMontoAuto = overlay.querySelector('#monto-auto-hint');
   const avisoMontoCambioFechas = overlay.querySelector('#aviso-monto-cambio-fechas');
   const spanMontoSugeridoEditar = overlay.querySelector('#monto-sugerido-editar-reserva');
+  const checkPasadia = overlay.querySelector('#check-pasadia-reserva');
 
   // Campo de dinero con formato "$" y punto de miles en vivo.
   activarInputDinero(inputMonto);
+
+  // (228) Pasadía: check-in y check-out son el mismo día — el campo de
+  // check-out se sincroniza solo y se bloquea a edición manual mientras
+  // el checkbox esté marcado (evita que quede un check-out distinto por
+  // accidente, que rompería la validación del submit más abajo).
+  function sincronizarCheckoutPasadia() {
+    if (checkPasadia.checked) {
+      inputCheckout.value = inputCheckin.value;
+      inputCheckout.readOnly = true;
+      inputCheckout.style.background = 'var(--color-fondo-suave, #eee)';
+    } else {
+      inputCheckout.readOnly = false;
+      inputCheckout.style.background = '';
+    }
+  }
+  sincronizarCheckoutPasadia();
+  inputCheckin.addEventListener('change', () => {
+    if (checkPasadia.checked) inputCheckout.value = inputCheckin.value;
+  });
 
   let montoEditadoManualmente = false;
   inputMonto.addEventListener('input', () => {
@@ -507,6 +558,14 @@ async function abrirModalReserva(container, reserva, prellenado) {
     if (!tarifa) return;
     if (tarifa.tipo === 'por_dias') {
       inputMonto.value = Number(tarifa.valor_convenido);
+      activarInputDinero(inputMonto);
+      return;
+    }
+    // (228 / pasadía) 0 noches por diseño (checkin = checkout) — se
+    // sugiere la tarifa normal tal cual (como si fuera 1 día), ajustable a
+    // mano — así lo pidió Elssy en vez de dejar el monto en $0.
+    if (checkPasadia.checked) {
+      inputMonto.value = Number(tarifa.precio_temporada_baja);
       activarInputDinero(inputMonto);
       return;
     }
@@ -537,6 +596,8 @@ async function abrirModalReserva(container, reserva, prellenado) {
         ? 0
         : tarifa.tipo === 'por_dias'
         ? Number(tarifa.valor_convenido)
+        : checkPasadia.checked
+        ? Number(tarifa.precio_temporada_baja)
         : nochesAhora > 0
         ? nochesAhora * Number(tarifa.precio_temporada_baja)
         : 0;
@@ -549,11 +610,19 @@ async function abrirModalReserva(container, reserva, prellenado) {
     selectTarifa.addEventListener('change', actualizarAvisoMontoCambioFechas);
     inputCheckin.addEventListener('change', actualizarAvisoMontoCambioFechas);
     inputCheckout.addEventListener('change', actualizarAvisoMontoCambioFechas);
+    checkPasadia.addEventListener('change', () => {
+      sincronizarCheckoutPasadia();
+      actualizarAvisoMontoCambioFechas();
+    });
   } else {
     hintMontoAuto.classList.remove('oculto');
     selectTarifa.addEventListener('change', recalcularMontoAutomatico);
     inputCheckin.addEventListener('change', recalcularMontoAutomatico);
     inputCheckout.addEventListener('change', recalcularMontoAutomatico);
+    checkPasadia.addEventListener('change', () => {
+      sincronizarCheckoutPasadia();
+      recalcularMontoAutomatico();
+    });
   }
 
   // Si al abrir el modal ya hay tarifa Y fechas (ej. reabriendo una reserva
@@ -650,20 +719,27 @@ async function abrirModalReserva(container, reserva, prellenado) {
   overlay.querySelector('#form-reserva').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
+    const esPasadia = checkPasadia.checked;
     const payload = {
       habitacion_id: Number(form.get('habitacion_id')),
       huesped_nombre: form.get('huesped_nombre').trim(),
       huesped_telefono: form.get('huesped_telefono').trim() || null,
       huesped_documento: form.get('huesped_documento').trim() || null,
       fecha_checkin: form.get('fecha_checkin'),
-      fecha_checkout: form.get('fecha_checkout'),
+      // (228 / pasadía) Se fuerza fecha_checkout = fecha_checkin cuando es
+      // pasadía, sin importar lo que haya quedado en el campo (ya viene
+      // sincronizado y bloqueado en pantalla, pero se refuerza aquí por si
+      // acaso) — la tabla exige exactamente esa igualdad cuando
+      // es_pasadia = true (constraint checkout_despues_checkin).
+      fecha_checkout: esPasadia ? form.get('fecha_checkin') : form.get('fecha_checkout'),
+      es_pasadia: esPasadia,
       estado: form.get('estado'),
       tarifa_id: form.get('tarifa_id') ? Number(form.get('tarifa_id')) : null,
       monto_total: valorNumericoInput(inputMonto) || null,
       comentarios: form.get('comentarios').trim() || null,
     };
 
-    if (payload.fecha_checkout <= payload.fecha_checkin) {
+    if (!esPasadia && payload.fecha_checkout <= payload.fecha_checkin) {
       mostrarToast('La fecha de check-out debe ser posterior al check-in.', 'error');
       return;
     }
