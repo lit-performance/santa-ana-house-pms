@@ -72,8 +72,10 @@ export async function calcularHabitacionesEnUso() {
     { data: pagos, error: errPagos },
     { data: minibar, error: errMinibar },
   ] = await Promise.all([
+    // (228 / pasadía) se agrega es_pasadia — se usa para etiquetar la
+    // tarjeta de esta habitación en Recepción/Caja/Minibar.
     reservaIds.length
-      ? supabase.from('reservas').select('id, monto_total').in('id', reservaIds)
+      ? supabase.from('reservas').select('id, monto_total, es_pasadia').in('id', reservaIds)
       : Promise.resolve({ data: [], error: null }),
     reservaIds.length
       ? supabase.from('reservas_pagos').select('reserva_id, monto').in('reserva_id', reservaIds)
@@ -88,6 +90,7 @@ export async function calcularHabitacionesEnUso() {
   if (errMinibar) throw errMinibar;
 
   const montoHabitacionPorReserva = new Map((reservas || []).map((r) => [r.id, Number(r.monto_total) || 0]));
+  const esPasadiaPorReserva = new Map((reservas || []).map((r) => [r.id, Boolean(r.es_pasadia)]));
 
   const abonadoPorReserva = new Map();
   (pagos || []).forEach((p) => {
@@ -113,6 +116,7 @@ export async function calcularHabitacionesEnUso() {
       numeroDocumento: c.numero_documento,
       cantidadNoches: c.cantidad_noches,
       reservaId: c.reserva_id,
+      esPasadia: c.reserva_id ? esPasadiaPorReserva.get(c.reserva_id) || false : false,
       montoHabitacion,
       montoMinibar,
       montoTotal,
@@ -151,7 +155,8 @@ export async function calcularCheckoutsEnRango(fechaInicioISO, finExclusivoISO) 
     { data: pagos, error: errPagos },
     { data: minibar, error: errMinibar },
   ] = await Promise.all([
-    reservaIds.length ? supabase.from('reservas').select('id, monto_total').in('id', reservaIds) : Promise.resolve({ data: [], error: null }),
+    // (228 / pasadía) se agrega es_pasadia.
+    reservaIds.length ? supabase.from('reservas').select('id, monto_total, es_pasadia').in('id', reservaIds) : Promise.resolve({ data: [], error: null }),
     reservaIds.length ? supabase.from('reservas_pagos').select('reserva_id, monto').in('reserva_id', reservaIds) : Promise.resolve({ data: [], error: null }),
     reservaIds.length ? supabase.from('minibar_consumos').select('reserva_id, monto').in('reserva_id', reservaIds) : Promise.resolve({ data: [], error: null }),
   ]);
@@ -161,6 +166,7 @@ export async function calcularCheckoutsEnRango(fechaInicioISO, finExclusivoISO) 
   if (errMinibar) throw errMinibar;
 
   const montoHabitacionPorReserva = new Map((reservas || []).map((r) => [r.id, Number(r.monto_total) || 0]));
+  const esPasadiaPorReserva = new Map((reservas || []).map((r) => [r.id, Boolean(r.es_pasadia)]));
   const abonadoPorReserva = new Map();
   (pagos || []).forEach((p) => {
     abonadoPorReserva.set(p.reserva_id, (abonadoPorReserva.get(p.reserva_id) || 0) + Number(p.monto));
@@ -180,6 +186,7 @@ export async function calcularCheckoutsEnRango(fechaInicioISO, finExclusivoISO) 
       habitacionLabel: c.habitaciones ? `${c.habitaciones.numero} — ${c.habitaciones.nombre}` : '—',
       huespedNombre: c.nombre,
       cantidadNoches: c.cantidad_noches,
+      esPasadia: c.reserva_id ? esPasadiaPorReserva.get(c.reserva_id) || false : false,
       checkOutEn: c.check_out_en,
       montoTotal,
       totalAbonado,
@@ -222,7 +229,7 @@ export async function obtenerResumenLiquidacion(checkinId) {
       ? supabase.from('tarifas').select('codigo, precio_temporada_baja').eq('id', checkin.tarifa_id).maybeSingle()
       : Promise.resolve({ data: null }),
     reservaId
-      ? supabase.from('reservas').select('monto_total, fecha_checkin, fecha_checkout, estado').eq('id', reservaId).maybeSingle()
+      ? supabase.from('reservas').select('monto_total, fecha_checkin, fecha_checkout, estado, es_pasadia').eq('id', reservaId).maybeSingle()
       : Promise.resolve({ data: null }),
     reservaId
       ? supabase.from('reservas_pagos').select('*').eq('reserva_id', reservaId).order('fecha', { ascending: true })
@@ -256,6 +263,7 @@ export async function obtenerResumenLiquidacion(checkinId) {
     tipoHabitacionNombre: tipoHabitacion ? tipoHabitacion.nombre : null,
     tarifaCodigo: tarifa ? tarifa.codigo : null,
     cantidadNoches: checkin.cantidad_noches,
+    esPasadia: reserva ? Boolean(reserva.es_pasadia) : false,
     fechaCheckinReserva: reserva ? reserva.fecha_checkin : null,
     fechaCheckoutReserva: reserva ? reserva.fecha_checkout : null,
     horaIngreso: checkin.hora_ingreso,
