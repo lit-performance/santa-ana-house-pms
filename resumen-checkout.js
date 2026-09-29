@@ -101,7 +101,7 @@ function filasCSV(datos) {
     ['Celular', datos.celular || ''],
     ['Habitación', encabezadoHabitacion(datos)],
     ['Tarifa', datos.tarifaCodigo || ''],
-    ['Noches', datos.cantidadNoches ?? ''],
+    ['Noches', datos.esPasadia ? 'Pasadía' : datos.cantidadNoches ?? ''],
     ['Ingreso', formatFechaHora(datos.horaIngreso)],
     ['Salida', formatFechaHora(datos.horaSalida)],
     [],
@@ -216,7 +216,7 @@ function abrirVistaPDF(datos) {
       <table>
         <tr><td>Ingreso</td><td>${formatFechaHora(datos.horaIngreso)}</td></tr>
         <tr><td>Salida</td><td>${formatFechaHora(datos.horaSalida)}</td></tr>
-        <tr><td>Noches</td><td>${datos.cantidadNoches ?? '—'}</td></tr>
+        <tr><td>Noches</td><td>${datos.esPasadia ? 'Pasadía' : datos.cantidadNoches ?? '—'}</td></tr>
         <tr><td>Tarifa</td><td>${escaparHTML(datos.tarifaCodigo || '—')}</td></tr>
       </table>
 
@@ -307,7 +307,7 @@ function pintarModalResumen(datos) {
           <h4 style="margin-top:0;">🛏 Estadía</h4>
           ${filaResumen('Ingreso', formatFechaHora(datos.horaIngreso))}
           ${filaResumen('Salida', formatFechaHora(datos.horaSalida))}
-          ${filaResumen('Noches', datos.cantidadNoches ?? '—')}
+          ${filaResumen('Noches', datos.esPasadia ? 'Pasadía' : datos.cantidadNoches ?? '—')}
           ${filaResumen('Tarifa', escaparHTML(datos.tarifaCodigo || '—'))}
         </div>
 
