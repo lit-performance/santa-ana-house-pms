@@ -284,22 +284,33 @@ async function generarRendimiento(container, fechaInicioISO, fechaFinISO) {
 
   const finExclusivoISO = toISODate(addDays(fechaFinISO, 1));
 
-  const [{ data: habitacionesRows, error: errHab }, { data: reservasRows, error: errReservas }, { data: consumosMinibar, error: errMinibar }] =
-    await Promise.all([
-      supabase.from('habitaciones').select('id, numero, nombre'),
-      supabase
-        .from('reservas')
-        .select('id, habitacion_id, huesped_nombre, fecha_checkin, fecha_checkout, estado, monto_total')
-        .lt('fecha_checkin', finExclusivoISO)
-        .gt('fecha_checkout', fechaInicioISO),
-      supabase
-        .from('minibar_consumos')
-        .select('monto, habitacion_id, creado_en')
-        .gte('creado_en', fechaInicioISO)
-        .lt('creado_en', finExclusivoISO),
-    ]);
+  const [
+    { data: habitacionesRows, error: errHab },
+    { data: reservasRows, error: errReservas },
+    { data: consumosMinibar, error: errMinibar },
+    { data: pasadiasRows, error: errPasadias },
+  ] = await Promise.all([
+    supabase.from('habitaciones').select('id, numero, nombre'),
+    supabase
+      .from('reservas')
+      .select('id, habitacion_id, huesped_nombre, fecha_checkin, fecha_checkout, estado, monto_total')
+      .lt('fecha_checkin', finExclusivoISO)
+      .gt('fecha_checkout', fechaInicioISO),
+    supabase
+      .from('minibar_consumos')
+      .select('monto, habitacion_id, creado_en')
+      .gte('creado_en', fechaInicioISO)
+      .lt('creado_en', finExclusivoISO),
+    // (228 / pasadía) Consulta aparte — una pasadía (fecha_checkin =
+    // fecha_checkout) nunca calza con el filtro ".gt('fecha_checkout', ...)"
+    // de arriba, hecho para rangos de verdad, así que sin esto su $
+    // habitación quedaría invisible en este reporte cuando cae justo en
+    // fechaInicioISO. No entra a nochesPorHabitacion (no cuenta como noche
+    // ocupada, a propósito) pero sí a $ habitación — sí generó ingreso real.
+    supabase.from('reservas').select('id, habitacion_id, huesped_nombre, fecha_checkin, fecha_checkout, estado, monto_total').eq('es_pasadia', true).gte('fecha_checkin', fechaInicioISO).lte('fecha_checkin', fechaFinISO),
+  ]);
 
-  const error = errHab || errReservas || errMinibar;
+  const error = errHab || errReservas || errMinibar || errPasadias;
   if (error) {
     wrap.innerHTML = `<p class="mensaje-vacio">Error calculando el rendimiento: ${error.message}</p>`;
     return;
@@ -312,6 +323,7 @@ async function generarRendimiento(container, fechaInicioISO, fechaFinISO) {
   // ocupación diaria Y para $ habitación (monto_total completo de cada
   // una, ver nota de cabecera).
   const reservasActivas = (reservasRows || []).filter((r) => !ESTADOS_NO_OCUPAN.includes(r.estado));
+  const pasadiasActivas = (pasadiasRows || []).filter((r) => !ESTADOS_NO_OCUPAN.includes(r.estado));
 
   const dias = [];
   for (let f = fechaInicioISO; f <= fechaFinISO; f = toISODate(addDays(f, 1))) dias.push(f);
@@ -338,6 +350,13 @@ async function generarRendimiento(container, fechaInicioISO, fechaFinISO) {
     reservasPorHabitacion.set(h.id, []);
   });
   reservasActivas.forEach((r) => {
+    if (!montoHabitacionPorHabitacion.has(r.habitacion_id)) return;
+    montoHabitacionPorHabitacion.set(r.habitacion_id, montoHabitacionPorHabitacion.get(r.habitacion_id) + Number(r.monto_total || 0));
+    reservasPorHabitacion.get(r.habitacion_id).push(r);
+  });
+  // (228 / pasadía) Se suma al $ habitación (sí generó ingreso real) pero
+  // aparte de reservasActivas — nunca debe contar como noche ocupada.
+  pasadiasActivas.forEach((r) => {
     if (!montoHabitacionPorHabitacion.has(r.habitacion_id)) return;
     montoHabitacionPorHabitacion.set(r.habitacion_id, montoHabitacionPorHabitacion.get(r.habitacion_id) + Number(r.monto_total || 0));
     reservasPorHabitacion.get(r.habitacion_id).push(r);
