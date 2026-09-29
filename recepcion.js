@@ -559,11 +559,11 @@ async function cargarVistaHoy(container) {
           .map(
             (i) => `
           <tr data-checkin-id="${i.checkinId}" style="${i.saleHoy ? 'background:var(--color-alerta-fondo, #fff8e1);' : ''}">
-            <td>${i.habitacionLabel}</td>
+            <td>${i.habitacionLabel}${i.esPasadia ? ' <span title="Pasadía — entra y sale el mismo día">🕐</span>' : ''}</td>
             <td>${escaparHTML(i.huespedNombre)}</td>
             <td>${i.tipoDocumento || '—'} ${i.numeroDocumento || ''}</td>
             <td>${formatFechaHora(i.horaIngreso)}</td>
-            <td>${i.cantidadNoches ?? '—'}</td>
+            <td>${i.esPasadia ? '🕐 Pasadía' : i.cantidadNoches ?? '—'}</td>
             <td>${i.saleHoy ? '🔶 Sí' : '—'}</td>
             <td style="color:${i.saldoPendiente > 0 ? 'var(--color-rojo-oscuro)' : 'var(--color-verde-oscuro)'}; font-weight:700;">
               ${formatCOP(i.saldoPendiente)}
@@ -831,7 +831,7 @@ async function abrirModalLiquidacion(container, item) {
       <h3>🧾 Liquidar y hacer check-out</h3>
       <form id="form-liquidacion">
         <div class="modal-contenido">
-          <p class="mensaje-vacio">${escaparHTML(item.huespedNombre)} — ${item.habitacionLabel}</p>
+          <p class="mensaje-vacio">${escaparHTML(item.huespedNombre)} — ${item.habitacionLabel}${item.esPasadia ? ' — 🕐 Pasadía' : ''}</p>
           <div id="liquidacion-cuerpo"></div>
         </div>
         <div class="modal-acciones">
@@ -872,7 +872,7 @@ async function abrirModalLiquidacion(container, item) {
 
     cuerpo.innerHTML = `
       <div style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-top:0.5rem;">
-        ${cajonMonto(`Habitación (${item.cantidadNoches ?? '—'} noches)`, formatCOP(montoHabitacionActual), '#0b5fae', '#eaf3ff', '#8ec1f5')}
+        ${cajonMonto(`Habitación (${item.esPasadia ? 'Pasadía' : `${item.cantidadNoches ?? '—'} noches`})`, formatCOP(montoHabitacionActual), '#0b5fae', '#eaf3ff', '#8ec1f5')}
         ${cajonMonto('Monto total', formatCOP(montoTotal), '#1a5276', '#eaf2f8', '#a9c8e0')}
         ${cajonMonto('Abonado hasta ahora', formatCOP(item.totalAbonado), 'var(--color-verde-oscuro, #1b7a3d)', '#eafbea', '#8fd3a4')}
         ${cajonMonto('Saldo pendiente', formatCOP(saldo), saldo > 0 ? 'var(--color-rojo-oscuro, #b3261e)' : 'var(--color-verde-oscuro, #1b7a3d)', saldo > 0 ? '#fdeceb' : '#eafbea', saldo > 0 ? '#f0a8a0' : '#8fd3a4')}
@@ -1282,10 +1282,14 @@ async function ejecutarCheckout(container, item, comentarioCheckout) {
     // "checkout_despues_checkin") — por eso nunca se acorta por debajo de
     // checkin + 1 día, incluso si el walk-in entró y salió el mismo día.
     const hoyISO = toISODate(new Date());
-    const { data: reservaActual } = await supabase.from('reservas').select('fecha_checkin, fecha_checkout').eq('id', item.reservaId).maybeSingle();
+    const { data: reservaActual } = await supabase.from('reservas').select('fecha_checkin, fecha_checkout, es_pasadia').eq('id', item.reservaId).maybeSingle();
 
     const payloadReserva = { estado: 'check_out' };
-    if (reservaActual) {
+    // (228 / pasadía) Nunca se toca fecha_checkout de una pasadía: ya está
+    // en su valor mínimo posible (igual a fecha_checkin) por diseño — la
+    // tabla exige que se mantenga así (constraint checkout_despues_checkin
+    // ahora permite igualdad SOLO cuando es_pasadia = true).
+    if (reservaActual && !reservaActual.es_pasadia) {
       const pisoMinimo = toISODate(addDays(reservaActual.fecha_checkin, 1));
       const nuevaFecha = hoyISO > pisoMinimo ? hoyISO : pisoMinimo;
       if (nuevaFecha < reservaActual.fecha_checkout) {
@@ -1909,19 +1913,23 @@ async function abrirModalDisponibilidad(selectHabitacion) {
   const fechas = Array.from({ length: DIAS_VISIBLES_DISPONIBILIDAD }, (_, i) => addDays(hoy, i));
   const rangoFinISO = toISODate(addDays(hoy, DIAS_VISIBLES_DISPONIBILIDAD));
 
-  const [{ data: habitaciones, error: errHab }, { data: reservas, error: errRes }] = await Promise.all([
+  const [{ data: habitaciones, error: errHab }, { data: reservas, error: errRes }, { data: reservasPasadia, error: errPasadia }] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre, estado').order('numero'),
     supabase.from('reservas').select('*').lte('fecha_checkin', rangoFinISO).gt('fecha_checkout', hoyISO),
+    // (228 / pasadía) Consulta aparte — ver la misma nota en reservas.js
+    // cargarCalendario: checkin = checkout nunca calza con el filtro de
+    // arriba, hecho para rangos de verdad.
+    supabase.from('reservas').select('*').eq('es_pasadia', true).gte('fecha_checkin', hoyISO).lt('fecha_checkin', rangoFinISO),
   ]);
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
 
-  if (errHab || errRes) {
+  if (errHab || errRes || errPasadia) {
     overlay.innerHTML = `
       <div class="modal-caja modal-caja-ancha">
         <h3>Disponibilidad de habitaciones</h3>
-        <p class="mensaje-vacio">Error cargando disponibilidad: ${(errHab || errRes).message}</p>
+        <p class="mensaje-vacio">Error cargando disponibilidad: ${(errHab || errRes || errPasadia).message}</p>
         <div class="modal-acciones"><button type="button" class="btn btn-secundario" id="btn-cerrar-disponibilidad">Cerrar</button></div>
       </div>
     `;
@@ -1950,11 +1958,19 @@ async function abrirModalDisponibilidad(selectHabitacion) {
           const reserva = (reservas || []).find(
             (r) => r.habitacion_id === h.id && iso >= r.fecha_checkin && iso < r.fecha_checkout
           );
+          const pasadiaDelDia = (reservasPasadia || []).find((r) => r.habitacion_id === h.id && iso === r.fecha_checkin);
           if (reserva) {
-            return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-reserva-ocupada" title="${escaparHTML(reserva.huesped_nombre)}">${escaparHTML(reserva.huesped_nombre)}</div></td>`;
+            return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-reserva-ocupada" title="${escaparHTML(reserva.huesped_nombre)}${pasadiaDelDia ? ` · también hay una pasadía este día: ${escaparHTML(pasadiaDelDia.huesped_nombre)}` : ''}">${escaparHTML(reserva.huesped_nombre)}${pasadiaDelDia ? ' 🕐' : ''}</div></td>`;
           }
           if (bloqueoIndefinido || (esHoy && bloqueoHoy)) {
             return `<td class="${esHoy ? 'celda-columna-hoy' : ''}"><div class="celda-habitacion-bloqueada ${h.estado}" title="Habitación en estado: ${h.estado}">${ETIQUETA_ESTADO_HABITACION[h.estado]}</div></td>`;
+          }
+          if (pasadiaDelDia) {
+            // (228 / pasadía) No bloquea la noche — se muestra la pasadía
+            // pero la habitación se sigue pudiendo elegir para hospedar a
+            // otro huésped esa misma noche (igual que un día realmente libre).
+            const libre = `<div class="celda-reserva-vacia ${esHoy ? 'btn-elegir-habitacion' : ''}" ${esHoy ? `data-habitacion-id="${h.id}" title="Elegir esta habitación — hoy también hay una pasadía: ${escaparHTML(pasadiaDelDia.huesped_nombre)}"` : `style="cursor:default;" title="Pasadía este día: ${escaparHTML(pasadiaDelDia.huesped_nombre)}"`}>🕐 Pasadía + ${esHoy ? '✅ Libre esta noche' : 'libre esta noche'}</div>`;
+            return `<td class="${esHoy ? 'celda-columna-hoy' : ''}">${libre}</td>`;
           }
           // Disponible: solo la columna de HOY es clicable para elegir
           // habitación (el check-in es para hoy); las demás columnas son
@@ -2018,7 +2034,7 @@ function abrirModalConfirmarCheckin(datos) {
         <p class="mensaje-vacio" style="margin-top:-0.5rem;">Revisa la liquidación antes de guardar — este es el único paso que registra el check-in de verdad.</p>
         ${filaResumen('Habitación', datos.habitacionTexto, { negrita: true })}
         ${filaResumen('Tarifa', datos.tarifaCodigo, {})}
-        ${filaResumen('Noches', datos.cantidadNoches || '—', {})}
+        ${filaResumen('Noches', datos.esPasadia ? '🕐 Pasadía (mismo día)' : datos.cantidadNoches || '—', {})}
         ${cajonMonto('Monto estimado de la estadía', formatCOP(datos.montoEstimado), '#0b5fae', '#eaf3ff', '#8ec1f5')}
         ${
           datos.montoTotalConfirmadoVinculada != null
@@ -2078,6 +2094,7 @@ async function ejecutarRegistroCheckin(p) {
     reservaIdSeleccionada,
     tarifaId,
     cantidadNoches,
+    esPasadia,
     nombre,
     documento,
     celular,
@@ -2096,45 +2113,61 @@ async function ejecutarRegistroCheckin(p) {
   if (reservaIdSeleccionada) {
     reservaIdFinal = Number(reservaIdSeleccionada);
 
-    // Si el check-in trae más (o menos) noches que las que tenía la
-    // reserva original, actualizamos también fecha_checkout — esto es lo
-    // que permite "adicionar días a la estadía" con solo cambiar el campo
-    // Cantidad de noches de arriba: el check-in cuenta desde hoy, así que
-    // la nueva salida es hoy + esas noches. Antes de guardar, se verifica
-    // que ninguna OTRA reserva activa de esa misma habitación se cruce
-    // con la fecha nueva — si hay cruce, se avisa y no se extiende la
-    // fecha (el resto del check-in sigue igual).
-    const nuevaFechaCheckoutISO = toISODate(addDays(hoyISO, cantidadNoches > 0 ? cantidadNoches : 1));
-    const { data: cruces } = await supabase
-      .from('reservas')
-      .select('id, huesped_nombre, fecha_checkin, fecha_checkout')
-      .eq('habitacion_id', habitacionId)
-      .in('estado', ESTADOS_RESERVA_ACTIVOS)
-      .neq('id', reservaIdFinal)
-      .lt('fecha_checkin', nuevaFechaCheckoutISO)
-      .gt('fecha_checkout', hoyISO);
-
-    const payloadReservaVinculada = { estado: 'hospedado' };
-    if (!cruces || cruces.length === 0) {
-      payloadReservaVinculada.fecha_checkout = nuevaFechaCheckoutISO;
-      // (181) El monto solo se toca si de verdad se pudo extender la
-      // fecha, y solo con lo que la recepcionista confirmó a mano en el
-      // formulario (nunca con montoEstimado en silencio — puede haber
-      // descuento).
+    if (esPasadia) {
+      // (228 / pasadía) No hay "extender noches" que aplique — se deja la
+      // reserva marcada como pasadía, con checkin = checkout = hoy (el
+      // check-in real ocurre ahora). Si la reserva vinculada YA era
+      // pasadía, esto no cambia nada de fondo, solo confirma el estado.
+      const payloadReservaVinculada = { estado: 'hospedado', es_pasadia: true, fecha_checkin: hoyISO, fecha_checkout: hoyISO };
       if (montoTotalConfirmadoVinculada != null) {
         payloadReservaVinculada.monto_total = montoTotalConfirmadoVinculada;
       }
+      const { error: errReservaUpd } = await supabase.from('reservas').update(payloadReservaVinculada).eq('id', reservaIdFinal);
+      if (errReservaUpd) {
+        // (213 / H28) Ver mensajeErrorReserva — 23P01 = EXCLUDE constraint.
+        mostrarToast(`No se pudo actualizar la reserva vinculada: ${mensajeErrorReserva(errReservaUpd)}`, 'error');
+      }
     } else {
-      mostrarToast(
-        `No se pudo extender la estadía hasta ${nuevaFechaCheckoutISO}: la habitación ya tiene otra reserva (${cruces[0].huesped_nombre}) que se cruza. El check-in continúa con la fecha original de la reserva.`,
-        'error'
-      );
-    }
+      // Si el check-in trae más (o menos) noches que las que tenía la
+      // reserva original, actualizamos también fecha_checkout — esto es lo
+      // que permite "adicionar días a la estadía" con solo cambiar el campo
+      // Cantidad de noches de arriba: el check-in cuenta desde hoy, así que
+      // la nueva salida es hoy + esas noches. Antes de guardar, se verifica
+      // que ninguna OTRA reserva activa de esa misma habitación se cruce
+      // con la fecha nueva — si hay cruce, se avisa y no se extiende la
+      // fecha (el resto del check-in sigue igual).
+      const nuevaFechaCheckoutISO = toISODate(addDays(hoyISO, cantidadNoches > 0 ? cantidadNoches : 1));
+      const { data: cruces } = await supabase
+        .from('reservas')
+        .select('id, huesped_nombre, fecha_checkin, fecha_checkout')
+        .eq('habitacion_id', habitacionId)
+        .in('estado', ESTADOS_RESERVA_ACTIVOS)
+        .neq('id', reservaIdFinal)
+        .lt('fecha_checkin', nuevaFechaCheckoutISO)
+        .gt('fecha_checkout', hoyISO);
 
-    const { error: errReservaUpd } = await supabase.from('reservas').update(payloadReservaVinculada).eq('id', reservaIdFinal);
-    if (errReservaUpd) {
-      // (213 / H28) Ver mensajeErrorReserva — 23P01 = EXCLUDE constraint.
-      mostrarToast(`No se pudo actualizar la reserva vinculada: ${mensajeErrorReserva(errReservaUpd)}`, 'error');
+      const payloadReservaVinculada = { estado: 'hospedado', es_pasadia: false };
+      if (!cruces || cruces.length === 0) {
+        payloadReservaVinculada.fecha_checkout = nuevaFechaCheckoutISO;
+        // (181) El monto solo se toca si de verdad se pudo extender la
+        // fecha, y solo con lo que la recepcionista confirmó a mano en el
+        // formulario (nunca con montoEstimado en silencio — puede haber
+        // descuento).
+        if (montoTotalConfirmadoVinculada != null) {
+          payloadReservaVinculada.monto_total = montoTotalConfirmadoVinculada;
+        }
+      } else {
+        mostrarToast(
+          `No se pudo extender la estadía hasta ${nuevaFechaCheckoutISO}: la habitación ya tiene otra reserva (${cruces[0].huesped_nombre}) que se cruza. El check-in continúa con la fecha original de la reserva.`,
+          'error'
+        );
+      }
+
+      const { error: errReservaUpd } = await supabase.from('reservas').update(payloadReservaVinculada).eq('id', reservaIdFinal);
+      if (errReservaUpd) {
+        // (213 / H28) Ver mensajeErrorReserva — 23P01 = EXCLUDE constraint.
+        mostrarToast(`No se pudo actualizar la reserva vinculada: ${mensajeErrorReserva(errReservaUpd)}`, 'error');
+      }
     }
   } else {
     const { data: nuevaReserva, error: errReservaNueva } = await supabase
@@ -2145,7 +2178,8 @@ async function ejecutarRegistroCheckin(p) {
         huesped_telefono: celular,
         huesped_documento: documento,
         fecha_checkin: hoyISO,
-        fecha_checkout: toISODate(addDays(hoyISO, cantidadNoches > 0 ? cantidadNoches : 1)),
+        fecha_checkout: esPasadia ? hoyISO : toISODate(addDays(hoyISO, cantidadNoches > 0 ? cantidadNoches : 1)),
+        es_pasadia: esPasadia,
         estado: 'hospedado',
         tarifa_id: tarifaId,
         // (171) Antes este insert NO traía monto_total — quedaba en null,
@@ -2267,7 +2301,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     supabase.from('tarifas').select('*').order('codigo'),
     supabase
       .from('reservas')
-      .select('id, habitacion_id, huesped_nombre, huesped_telefono, huesped_documento, fecha_checkin, fecha_checkout, tarifa_id, estado')
+      .select('id, habitacion_id, huesped_nombre, huesped_telefono, huesped_documento, fecha_checkin, fecha_checkout, tarifa_id, estado, es_pasadia')
       .in('estado', ['reservada', 'confirmada'])
       .order('fecha_checkin'),
   ]);
@@ -2380,6 +2414,10 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
           <label>Cantidad de noches
             <input type="number" name="cantidad_noches" id="input-noches" min="1" value="1" required />
           </label>
+          <label style="display:flex; align-items:flex-start; gap:0.5rem; grid-column:1/-1; font-weight:600;">
+            <input type="checkbox" id="check-pasadia-checkin" style="margin-top:0.2rem;" />
+            <span>🕐 Es pasadía (entra y sale hoy mismo, no pasa la noche)</span>
+          </label>
           <label>Método de pago
             <select name="metodo_pago" id="select-metodo-pago-estadia" required>
               <option value="">— Elige a qué cuenta va —</option>
@@ -2390,7 +2428,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
             <input type="number" name="deposito" step="1000" />
           </label>
         </div>
-        <p class="mensaje-vacio" style="margin-top:0.4rem; font-size:0.78rem;">💡 Si el huésped ya tenía su reserva hecha y decide quedarse más días, solo aumenta "Cantidad de noches" — la reserva vinculada se extiende sola (contando desde hoy), siempre que la habitación siga libre esos días.</p>
+        <p class="mensaje-vacio" style="margin-top:0.4rem; font-size:0.78rem;">💡 Si el huésped ya tenía su reserva hecha y decide quedarse más días, solo aumenta "Cantidad de noches" — la reserva vinculada se extiende sola (contando desde hoy), siempre que la habitación siga libre esos días. Marca "Es pasadía" en vez de esto si entra y sale hoy mismo — la habitación queda libre para hospedar a otro huésped esa misma noche.</p>
 
         <!-- (Nota 181) Igual que en "Editar check-in": si las noches cambian
         frente a lo que ya tenía la reserva vinculada, la fecha de salida se
@@ -2597,6 +2635,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
   // --- Monto estimado de la estadía (noches × tarifa) + pago al check-in ---
   const selectTarifaEstadia = container.querySelector('#select-tarifa');
   const inputNochesEstadia = container.querySelector('#input-noches');
+  const checkPasadiaCheckin = container.querySelector('#check-pasadia-checkin');
   const radiosEstadoPago = container.querySelectorAll('input[name="estado_pago_checkin"]');
   const wrapMontoPago = container.querySelector('#wrap-monto-pago-checkin');
   const inputMontoPago = container.querySelector('#input-monto-pago');
@@ -2626,7 +2665,8 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
   activarInputDinero(inputMontoExtendidoCheckin);
 
   function nochesCambiaronVinculada() {
-    return nochesOriginalesVinculada != null && (Number(inputNochesEstadia.value) || 0) !== nochesOriginalesVinculada;
+    const nochesActuales = checkPasadiaCheckin.checked ? 0 : Number(inputNochesEstadia.value) || 0;
+    return nochesOriginalesVinculada != null && nochesActuales !== nochesOriginalesVinculada;
   }
 
   function actualizarCandadoMontoExtendidoCheckin() {
@@ -2642,10 +2682,37 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     const tarifa = (tarifas || []).find((t) => t.id === Number(selectTarifaEstadia.value));
     if (!tarifa) return 0;
     if (tarifa.tipo === 'por_dias') return Number(tarifa.valor_convenido);
+    // (228 / pasadía) 0 noches por diseño — se sugiere la tarifa normal tal
+    // cual (como si fuera 1 día), ajustable a mano.
+    if (checkPasadiaCheckin.checked) return Number(tarifa.precio_temporada_baja);
     const noches = Number(inputNochesEstadia.value) || 0;
     if (noches <= 0) return 0;
     return noches * Number(tarifa.precio_temporada_baja);
   }
+
+  // (228 / pasadía) "Cantidad de noches" no aplica cuando es pasadía — se
+  // deshabilita (y por lo tanto no viaja en el FormData del submit) para
+  // que quede claro visualmente, guardando el valor previo por si la
+  // destildan.
+  function sincronizarNochesPasadia() {
+    if (checkPasadiaCheckin.checked) {
+      if (inputNochesEstadia.dataset.valorPrevioPasadia === undefined) {
+        inputNochesEstadia.dataset.valorPrevioPasadia = inputNochesEstadia.value || '1';
+      }
+      inputNochesEstadia.value = '';
+      inputNochesEstadia.disabled = true;
+      inputNochesEstadia.required = false;
+    } else {
+      inputNochesEstadia.disabled = false;
+      inputNochesEstadia.required = true;
+      if (!inputNochesEstadia.value) inputNochesEstadia.value = inputNochesEstadia.dataset.valorPrevioPasadia || '1';
+      delete inputNochesEstadia.dataset.valorPrevioPasadia;
+    }
+  }
+  checkPasadiaCheckin.addEventListener('change', () => {
+    sincronizarNochesPasadia();
+    actualizarHintMonto();
+  });
 
   // Arma la tarjeta-recibo con lo que la recepcionista lleva llenado hasta
   // ahora — se repinta completa cada vez que cambia algo relevante. Es
@@ -2672,7 +2739,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
         <h3 style="margin-top:0;">🧾 Resumen en vivo</h3>
         ${filaResumen('Habitación', habitacionTexto, { negrita: true })}
         ${filaResumen('Tarifa', tarifa ? tarifa.codigo : 'Sin elegir', {})}
-        ${filaResumen('Cantidad de noches', noches || '—', {})}
+        ${filaResumen('Cantidad de noches', checkPasadiaCheckin.checked ? '🕐 Pasadía (mismo día)' : noches || '—', {})}
         ${cajonMonto('Monto estimado estadía', formatCOP(montoEstimado), '#0b5fae', '#eaf3ff', '#8ec1f5')}
         ${abonoPrevioActual > 0 ? cajonMonto('Ya abonado antes (reserva / check-in)', formatCOP(abonoPrevioActual), '#6a3fb5', '#f3edfb', '#c6acec') : ''}
         ${
@@ -2755,9 +2822,18 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
     container.querySelector('#select-habitacion').value = reserva.habitacion_id;
     if (reserva.tarifa_id) container.querySelector('#select-tarifa').value = reserva.tarifa_id;
 
-    const noches = Math.round((new Date(reserva.fecha_checkout) - new Date(reserva.fecha_checkin)) / 86400000);
-    container.querySelector('#input-noches').value = noches > 0 ? noches : '';
-    nochesOriginalesVinculada = noches > 0 ? noches : null;
+    // (228 / pasadía) Si la reserva vinculada ya es una pasadía, se marca
+    // el checkbox solo y "Cantidad de noches" queda deshabilitada — ver
+    // sincronizarNochesPasadia().
+    checkPasadiaCheckin.checked = Boolean(reserva.es_pasadia);
+    sincronizarNochesPasadia();
+    if (!reserva.es_pasadia) {
+      const noches = Math.round((new Date(reserva.fecha_checkout) - new Date(reserva.fecha_checkin)) / 86400000);
+      inputNochesEstadia.value = noches > 0 ? noches : '';
+      nochesOriginalesVinculada = noches > 0 ? noches : null;
+    } else {
+      nochesOriginalesVinculada = 0;
+    }
     inputMontoExtendidoCheckin.value = '';
 
     const { data: pagosPrevios, error: errPagosPrevios } = await supabase.from('reservas_pagos').select('monto').eq('reserva_id', reserva.id);
@@ -2851,7 +2927,11 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
 
     const tarifaId = form.get('tarifa_id') ? Number(form.get('tarifa_id')) : null;
     const tarifa = (tarifas || []).find((t) => t.id === tarifaId);
-    const cantidadNoches = form.get('cantidad_noches') ? Number(form.get('cantidad_noches')) : 1;
+    // (228 / pasadía) "Cantidad de noches" queda deshabilitada (y por lo
+    // tanto fuera del FormData) mientras el checkbox de pasadía esté
+    // marcado — se fuerza a 0 explícitamente en ese caso.
+    const esPasadia = checkPasadiaCheckin.checked;
+    const cantidadNoches = esPasadia ? 0 : form.get('cantidad_noches') ? Number(form.get('cantidad_noches')) : 1;
     const nombre = form.get('nombre').trim();
     const documento = form.get('numero_documento').trim();
     const celular = form.get('celular').trim() || null;
@@ -2905,6 +2985,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
       habitacionTexto,
       tarifaCodigo: tarifa ? tarifa.codigo : '—',
       cantidadNoches,
+      esPasadia,
       montoEstimado,
       montoTotalConfirmadoVinculada,
       abonoPrevioActual,
@@ -2921,6 +3002,7 @@ async function vistaFormulario(container, reservaIdPreseleccionada) {
           reservaIdSeleccionada,
           tarifaId,
           cantidadNoches,
+          esPasadia,
           nombre,
           documento,
           celular,
