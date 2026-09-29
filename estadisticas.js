@@ -107,6 +107,7 @@ async function generarEstadisticas(elemento, fechaInicio, fechaFin) {
     { data: movimientos, error: errMov },
     { data: ventas, error: errVentas },
     { data: reservas, error: errReservas },
+    { data: pasadiasRows, error: errPasadias },
   ] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre').order('numero'),
     supabase.from('reservas_pagos').select('fecha, monto').gte('fecha', fechaInicio).lt('fecha', finExclusivoISO),
@@ -120,9 +121,19 @@ async function generarEstadisticas(elemento, fechaInicio, fechaFin) {
       .select('habitacion_id, fecha_checkin, fecha_checkout, estado, monto_total')
       .lt('fecha_checkin', finExclusivoISO)
       .gt('fecha_checkout', fechaInicio),
+    // (228 / pasadía) Una pasadía guarda fecha_checkin = fecha_checkout (rango
+    // vacío), así que nunca cumple ".gt('fecha_checkout', fechaInicio)" cuando
+    // cae justo en el primer día del rango — quedaría fuera del ranking de
+    // habitaciones más rentables sin esta consulta aparte.
+    supabase
+      .from('reservas')
+      .select('habitacion_id, estado, monto_total')
+      .eq('es_pasadia', true)
+      .gte('fecha_checkin', fechaInicio)
+      .lte('fecha_checkin', fechaFin),
   ]);
 
-  const error = errHab || errPagos || errMov || errVentas || errReservas;
+  const error = errHab || errPagos || errMov || errVentas || errReservas || errPasadias;
   if (error) {
     elemento.innerHTML = `<p class="mensaje-vacio">Error calculando estadísticas: ${error.message}</p>`;
     return;
@@ -130,6 +141,7 @@ async function generarEstadisticas(elemento, fechaInicio, fechaFin) {
 
   const totalHabitaciones = (habitaciones || []).length;
   const reservasActivas = (reservas || []).filter((r) => !ESTADOS_NO_OCUPAN.includes(r.estado));
+  const pasadiasActivas = (pasadiasRows || []).filter((r) => !ESTADOS_NO_OCUPAN.includes(r.estado));
 
   // --- Bucket por día ---
   const dias = [];
@@ -183,6 +195,12 @@ async function generarEstadisticas(elemento, fechaInicio, fechaFin) {
   // --- Ranking de habitaciones por ingresos en el rango ---
   const ingresosPorHabitacion = new Map();
   reservasActivas.forEach((r) => {
+    const actual = ingresosPorHabitacion.get(r.habitacion_id) || 0;
+    ingresosPorHabitacion.set(r.habitacion_id, actual + Number(r.monto_total || 0));
+  });
+  // (228 / pasadía) Ver nota en la consulta: se suman aparte para que el
+  // ranking no pierda ingresos reales de pasadías.
+  pasadiasActivas.forEach((r) => {
     const actual = ingresosPorHabitacion.get(r.habitacion_id) || 0;
     ingresosPorHabitacion.set(r.habitacion_id, actual + Number(r.monto_total || 0));
   });
