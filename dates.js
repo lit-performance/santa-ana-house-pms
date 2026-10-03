@@ -39,6 +39,18 @@ export function toISODate(date) {
   return `${y}-${m}-${d}`;
 }
 
+// Límite de día en hora de Colombia (America/Bogota, UTC-5 fijo, sin horario
+// de verano) para usar en filtros contra columnas timestamptz (creado_en,
+// abierto_en/cerrado_en, reservas_pagos.fecha). Si se usa el string
+// 'YYYY-MM-DD' tal cual, Postgres lo interpreta en UTC, 5 horas antes de la
+// medianoche real de Bogotá — eso hacía que ventas de la noche (7pm-12am
+// hora Colombia) quedaran contadas en el día siguiente, y que ventas
+// después de las 7pm del día actual desaparecieran de "hoy" hasta el
+// reporte del día siguiente. (235 / zona horaria)
+export function limiteDiaBogota(fechaISO) {
+  return `${fechaISO}T00:00:00-05:00`;
+}
+
 // Suma (o resta, con n negativo) n días a una fecha. Acepta Date o string 'YYYY-MM-DD'.
 export function addDays(fecha, n) {
   const d = typeof fecha === 'string' ? new Date(fecha + 'T00:00:00') : new Date(fecha);
