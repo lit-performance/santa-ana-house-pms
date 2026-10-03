@@ -26,7 +26,7 @@
 
 import { supabase } from './supabase-client.js';
 import { formatCOP } from './currency.js';
-import { formatFechaHora, formatFechaCorta, toISODate, addDays } from './dates.js';
+import { formatFechaHora, formatFechaCorta, toISODate, addDays, limiteDiaBogota } from './dates.js';
 import { mostrarToast } from './ui.js';
 
 const HOTEL_NOMBRE = 'Santa Ana House 21';
@@ -52,10 +52,10 @@ async function obtenerDetalleDia(fechaISO) {
     { data: ventasMostrador, error: errVentas },
     { data: transferencias, error: errTrans },
   ] = await Promise.all([
-    supabase.from('reservas_pagos').select('*').gte('fecha', fechaISO).lt('fecha', mananaISO).order('fecha', { ascending: true }),
-    supabase.from('caja_movimientos').select('*').gte('creado_en', fechaISO).lt('creado_en', mananaISO).order('creado_en', { ascending: true }),
-    supabase.from('ventas_mostrador').select('*, minibar_productos(nombre)').gte('creado_en', fechaISO).lt('creado_en', mananaISO).order('creado_en', { ascending: true }),
-    supabase.from('caja_transferencias').select('*').gte('creado_en', fechaISO).lt('creado_en', mananaISO).order('creado_en', { ascending: true }),
+    supabase.from('reservas_pagos').select('*').gte('fecha', limiteDiaBogota(fechaISO)).lt('fecha', limiteDiaBogota(mananaISO)).order('fecha', { ascending: true }),
+    supabase.from('caja_movimientos').select('*').gte('creado_en', limiteDiaBogota(fechaISO)).lt('creado_en', limiteDiaBogota(mananaISO)).order('creado_en', { ascending: true }),
+    supabase.from('ventas_mostrador').select('*, minibar_productos(nombre)').gte('creado_en', limiteDiaBogota(fechaISO)).lt('creado_en', limiteDiaBogota(mananaISO)).order('creado_en', { ascending: true }),
+    supabase.from('caja_transferencias').select('*').gte('creado_en', limiteDiaBogota(fechaISO)).lt('creado_en', limiteDiaBogota(mananaISO)).order('creado_en', { ascending: true }),
   ]);
 
   const error = errPagos || errMov || errVentas || errTrans;
