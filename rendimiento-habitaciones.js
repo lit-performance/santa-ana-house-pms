@@ -60,7 +60,7 @@
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { formatCOP } from './currency.js';
-import { toISODate, addDays, formatFechaCorta } from './dates.js';
+import { toISODate, addDays, formatFechaCorta, limiteDiaBogota } from './dates.js';
 import { crearAnillo, crearBarrasHorizontalesApiladas, leerColor } from './graficas.js';
 
 const ESTADOS_NO_OCUPAN = ['cancelada', 'no_show'];
@@ -299,8 +299,8 @@ async function generarRendimiento(container, fechaInicioISO, fechaFinISO) {
     supabase
       .from('minibar_consumos')
       .select('monto, habitacion_id, creado_en')
-      .gte('creado_en', fechaInicioISO)
-      .lt('creado_en', finExclusivoISO),
+      .gte('creado_en', limiteDiaBogota(fechaInicioISO))
+      .lt('creado_en', limiteDiaBogota(finExclusivoISO)),
     // (228 / pasadía) Consulta aparte — una pasadía (fecha_checkin =
     // fecha_checkout) nunca calza con el filtro ".gt('fecha_checkout', ...)"
     // de arriba, hecho para rangos de verdad, así que sin esto su $
