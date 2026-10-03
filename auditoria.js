@@ -61,7 +61,7 @@ import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP } from './currency.js';
-import { formatFechaHora, toISODate, addDays } from './dates.js';
+import { formatFechaHora, toISODate, addDays, limiteDiaBogota } from './dates.js';
 import { getUsuarioActual } from './auth.js';
 
 const ETIQUETA_TIPO = {
@@ -195,8 +195,11 @@ async function render(container) {
 async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando bitácora…</p>';
 
-  const desde = `${fechaInicio}T00:00:00`;
-  const hasta = `${fechaFin}T23:59:59`;
+  // (235 / zona horaria) Offset -05:00 (Colombia, sin horario de verano)
+  // fijado explícitamente — sin él, Postgres interpreta este timestamp en
+  // UTC, 5 horas antes de la medianoche real de Bogotá.
+  const desde = `${fechaInicio}T00:00:00-05:00`;
+  const hasta = `${fechaFin}T23:59:59-05:00`;
   const finExclusivoFecha = toISODate(addDays(new Date(`${fechaFin}T00:00:00`), 1));
 
   const [
@@ -226,8 +229,8 @@ async function generarBitacora(elemento, fechaInicio, fechaFin, tipoEvento) {
       // (214 / auditoría H35) registrado_por — antes esta bitácora
       // mostraba "usuarioId: null" fijo para todo pago de reserva.
       .select('id, reserva_id, monto, metodo_pago, comentarios, fecha, registrado_por, reservas(huesped_nombre, habitaciones(numero))')
-      .gte('fecha', fechaInicio)
-      .lt('fecha', finExclusivoFecha),
+      .gte('fecha', limiteDiaBogota(fechaInicio))
+      .lt('fecha', limiteDiaBogota(finExclusivoFecha)),
   ]);
 
   const error = errAbiertos || errCerrados || errMov || errTrans || errVentas || errPagos;
