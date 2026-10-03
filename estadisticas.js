@@ -16,7 +16,7 @@
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { formatCOP } from './currency.js';
-import { toISODate, addDays } from './dates.js';
+import { toISODate, addDays, limiteDiaBogota } from './dates.js';
 
 const ESTADOS_NO_OCUPAN = ['cancelada', 'no_show'];
 const ALTURA_MAX_BARRA_PX = 160;
@@ -110,12 +110,12 @@ async function generarEstadisticas(elemento, fechaInicio, fechaFin) {
     { data: pasadiasRows, error: errPasadias },
   ] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre').order('numero'),
-    supabase.from('reservas_pagos').select('fecha, monto').gte('fecha', fechaInicio).lt('fecha', finExclusivoISO),
-    supabase.from('caja_movimientos').select('creado_en, tipo, monto').gte('creado_en', fechaInicio).lt('creado_en', finExclusivoISO),
+    supabase.from('reservas_pagos').select('fecha, monto').gte('fecha', limiteDiaBogota(fechaInicio)).lt('fecha', limiteDiaBogota(finExclusivoISO)),
+    supabase.from('caja_movimientos').select('creado_en, tipo, monto').gte('creado_en', limiteDiaBogota(fechaInicio)).lt('creado_en', limiteDiaBogota(finExclusivoISO)),
     // (215 / auditoría H37) Antes faltaba ventas_mostrador — indicadores.js
     // sí la incluye, así que esta pantalla mostraba un ingreso menor para
     // el mismo período.
-    supabase.from('ventas_mostrador').select('creado_en, monto').gte('creado_en', fechaInicio).lt('creado_en', finExclusivoISO),
+    supabase.from('ventas_mostrador').select('creado_en, monto').gte('creado_en', limiteDiaBogota(fechaInicio)).lt('creado_en', limiteDiaBogota(finExclusivoISO)),
     supabase
       .from('reservas')
       .select('habitacion_id, fecha_checkin, fecha_checkout, estado, monto_total')
