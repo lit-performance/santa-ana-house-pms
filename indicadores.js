@@ -73,7 +73,7 @@
 import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { formatCOP } from './currency.js';
-import { toISODate, addDays, formatFechaCorta, formatFechaHora } from './dates.js';
+import { toISODate, addDays, formatFechaCorta, formatFechaHora, limiteDiaBogota } from './dates.js';
 import { calcularCheckoutsEnRango } from './cuentas.js';
 import { mostrarResumenCheckout, descargarResumenCheckoutPDF } from './resumen-checkout.js';
 import { calcularSaldosPorCuenta } from './caja.js';
@@ -237,9 +237,9 @@ async function cargarPanelPropietario(container) {
     { data: checkinsMesAnteriorCorte, error: errCheckinsMesAnt },
     { data: pasadiasMesRows, error: errPasadiasMes },
   ] = await Promise.all([
-    supabase.from('reservas_pagos').select('fecha, monto').gte('fecha', fetchDesdeISO).lt('fecha', mananaISO),
-    supabase.from('ventas_mostrador').select('creado_en, monto').gte('creado_en', fetchDesdeISO).lt('creado_en', mananaISO),
-    supabase.from('caja_movimientos').select('creado_en, tipo, monto').eq('tipo', 'ingreso').gte('creado_en', fetchDesdeISO).lt('creado_en', mananaISO),
+    supabase.from('reservas_pagos').select('fecha, monto').gte('fecha', limiteDiaBogota(fetchDesdeISO)).lt('fecha', limiteDiaBogota(mananaISO)),
+    supabase.from('ventas_mostrador').select('creado_en, monto').gte('creado_en', limiteDiaBogota(fetchDesdeISO)).lt('creado_en', limiteDiaBogota(mananaISO)),
+    supabase.from('caja_movimientos').select('creado_en, tipo, monto').eq('tipo', 'ingreso').gte('creado_en', limiteDiaBogota(fetchDesdeISO)).lt('creado_en', limiteDiaBogota(mananaISO)),
     supabase.from('habitaciones').select('id'),
     supabase
       .from('reservas')
@@ -684,17 +684,17 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
     { data: consumosMinibar, error: errMinibar },
   ] = await Promise.all([
     supabase.from('habitaciones').select('id, numero, nombre'),
-    supabase.from('reservas_pagos').select('fecha, monto, metodo_pago').gte('fecha', fechaInicioISO).lt('fecha', finExclusivoISO),
+    supabase.from('reservas_pagos').select('fecha, monto, metodo_pago').gte('fecha', limiteDiaBogota(fechaInicioISO)).lt('fecha', limiteDiaBogota(finExclusivoISO)),
     supabase
       .from('caja_movimientos')
       .select('creado_en, tipo, monto, metodo_pago')
-      .gte('creado_en', fechaInicioISO)
-      .lt('creado_en', finExclusivoISO),
+      .gte('creado_en', limiteDiaBogota(fechaInicioISO))
+      .lt('creado_en', limiteDiaBogota(finExclusivoISO)),
     supabase
       .from('ventas_mostrador')
       .select('creado_en, monto, metodo_pago, cantidad, producto_id, minibar_productos(nombre)')
-      .gte('creado_en', fechaInicioISO)
-      .lt('creado_en', finExclusivoISO),
+      .gte('creado_en', limiteDiaBogota(fechaInicioISO))
+      .lt('creado_en', limiteDiaBogota(finExclusivoISO)),
     supabase
       .from('reservas')
       .select('habitacion_id, fecha_checkin, fecha_checkout, estado')
@@ -703,8 +703,8 @@ async function generarReporte(container, fechaInicioISO, fechaFinISO, agrupacion
     supabase
       .from('minibar_consumos')
       .select('cantidad, monto, creado_en, producto_id, minibar_productos(nombre)')
-      .gte('creado_en', fechaInicioISO)
-      .lt('creado_en', finExclusivoISO),
+      .gte('creado_en', limiteDiaBogota(fechaInicioISO))
+      .lt('creado_en', limiteDiaBogota(finExclusivoISO)),
   ]);
 
   const error = errHab || errPagos || errMov || errVentas || errReservas || errMinibar;
