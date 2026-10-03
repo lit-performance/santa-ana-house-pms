@@ -136,7 +136,7 @@ import { registerModule } from './modules-registry.js';
 import { supabase } from './supabase-client.js';
 import { mostrarToast, mostrarConfirmacion } from './ui.js';
 import { formatCOP, activarInputDinero, valorNumericoInput } from './currency.js';
-import { formatFechaHora, toISODate, addDays } from './dates.js';
+import { formatFechaHora, toISODate, addDays, limiteDiaBogota } from './dates.js';
 import { getUsuarioActual } from './auth.js';
 import { calcularHabitacionesEnUso } from './cuentas.js';
 
@@ -502,14 +502,14 @@ async function calcularResumenHabitacionesUso() {
 async function calcularResumenVentasMostrador() {
   const hoyISO = toISODate(new Date());
   const mananaISO = toISODate(addDays(new Date(), 1));
-  const { data } = await supabase.from('ventas_mostrador').select('monto').gte('creado_en', hoyISO).lt('creado_en', mananaISO);
+  const { data } = await supabase.from('ventas_mostrador').select('monto').gte('creado_en', limiteDiaBogota(hoyISO)).lt('creado_en', limiteDiaBogota(mananaISO));
   return { total: (data || []).reduce((s, v) => s + Number(v.monto), 0), cantidad: (data || []).length };
 }
 
 async function calcularResumenGastos() {
   const hoyISO = toISODate(new Date());
   const mananaISO = toISODate(addDays(new Date(), 1));
-  const { data } = await supabase.from('caja_movimientos').select('monto, categoria').eq('tipo', 'egreso').gte('creado_en', hoyISO).lt('creado_en', mananaISO);
+  const { data } = await supabase.from('caja_movimientos').select('monto, categoria').eq('tipo', 'egreso').gte('creado_en', limiteDiaBogota(hoyISO)).lt('creado_en', limiteDiaBogota(mananaISO));
   const categoriasReales = new Set([...CATEGORIAS_GASTOS, CATEGORIA_COMPRAS]);
   const gastos = (data || []).filter((m) => categoriasReales.has(m.categoria));
   return { total: gastos.reduce((s, g) => s + Number(g.monto), 0), cantidad: gastos.length };
@@ -518,7 +518,7 @@ async function calcularResumenGastos() {
 async function calcularResumenMovimientosManuales() {
   const hoyISO = toISODate(new Date());
   const mananaISO = toISODate(addDays(new Date(), 1));
-  const { data } = await supabase.from('caja_movimientos').select('categoria').gte('creado_en', hoyISO).lt('creado_en', mananaISO);
+  const { data } = await supabase.from('caja_movimientos').select('categoria').gte('creado_en', limiteDiaBogota(hoyISO)).lt('creado_en', limiteDiaBogota(mananaISO));
   const categoriasReales = new Set([...CATEGORIAS_GASTOS, CATEGORIA_COMPRAS]);
   const movimientos = (data || []).filter((m) => !categoriasReales.has(m.categoria));
   return { cantidad: movimientos.length };
@@ -527,7 +527,7 @@ async function calcularResumenMovimientosManuales() {
 async function calcularResumenIngresosReservas() {
   const hoyISO = toISODate(new Date());
   const mananaISO = toISODate(addDays(new Date(), 1));
-  const { data } = await supabase.from('reservas_pagos').select('monto').gte('fecha', hoyISO).lt('fecha', mananaISO);
+  const { data } = await supabase.from('reservas_pagos').select('monto').gte('fecha', limiteDiaBogota(hoyISO)).lt('fecha', limiteDiaBogota(mananaISO));
   return { total: (data || []).reduce((s, p) => s + Number(p.monto), 0), cantidad: (data || []).length };
 }
 
@@ -535,9 +535,9 @@ async function calcularResumenDesgloseHoy() {
   const hoyISO = toISODate(new Date());
   const mananaISO = toISODate(addDays(new Date(), 1));
   const [{ data: pagos }, { data: movimientos }, { data: ventasMostrador }] = await Promise.all([
-    supabase.from('reservas_pagos').select('monto, metodo_pago').gte('fecha', hoyISO).lt('fecha', mananaISO),
-    supabase.from('caja_movimientos').select('monto, metodo_pago, tipo').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
-    supabase.from('ventas_mostrador').select('monto, metodo_pago').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
+    supabase.from('reservas_pagos').select('monto, metodo_pago').gte('fecha', limiteDiaBogota(hoyISO)).lt('fecha', limiteDiaBogota(mananaISO)),
+    supabase.from('caja_movimientos').select('monto, metodo_pago, tipo').gte('creado_en', limiteDiaBogota(hoyISO)).lt('creado_en', limiteDiaBogota(mananaISO)),
+    supabase.from('ventas_mostrador').select('monto, metodo_pago').gte('creado_en', limiteDiaBogota(hoyISO)).lt('creado_en', limiteDiaBogota(mananaISO)),
   ]);
   const desglose = calcularDesglosePorMetodo(pagos, movimientos, ventasMostrador);
   return {
@@ -554,7 +554,7 @@ async function calcularResumenSaldos() {
 async function calcularResumenMinibarHoy() {
   const hoyISO = toISODate(new Date());
   const mananaISO = toISODate(addDays(new Date(), 1));
-  const { data } = await supabase.from('minibar_consumos').select('cantidad, monto').gte('creado_en', hoyISO).lt('creado_en', mananaISO);
+  const { data } = await supabase.from('minibar_consumos').select('cantidad, monto').gte('creado_en', limiteDiaBogota(hoyISO)).lt('creado_en', limiteDiaBogota(mananaISO));
   return {
     total: (data || []).reduce((s, c) => s + Number(c.monto), 0),
     items: (data || []).reduce((s, c) => s + Number(c.cantidad), 0),
@@ -755,9 +755,9 @@ async function cargarResumenDelDia(elemento) {
   const mananaISO = toISODate(addDays(hoy, 1));
 
   const [{ data: pagosHoy, error: errPagos }, { data: movimientosHoy, error: errMov }, { data: ventasHoy, error: errVentas }] = await Promise.all([
-    supabase.from('reservas_pagos').select('monto').gte('fecha', hoyISO).lt('fecha', mananaISO),
-    supabase.from('caja_movimientos').select('monto, tipo').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
-    supabase.from('ventas_mostrador').select('monto').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
+    supabase.from('reservas_pagos').select('monto').gte('fecha', limiteDiaBogota(hoyISO)).lt('fecha', limiteDiaBogota(mananaISO)),
+    supabase.from('caja_movimientos').select('monto, tipo').gte('creado_en', limiteDiaBogota(hoyISO)).lt('creado_en', limiteDiaBogota(mananaISO)),
+    supabase.from('ventas_mostrador').select('monto').gte('creado_en', limiteDiaBogota(hoyISO)).lt('creado_en', limiteDiaBogota(mananaISO)),
   ]);
 
   const error = errPagos || errMov || errVentas;
@@ -904,8 +904,8 @@ async function cargarVentasMostradorHoy(container, elemento) {
     supabase
       .from('ventas_mostrador')
       .select('*, minibar_productos(nombre)')
-      .gte('creado_en', hoyISO)
-      .lt('creado_en', mananaISO)
+      .gte('creado_en', limiteDiaBogota(hoyISO))
+      .lt('creado_en', limiteDiaBogota(mananaISO))
       .order('creado_en', { ascending: false }),
   ]);
 
@@ -1138,8 +1138,8 @@ async function cargarGastosHoy(elemento) {
     .from('caja_movimientos')
     .select('*')
     .eq('tipo', 'egreso')
-    .gte('creado_en', hoyISO)
-    .lt('creado_en', mananaISO)
+    .gte('creado_en', limiteDiaBogota(hoyISO))
+    .lt('creado_en', limiteDiaBogota(mananaISO))
     .order('creado_en', { ascending: false });
 
   if (error) {
@@ -1209,8 +1209,8 @@ async function cargarMovimientosManualesHoy(container, elemento) {
   const { data: movimientosCrudos, error } = await supabase
     .from('caja_movimientos')
     .select('*')
-    .gte('creado_en', hoyISO)
-    .lt('creado_en', mananaISO)
+    .gte('creado_en', limiteDiaBogota(hoyISO))
+    .lt('creado_en', limiteDiaBogota(mananaISO))
     .order('creado_en', { ascending: false });
 
   if (error) {
@@ -1415,8 +1415,8 @@ async function cargarIngresosReservasHoy(elemento) {
   const { data: pagos, error } = await supabase
     .from('reservas_pagos')
     .select('*')
-    .gte('fecha', hoyISO)
-    .lt('fecha', mananaISO)
+    .gte('fecha', limiteDiaBogota(hoyISO))
+    .lt('fecha', limiteDiaBogota(mananaISO))
     .order('fecha', { ascending: false });
 
   if (error) {
@@ -1463,9 +1463,9 @@ async function cargarDesgloseHoy(elemento) {
   const mananaISO = toISODate(addDays(new Date(), 1));
 
   const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: ventasMostrador, error: errVentas }] = await Promise.all([
-    supabase.from('reservas_pagos').select('monto, metodo_pago').gte('fecha', hoyISO).lt('fecha', mananaISO),
-    supabase.from('caja_movimientos').select('monto, metodo_pago, tipo').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
-    supabase.from('ventas_mostrador').select('monto, metodo_pago').gte('creado_en', hoyISO).lt('creado_en', mananaISO),
+    supabase.from('reservas_pagos').select('monto, metodo_pago').gte('fecha', limiteDiaBogota(hoyISO)).lt('fecha', limiteDiaBogota(mananaISO)),
+    supabase.from('caja_movimientos').select('monto, metodo_pago, tipo').gte('creado_en', limiteDiaBogota(hoyISO)).lt('creado_en', limiteDiaBogota(mananaISO)),
+    supabase.from('ventas_mostrador').select('monto, metodo_pago').gte('creado_en', limiteDiaBogota(hoyISO)).lt('creado_en', limiteDiaBogota(mananaISO)),
   ]);
 
   if (errPagos || errMov || errVentas) {
@@ -1707,8 +1707,8 @@ async function cargarTarjetaMinibarHoy(elemento) {
   const { data: consumos, error } = await supabase
     .from('minibar_consumos')
     .select('cantidad, monto, creado_en, minibar_productos(nombre)')
-    .gte('creado_en', hoyISO)
-    .lt('creado_en', mananaISO)
+    .gte('creado_en', limiteDiaBogota(hoyISO))
+    .lt('creado_en', limiteDiaBogota(mananaISO))
     .order('creado_en', { ascending: false });
 
   if (error) {
@@ -1769,9 +1769,9 @@ async function cargarHistorialPorDia(container, elemento) {
   const hastaISO = toISODate(addDays(hoy, 1));
 
   const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: ventasMostrador, error: errVentas }] = await Promise.all([
-    supabase.from('reservas_pagos').select('monto, fecha').gte('fecha', desdeISO).lt('fecha', hastaISO),
-    supabase.from('caja_movimientos').select('monto, tipo, creado_en').gte('creado_en', desdeISO).lt('creado_en', hastaISO),
-    supabase.from('ventas_mostrador').select('monto, creado_en').gte('creado_en', desdeISO).lt('creado_en', hastaISO),
+    supabase.from('reservas_pagos').select('monto, fecha').gte('fecha', limiteDiaBogota(desdeISO)).lt('fecha', limiteDiaBogota(hastaISO)),
+    supabase.from('caja_movimientos').select('monto, tipo, creado_en').gte('creado_en', limiteDiaBogota(desdeISO)).lt('creado_en', limiteDiaBogota(hastaISO)),
+    supabase.from('ventas_mostrador').select('monto, creado_en').gte('creado_en', limiteDiaBogota(desdeISO)).lt('creado_en', limiteDiaBogota(hastaISO)),
   ]);
 
   if (errPagos || errMov || errVentas) {
@@ -1849,10 +1849,10 @@ async function pintarDetalleDia(contenedor, fechaISO) {
 
   const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: transferencias, error: errTrans }, { data: ventasMostrador, error: errVentas }] =
     await Promise.all([
-      supabase.from('reservas_pagos').select('*').gte('fecha', fechaISO).lt('fecha', mananaISO).order('fecha', { ascending: true }),
-      supabase.from('caja_movimientos').select('*').gte('creado_en', fechaISO).lt('creado_en', mananaISO).order('creado_en', { ascending: true }),
-      supabase.from('caja_transferencias').select('*').gte('creado_en', fechaISO).lt('creado_en', mananaISO).order('creado_en', { ascending: true }),
-      supabase.from('ventas_mostrador').select('*, minibar_productos(nombre)').gte('creado_en', fechaISO).lt('creado_en', mananaISO).order('creado_en', { ascending: true }),
+      supabase.from('reservas_pagos').select('*').gte('fecha', limiteDiaBogota(fechaISO)).lt('fecha', limiteDiaBogota(mananaISO)).order('fecha', { ascending: true }),
+      supabase.from('caja_movimientos').select('*').gte('creado_en', limiteDiaBogota(fechaISO)).lt('creado_en', limiteDiaBogota(mananaISO)).order('creado_en', { ascending: true }),
+      supabase.from('caja_transferencias').select('*').gte('creado_en', limiteDiaBogota(fechaISO)).lt('creado_en', limiteDiaBogota(mananaISO)).order('creado_en', { ascending: true }),
+      supabase.from('ventas_mostrador').select('*, minibar_productos(nombre)').gte('creado_en', limiteDiaBogota(fechaISO)).lt('creado_en', limiteDiaBogota(mananaISO)).order('creado_en', { ascending: true }),
     ]);
 
   if (errPagos || errMov || errTrans || errVentas) {
