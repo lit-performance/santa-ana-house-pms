@@ -241,8 +241,11 @@ async function cargarListaGastos(elemento, fechaInicioISO, fechaFinISO) {
 
   elemento.innerHTML = '<p class="mensaje-vacio">Cargando…</p>';
 
-  const desde = `${fechaInicioISO}T00:00:00`;
-  const hasta = `${fechaFinISO}T23:59:59`;
+  // (235 / zona horaria) Se fija el offset -05:00 (Colombia, sin horario de
+  // verano) explícitamente — sin él, Postgres interpreta este timestamp en
+  // UTC, 5 horas antes de la medianoche real de Bogotá.
+  const desde = `${fechaInicioISO}T00:00:00-05:00`;
+  const hasta = `${fechaFinISO}T23:59:59-05:00`;
 
   const { data: gastos, error } = await supabase
     .from('caja_movimientos')
