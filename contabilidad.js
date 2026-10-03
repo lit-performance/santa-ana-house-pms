@@ -101,8 +101,11 @@ async function generarConsolidado(elemento, fechaInicio, fechaFin) {
 
   // El rango de fechas cubre desde el inicio del día de fechaInicio hasta
   // el final del día de fechaFin (los timestamps se comparan en ISO).
-  const desde = `${fechaInicio}T00:00:00`;
-  const hasta = `${fechaFin}T23:59:59`;
+  // (235 / zona horaria) Offset -05:00 (Colombia, sin horario de verano)
+  // fijado explícitamente — sin él, Postgres interpreta este timestamp en
+  // UTC, 5 horas antes de la medianoche real de Bogotá.
+  const desde = `${fechaInicio}T00:00:00-05:00`;
+  const hasta = `${fechaFin}T23:59:59-05:00`;
 
   const [{ data: pagos, error: errPagos }, { data: movimientos, error: errMov }, { data: ventasMostrador, error: errVentas }, { data: facturas, error: errFacturas }] =
     await Promise.all([
